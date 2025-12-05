@@ -25,6 +25,7 @@
 1.访问https://ai.gitee.com/serverless-api?model=z-image-turbo
 2.<img width="2241" height="1280" alt="PixPin_2025-12-05_16-56-27" src="https://github.com/user-attachments/assets/77f9a713-e7ac-4b02-8603-4afc25991841" />
 3.免费额度<img width="240" height="63" alt="PixPin_2025-12-05_16-56-49" src="https://github.com/user-attachments/assets/6efde7c4-24c6-456a-8108-e78d7613f4fb" />
+
 4.可以涩涩，警惕违规被举报
 
 ##图像尺寸只支持以下，如果不在其中会报错
@@ -76,3 +77,4 @@
 - 请确保您的 Gitee AI 账号有足够的额度。
 
 - 生成的图片会临时保存在 `data/plugins/astrbot_plugin_gitee_aiimg/images` 目录下。
+
