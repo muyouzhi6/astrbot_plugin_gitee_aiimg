@@ -6,10 +6,10 @@
         "hint": "Gitee AI API 地址"
     },
     "api_key": {
-        "description": "API 密钥",
-        "type": "string",
-        "hint": "Gitee AI API Key",
-        "default": "",
+        "description": "API 密钥 (支持多 Key 轮询)",
+        "type": "list",
+        "hint": "Gitee AI API Key，支持配置多个 Key 以实现轮询调用",
+        "default": [],
         "obvious_hint": true
     },
     "model": {

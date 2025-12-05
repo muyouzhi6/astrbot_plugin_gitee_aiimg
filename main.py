@@ -15,7 +15,18 @@ class GiteeAIImage(Star):
         super().__init__(context)
         self.config = config
         self.base_url = config.get("base_url", "https://ai.gitee.com/v1")
-        self.api_key = config.get("api_key")
+        
+        # 支持多Key轮询
+        self.api_keys = []
+        api_keys = config.get("api_key", [])
+        if isinstance(api_keys, str):
+            # 兼容旧配置
+            if api_keys:
+                self.api_keys = [k.strip() for k in api_keys.split(",") if k.strip()]
+        elif isinstance(api_keys, list):
+            self.api_keys = [str(k).strip() for k in api_keys if str(k).strip()]
+        self.current_key_index = 0
+        
         self.model = config.get("model", "z-image-turbo")
         self.default_size = config.get("size", "1024x1024")
         self.num_inference_steps = config.get("num_inference_steps", 9)
@@ -33,15 +44,25 @@ class GiteeAIImage(Star):
         }
 
     def _get_client(self):
-        if not self.api_key:
-            self.api_key = self.config.get("api_key")
+        if not self.api_keys:
+             # 尝试重新读取配置
+            api_keys = self.config.get("api_key", [])
+            if isinstance(api_keys, str):
+                if api_keys:
+                    self.api_keys = [k.strip() for k in api_keys.split(",") if k.strip()]
+            elif isinstance(api_keys, list):
+                self.api_keys = [str(k).strip() for k in api_keys if str(k).strip()]
         
-        if not self.api_key:
+        if not self.api_keys:
             raise ValueError("请先配置 API Key")
+
+        # 轮询获取 Key
+        api_key = self.api_keys[self.current_key_index]
+        self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
 
         return AsyncOpenAI(
             base_url=self.base_url,
-            api_key=self.api_key,
+            api_key=api_key,
         )
 
     async def _download_image(self, url: str) -> str:
