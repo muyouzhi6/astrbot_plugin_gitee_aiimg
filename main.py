@@ -42,6 +42,9 @@ class GiteeAIImage(Star):
             "16:9": ["1024x576", "2048x1152"],
             "9:16": ["576x1024", "1152x2048"]
         }
+        
+        # 记录正在生成的用户，防止重复请求
+        self.processing_users = set()
 
     def _get_client(self):
         if not self.api_keys:
@@ -158,13 +161,24 @@ class GiteeAIImage(Star):
         else:
             raise Exception("生成图片失败：未返回 URL 或 Base64 数据")
 
-    @filter.llm_tool(name="draw_image")
+    @filter.llm_tool(name="draw_image") # type: ignore
     async def draw(self, event: AstrMessageEvent, prompt: str):
         '''根据提示词生成图片。
 
         Args:
             prompt(string): 图片提示词，需要包含主体、场景、风格等描述
         '''
+        user_id = event.get_sender_id()
+        
+        # 使用 prompt 的 hash 作为标识的一部分
+        import hashlib
+        prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
+        request_id = f"{user_id}:{prompt_hash}"
+
+        if request_id in self.processing_users:
+            return "您有正在进行的生图任务，请稍候..."
+
+        self.processing_users.add(request_id)
         try:
             image_path = await self._generate_image(prompt)
             
@@ -177,6 +191,9 @@ class GiteeAIImage(Star):
         except Exception as e:
             logger.error(f"生图失败: {e}")
             return f"生成图片时遇到问题: {str(e)}"
+        finally:
+            if request_id in self.processing_users:
+                self.processing_users.remove(request_id)
 
     @filter.command("aiimg")
     async def generate_image_command(self, event: AstrMessageEvent, prompt: str):
@@ -189,6 +206,18 @@ class GiteeAIImage(Star):
         if not prompt:
             yield event.plain_result("请提供提示词！使用方法：/aiimg <提示词> [比例]")
             return
+
+        user_id = event.get_sender_id()
+        # 使用 user_id + prompt 的哈希作为标识，防止同一用户并发发送相同 prompt
+        import hashlib
+        prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
+        request_id = f"{user_id}:{prompt_hash}"
+
+        if request_id in self.processing_users:
+            yield event.plain_result("您有正在进行的生图任务，请稍候...")
+            return
+
+        self.processing_users.add(request_id)
         
         ratio = "1:1"
         prompt_parts = prompt.rsplit(" ", 1)
@@ -210,3 +239,6 @@ class GiteeAIImage(Star):
         except Exception as e:
             logger.error(f"生图失败: {e}")
             yield event.plain_result(f"生成图片失败: {str(e)}") # type: ignore
+        finally:
+            if request_id in self.processing_users:
+                self.processing_users.remove(request_id)
