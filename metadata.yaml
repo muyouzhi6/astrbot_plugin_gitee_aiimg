@@ -1,6 +1,6 @@
 name: astrbot_plugin_gitee_aiimg
-desc: 接入 Gitee AI 图像生成模型，支持多种比例和模型选择。
-help: 可以使用 aiimg 生成图片或通过自然语言让 LLM 生成，让bot自拍给你看。
+desc: 可以使用 aiimg 生成图片或通过自然语言让 LLM 生成，让bot自拍给你看。
 version: v1.1
 author: 木有知
 repo: https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg
+
