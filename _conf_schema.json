@@ -1,0 +1,33 @@
+{
+    "base_url": {
+        "description": "API Base URL",
+        "type": "string",
+        "default": "https://ai.gitee.com/v1",
+        "hint": "Gitee AI API 地址"
+    },
+    "api_key": {
+        "description": "API 密钥",
+        "type": "string",
+        "hint": "Gitee AI API Key",
+        "default": "",
+        "obvious_hint": true
+    },
+    "model": {
+        "description": "使用的模型名称",
+        "type": "string",
+        "default": "z-image-turbo",
+        "hint": "例如: z-image-turbo"
+    },
+    "size": {
+        "description": "图片大小",
+        "type": "string",
+        "default": "1024x1024",
+        "hint": "例如: 1024x1024"
+    },
+    "num_inference_steps": {
+        "description": "推理步数",
+        "type": "int",
+        "default": 9,
+        "hint": "推理步数，默认 9"
+    }
+}
