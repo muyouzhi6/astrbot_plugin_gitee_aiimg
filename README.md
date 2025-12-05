@@ -1,6 +1,6 @@
 # AstrBot Gitee AI 图像生成插件
 
-本插件为 AstrBot 接入 Gitee AI 的图像生成能力，支持通过自然语言或指令调用。
+本插件为 AstrBot 接入 Gitee AI 的图像生成能力，支持通过自然语言或指令调用，支持多key轮询。
 
 ## 功能特性
 
@@ -71,6 +71,7 @@
 - 请确保您的 Gitee AI 账号有足够的额度。
 
 - 生成的图片会临时保存在 `data/plugins/astrbot_plugin_gitee_aiimg/images` 目录下。
+
 
 
 
