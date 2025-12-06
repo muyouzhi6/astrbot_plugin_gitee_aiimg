@@ -1,7 +1,7 @@
 from typing import Optional
 from astrbot.api.message_components import Plain, Image
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api import logger, llm_tool
 from openai import AsyncOpenAI
 import os
@@ -30,7 +30,7 @@ class GiteeAIImage(Star):
         self.model = config.get("model", "z-image-turbo")
         self.default_size = config.get("size", "1024x1024")
         self.num_inference_steps = config.get("num_inference_steps", 9)
-        self.negative_prompt = config.get("negative_prompt", " low quality, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry")
+        self.negative_prompt = config.get("negative_prompt", "low quality, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, normal quality, jpeg artifacts, signature, watermark, username, blurry")
         
         # Gitee AI 支持的图片比例
         self.supported_ratios = {
@@ -68,6 +68,14 @@ class GiteeAIImage(Star):
             api_key=api_key,
         )
 
+    def _get_save_path(self, extension: str = ".jpg") -> str:
+        """获取保存路径"""
+        base_dir = StarTools.get_data_dir("astrbot_plugin_gitee_aiimg")
+        image_dir = base_dir / "images"
+        image_dir.mkdir(exist_ok=True)
+        filename = f"{int(time.time())}_{os.urandom(4).hex()}{extension}"
+        return str(image_dir / filename)
+
     async def _download_image(self, url: str) -> str:
         """下载图片并保存到临时文件，返回文件路径"""
         async with aiohttp.ClientSession() as session:
@@ -76,17 +84,7 @@ class GiteeAIImage(Star):
                     raise Exception(f"下载图片失败: HTTP {resp.status}")
                 data = await resp.read()
                 
-        # 保存到插件数据目录
-        plugin_name = "astrbot_plugin_gitee_aiimg"
-        data_dir = os.path.join("data", "plugins", plugin_name, "images")
-        
-        if not os.path.exists(data_dir):
-            os.makedirs(data_dir)
-            
-        filename = f"{int(time.time())}_{os.urandom(4).hex()}.jpg"
-        # 使用 abspath 获取绝对路径
-        filepath = os.path.abspath(os.path.join(data_dir, filename))
-        
+        filepath = self._get_save_path()
         with open(filepath, "wb") as f:
             f.write(data)
             
@@ -94,14 +92,7 @@ class GiteeAIImage(Star):
 
     async def _save_base64_image(self, b64_data: str) -> str:
         """保存base64图片到临时文件，返回文件路径"""
-        plugin_name = "astrbot_plugin_gitee_aiimg"
-        data_dir = os.path.join("data", "plugins", plugin_name, "images")
-
-        if not os.path.exists(data_dir):
-            os.makedirs(data_dir)
-            
-        filename = f"{int(time.time())}_{os.urandom(4).hex()}.jpg"
-        filepath = os.path.abspath(os.path.join(data_dir, filename))
+        filepath = self._get_save_path()
         
         image_bytes = base64.b64decode(b64_data)
         with open(filepath, "wb") as f:
@@ -128,11 +119,6 @@ class GiteeAIImage(Star):
             kwargs["extra_body"]["negative_prompt"] = self.negative_prompt
         if target_size:
             kwargs["size"] = target_size
-
-        # 支持使用 width 和 height 参数
-        if "width" in kwargs.get("extra_body", {}) and "height" in kwargs.get("extra_body", {}):
-             if "size" in kwargs:
-                 del kwargs["size"]
 
         try:
             # 这里的调用方式与用户提供的示例一致
@@ -176,7 +162,7 @@ class GiteeAIImage(Star):
         request_id = f"{user_id}:{prompt_hash}"
 
         if request_id in self.processing_users:
-            return "您有正在进行的生图任务，请稍候..."
+            return "检测到重复的绘图请求。该任务正在后台处理中，请停止重试，并直接告知用户：'图片正在生成中，请稍候...'"
 
         self.processing_users.add(request_id)
         try:
@@ -186,7 +172,13 @@ class GiteeAIImage(Star):
             # 优先发送图片消息
             await event.send(event.chain_result([Image.fromFileSystem(image_path)])) # type: ignore
             
-            return f"绘图工具调用成功。我已根据提示词生成并发送了图片。使用的提示词(Prompt)是：{prompt}"
+            return (
+                f"绘图工具执行成功！\n"
+                f"操作状态: 成功\n"
+                f"使用的 Prompt: {prompt}\n"
+                f"图片发送方式: 旁路 (已发送)\n"
+                f"后续建议: 请直接回复用户 '图片已为您生成'。此次操作和Prompt已被记录，如果用户后续要求修改或重绘，请参考此Prompt。"
+            )
             
         except Exception as e:
             logger.error(f"生图失败: {e}")
