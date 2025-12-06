@@ -20,7 +20,6 @@ class GiteeAIImage(Star):
         self.api_keys = []
         api_keys = config.get("api_key", [])
         if isinstance(api_keys, str):
-            # 兼容旧配置
             if api_keys:
                 self.api_keys = [k.strip() for k in api_keys.split(",") if k.strip()]
         elif isinstance(api_keys, list):
@@ -234,3 +233,4 @@ class GiteeAIImage(Star):
         finally:
             if request_id in self.processing_users:
                 self.processing_users.remove(request_id)
+
