@@ -30,6 +30,8 @@
 
 4.可以涩涩，警惕违规被举报
 
+5.好用可以给个🌟
+
 ##图像尺寸只支持以下，如果不在其中会报错
     "1:1 (256×256)": (256, 256),
     "1:1 (512×512)": (512, 512),
@@ -80,6 +82,7 @@
 <img width="1152" height="2048" alt="60393b1ea20d432822c21a61ba48d946" src="https://github.com/user-attachments/assets/3d8195e5-5d89-4a12-806e-8a81e348a96c" />
 
 <img width="1152" height="2048" alt="3e5ee8d438fa797730127e57b9720454_720" src="https://github.com/user-attachments/assets/c270ae7f-25f6-4d96-bbed-0299c9e61877" />
+
 
 
 
