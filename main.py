@@ -44,6 +44,8 @@ class GiteeAIImage(Star):
         
         # 记录正在生成的用户，防止重复请求
         self.processing_users = set()
+        # 记录用户上次操作时间，用于防抖
+        self.last_operations = {}
 
     def _get_client(self):
         if not self.api_keys:
@@ -155,13 +157,17 @@ class GiteeAIImage(Star):
         '''
         user_id = event.get_sender_id()
         
-        # 使用 prompt 的 hash 作为标识的一部分
-        import hashlib
-        prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
-        request_id = f"{user_id}:{prompt_hash}"
+        request_id = user_id
+
+        # 防抖检查：如果用户在短时间内重复请求，直接返回
+        current_time = time.time()
+        if request_id in self.last_operations:
+            if current_time - self.last_operations[request_id] < 2.0: # 2秒防抖
+                return None
+        self.last_operations[request_id] = current_time
 
         if request_id in self.processing_users:
-            return "检测到重复的绘图请求。该任务正在后台处理中，请停止重试，并直接告知用户：'图片正在生成中，请稍候...'"
+            return None
 
         self.processing_users.add(request_id)
         try:
@@ -171,13 +177,7 @@ class GiteeAIImage(Star):
             # 优先发送图片消息
             await event.send(event.chain_result([Image.fromFileSystem(image_path)])) # type: ignore
             
-            return (
-                f"绘图工具执行成功！\n"
-                f"操作状态: 成功\n"
-                f"使用的 Prompt: {prompt}\n"
-                f"图片发送方式: 旁路 (已发送)\n"
-                f"后续建议: 请直接回复用户 '图片已为您生成'。此次操作和Prompt已被记录，如果用户后续要求修改或重绘，请参考此Prompt。"
-            )
+            return f"图片已生成并发送。Prompt: {prompt}"
             
         except Exception as e:
             logger.error(f"生图失败: {e}")
@@ -199,10 +199,7 @@ class GiteeAIImage(Star):
             return
 
         user_id = event.get_sender_id()
-        # 使用 user_id + prompt 的哈希作为标识，防止同一用户并发发送相同 prompt
-        import hashlib
-        prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
-        request_id = f"{user_id}:{prompt_hash}"
+        request_id = user_id
 
         if request_id in self.processing_users:
             yield event.plain_result("您有正在进行的生图任务，请稍候...")
