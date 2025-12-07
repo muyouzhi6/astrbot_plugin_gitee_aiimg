@@ -162,12 +162,12 @@ class GiteeAIImage(Star):
         # 防抖检查：如果用户在短时间内重复请求，直接返回
         current_time = time.time()
         if request_id in self.last_operations:
-            if current_time - self.last_operations[request_id] < 2.0: # 2秒防抖
-                return None
+            if current_time - self.last_operations[request_id] < 10.0: # 10秒防抖
+                return "操作太快了，请稍后再试。"
         self.last_operations[request_id] = current_time
 
         if request_id in self.processing_users:
-            return None
+            return "您有正在进行的生图任务，请稍候..."
 
         self.processing_users.add(request_id)
         try:
