@@ -1,8 +1,9 @@
 name: astrbot_plugin_gitee_aiimg
-desc: 让bot自拍给你看，接入 Gitee AI 的图像生成能力，支持通过自然语言或指令调用，支持多key轮询，支持nsfw。
+desc: 让bot自拍给你看，接入 Gitee AI 的图像生成能力，目前每日100次免费额度，支持通过自然语言或指令调用，支持多key轮询，支持nsfw。
 version: v1.1.1
 author: 木有知
 repo: https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg
+
 
 
 
