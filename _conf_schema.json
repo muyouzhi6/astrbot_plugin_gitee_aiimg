@@ -30,6 +30,12 @@
         "default": 9,
         "hint": "推理步数，默认 9"
     },
+    "generation_timeout": {
+        "description": "生成超时时间（秒）",
+        "type": "int",
+        "default": 50,
+        "hint": "建议小于60，避免触发框架超时"
+    },
     "cache_cleanup_enabled": {
         "description": "启用自动清理缓存",
         "type": "bool",
