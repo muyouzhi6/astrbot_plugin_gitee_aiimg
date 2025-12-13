@@ -29,5 +29,35 @@
         "type": "int",
         "default": 9,
         "hint": "推理步数，默认 9"
+    },
+    "cache_cleanup_enabled": {
+        "description": "启用自动清理缓存",
+        "type": "bool",
+        "default": true,
+        "hint": "是否自动清理过期的图片缓存"
+    },
+    "cache_max_age_hours": {
+        "description": "图片最大保留时间（小时）",
+        "type": "int",
+        "default": 24,
+        "hint": "超过此时间的图片将被清理"
+    },
+    "cache_max_count": {
+        "description": "最大保留图片数量",
+        "type": "int",
+        "default": 200,
+        "hint": "超过此数量时，优先删除最旧的图片"
+    },
+    "cache_protect_minutes": {
+        "description": "图片保护期（分钟）",
+        "type": "int",
+        "default": 5,
+        "hint": "此时间内的图片不会被清理，防止删除正在发送的图片"
+    },
+    "cache_cleanup_interval_minutes": {
+        "description": "清理任务执行间隔（分钟）",
+        "type": "int",
+        "default": 30,
+        "hint": "定时清理任务的执行间隔"
     }
 }
