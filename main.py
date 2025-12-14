@@ -29,7 +29,7 @@ class GiteeAIImage(Star):
         self.model = config.get("model", "z-image-turbo")
         self.default_size = config.get("size", "1024x1024")
         self.num_inference_steps = config.get("num_inference_steps", 9)
-        self.negative_prompt = config.get("negative_prompt", "low quality, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, normal quality, jpeg artifacts, signature, watermark, username, blurry")
+        self.negative_prompt = config.get("negative_prompt", "")
         
         # Gitee AI 支持的图片比例
         self.supported_ratios = {
@@ -230,4 +230,5 @@ class GiteeAIImage(Star):
         finally:
             if request_id in self.processing_users:
                 self.processing_users.remove(request_id)
+
 
