@@ -29,5 +29,11 @@
         "type": "int",
         "default": 9,
         "hint": "推理步数，默认 9"
+    },
+    "negative_prompt": {
+        "description": "负面提示词",
+        "type": "string",
+        "default": "",
+        "hint": "用于指定不希望出现在生成图片中的内容"
     }
 }
