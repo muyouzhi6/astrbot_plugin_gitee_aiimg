@@ -35,6 +35,7 @@ DEFAULT_NEGATIVE_PROMPT = (
 DEBOUNCE_SECONDS = 10.0
 MAX_CACHED_IMAGES = 50
 OPERATION_CACHE_TTL = 300  # 5分钟清理一次过期操作记录
+CLEANUP_INTERVAL = 10  # 每 N 次生成执行一次清理
 
 
 @register(
@@ -82,6 +83,10 @@ class GiteeAIImage(Star):
 
         # 图片目录
         self._image_dir: Optional[Path] = None
+
+        # 清理计数器和后台任务引用
+        self._generation_count: int = 0
+        self._background_tasks: set[asyncio.Task] = set()
 
     @staticmethod
     def _parse_api_keys(api_keys) -> list[str]:
@@ -136,11 +141,17 @@ class GiteeAIImage(Star):
         filename = f"{int(time.time())}_{os.urandom(4).hex()}{extension}"
         return str(image_dir / filename)
 
-    async def _cleanup_old_images(self) -> None:
-        """清理旧图片，保留最近的 MAX_CACHED_IMAGES 张"""
+    def _sync_cleanup_old_images(self) -> None:
+        """同步清理旧图片（在线程池中执行）"""
         try:
             image_dir = self._get_image_dir()
-            images = sorted(image_dir.glob("*.jpg"), key=lambda p: p.stat().st_mtime)
+            # 收集所有支持的图片格式
+            images: list[Path] = []
+            for ext in ("*.jpg", "*.png", "*.webp"):
+                images.extend(image_dir.glob(ext))
+            
+            # 按修改时间排序
+            images.sort(key=lambda p: p.stat().st_mtime)
 
             if len(images) > MAX_CACHED_IMAGES:
                 to_delete = images[: len(images) - MAX_CACHED_IMAGES]
@@ -151,6 +162,10 @@ class GiteeAIImage(Star):
                         pass
         except Exception as e:
             logger.warning(f"清理旧图片时出错: {e}")
+
+    async def _cleanup_old_images(self) -> None:
+        """异步清理旧图片，使用线程池执行阻塞操作"""
+        await asyncio.to_thread(self._sync_cleanup_old_images)
 
     def _cleanup_expired_operations(self) -> None:
         """清理过期的操作记录，防止内存泄漏"""
@@ -247,8 +262,14 @@ class GiteeAIImage(Star):
         else:
             raise Exception("生成图片失败：未返回 URL 或 Base64 数据")
 
-        # 异步清理旧图片
-        asyncio.create_task(self._cleanup_old_images())
+        # 每 N 次生成执行一次清理
+        self._generation_count += 1
+        if self._generation_count >= CLEANUP_INTERVAL:
+            self._generation_count = 0
+            task = asyncio.create_task(self._cleanup_old_images())
+            # 保存任务引用防止 GC 回收
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
         return filepath
 
