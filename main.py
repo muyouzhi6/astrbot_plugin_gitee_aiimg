@@ -294,8 +294,7 @@ class GiteeAIImage(Star):
         try:
             image_path = await self._generate_image(prompt)
             await event.send(event.chain_result([Image.fromFileSystem(image_path)]))  # type: ignore
-            # 返回 None 让 Agent 识别为"直接发送给用户"，从而结束工具循环
-            return None
+            return f"图片已生成并发送。Prompt: {prompt}"
 
         except Exception as e:
             logger.error(f"生图失败: {e}")
