@@ -294,7 +294,8 @@ class GiteeAIImage(Star):
         try:
             image_path = await self._generate_image(prompt)
             await event.send(event.chain_result([Image.fromFileSystem(image_path)]))  # type: ignore
-            return f"图片已生成并发送。Prompt: {prompt}"
+            # 返回成功信息，让 LLM 知道图片已发送，继续用语言回复用户
+            return "图片已成功生成并发送给用户，请用语言回复用户。"
 
         except Exception as e:
             logger.error(f"生图失败: {e}")
