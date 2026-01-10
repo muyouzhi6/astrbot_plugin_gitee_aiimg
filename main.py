@@ -5,10 +5,10 @@
 
 import asyncio
 import base64
+import mimetypes
 import os
 import time
 from pathlib import Path
-from typing import Optional
 
 import aiofiles
 import aiohttp
@@ -18,9 +18,10 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Image
 from astrbot.api.star import Context, Star, StarTools, register
+from astrbot.core.message.components import Reply
 
 
-# 配置常量
+# 配置常量 - 文生图
 DEFAULT_BASE_URL = "https://ai.gitee.com/v1"
 DEFAULT_MODEL = "z-image-turbo"
 DEFAULT_SIZE = "1024x1024"
@@ -30,6 +31,16 @@ DEFAULT_NEGATIVE_PROMPT = (
     "extra digit, fewer digits, cropped, worst quality, normal quality, "
     "jpeg artifacts, signature, watermark, username, blurry"
 )
+
+# 配置常量 - 图生图
+DEFAULT_EDIT_MODEL = "Qwen-Image-Edit-2511"
+DEFAULT_EDIT_INFERENCE_STEPS = 4
+DEFAULT_EDIT_GUIDANCE_SCALE = 1.0
+DEFAULT_EDIT_POLL_INTERVAL = 5
+DEFAULT_EDIT_POLL_TIMEOUT = 300
+
+# 图生图支持的任务类型
+EDIT_TASK_TYPES = ["id", "style", "subject", "background", "element"]
 
 # 防抖和清理配置
 DEBOUNCE_SECONDS = 10.0
@@ -41,8 +52,8 @@ CLEANUP_INTERVAL = 10  # 每 N 次生成执行一次清理
 @register(
     "astrbot_plugin_gitee_aiimg",
     "木有知",
-    "接入 Gitee AI 图像生成模型。支持 LLM 调用和命令调用，支持多种比例。",
-    "1.2",
+    "接入 Gitee AI 图像生成模型。支持文生图和图生图，支持 LLM 调用和命令调用。",
+    "2.0.0",
 )
 class GiteeAIImage(Star):
     """Gitee AI 图像生成插件"""
@@ -79,14 +90,34 @@ class GiteeAIImage(Star):
 
         # 复用的客户端（延迟初始化）
         self._openai_clients: dict[str, AsyncOpenAI] = {}
-        self._http_session: Optional[aiohttp.ClientSession] = None
+        self._http_session: aiohttp.ClientSession | None = None
 
         # 图片目录
-        self._image_dir: Optional[Path] = None
+        self._image_dir: Path | None = None
 
         # 清理计数器和后台任务引用
         self._generation_count: int = 0
         self._background_tasks: set[asyncio.Task] = set()
+
+        # 图生图配置
+        self.edit_base_url = config.get("edit_base_url") or self.base_url
+        self.edit_api_keys = self._parse_api_keys(config.get("edit_api_key", []))
+        if not self.edit_api_keys:
+            self.edit_api_keys = self.api_keys  # 复用文生图的 Key
+        self.edit_current_key_index = 0
+        self.edit_model = config.get("edit_model", DEFAULT_EDIT_MODEL)
+        self.edit_num_inference_steps = config.get(
+            "edit_num_inference_steps", DEFAULT_EDIT_INFERENCE_STEPS
+        )
+        self.edit_guidance_scale = config.get(
+            "edit_guidance_scale", DEFAULT_EDIT_GUIDANCE_SCALE
+        )
+        self.edit_poll_interval = config.get(
+            "edit_poll_interval", DEFAULT_EDIT_POLL_INTERVAL
+        )
+        self.edit_poll_timeout = config.get(
+            "edit_poll_timeout", DEFAULT_EDIT_POLL_TIMEOUT
+        )
 
     @staticmethod
     def _parse_api_keys(api_keys) -> list[str]:
@@ -149,7 +180,7 @@ class GiteeAIImage(Star):
             images: list[Path] = []
             for ext in ("*.jpg", "*.png", "*.webp"):
                 images.extend(image_dir.glob(ext))
-            
+
             # 按修改时间排序
             images.sort(key=lambda p: p.stat().st_mtime)
 
@@ -272,6 +303,381 @@ class GiteeAIImage(Star):
             task.add_done_callback(self._background_tasks.discard)
 
         return filepath
+
+    # ========== 图生图功能 ==========
+
+    def _get_edit_api_key(self) -> str:
+        """获取图生图 API Key（轮询）"""
+        # 重新读取配置（支持热更新）
+        if not self.edit_api_keys:
+            self.edit_api_keys = self._parse_api_keys(
+                self.config.get("edit_api_key", [])
+            )
+            if not self.edit_api_keys:
+                self.edit_api_keys = self.api_keys
+
+        if not self.edit_api_keys:
+            raise ValueError("请先配置图生图 API Key（或文生图 API Key）")
+
+        # 轮询获取 Key
+        api_key = self.edit_api_keys[self.edit_current_key_index]
+        self.edit_current_key_index = (
+            self.edit_current_key_index + 1
+        ) % len(self.edit_api_keys)
+
+        return api_key
+
+    async def _create_edit_task(
+        self,
+        prompt: str,
+        image_data_list: list[bytes],
+        task_types: list[str],
+    ) -> tuple[str, str]:
+        """创建图生图异步任务，返回 (task_id, api_key)"""
+        session = await self._get_http_session()
+        api_key = self._get_edit_api_key()
+
+        headers = {
+            "X-Failover-Enabled": "true",
+            "Authorization": f"Bearer {api_key}",
+        }
+
+        # 构建 multipart/form-data
+        data = aiohttp.FormData()
+        data.add_field("prompt", prompt)
+        data.add_field("model", self.edit_model)
+        data.add_field("num_inference_steps", str(self.edit_num_inference_steps))
+        data.add_field("guidance_scale", str(self.edit_guidance_scale))
+
+        for task_type in task_types:
+            data.add_field("task_types", task_type)
+
+        # 处理图片二进制数据
+        for idx, img_bytes in enumerate(image_data_list):
+            logger.debug(f"[_create_edit_task] 添加图片 {idx}: {len(img_bytes)} bytes")
+            data.add_field(
+                "image",
+                img_bytes,
+                filename=f"image_{idx}.jpg",
+                content_type="image/jpeg",
+            )
+
+        api_url = f"{self.edit_base_url}/async/images/edits"
+
+        async with session.post(api_url, headers=headers, data=data) as resp:
+            result = await resp.json()
+            if resp.status != 200:
+                error_msg = result.get("message", str(result))
+                if resp.status == 401:
+                    raise Exception("图生图 API Key 无效或已过期，请检查配置。")
+                elif resp.status == 429:
+                    raise Exception("API 调用次数超限或并发过高，请稍后再试。")
+                else:
+                    raise Exception(f"创建图生图任务失败: {error_msg}")
+
+            task_id = result.get("task_id")
+            if not task_id:
+                raise Exception(f"创建图生图任务失败：未返回 task_id。响应: {result}")
+
+            return task_id, api_key
+
+    async def _poll_edit_task(self, task_id: str, api_key: str) -> str:
+        """轮询图生图任务状态，返回结果图片 URL"""
+        session = await self._get_http_session()
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+        }
+
+        status_url = f"{self.edit_base_url}/task/{task_id}"
+        max_attempts = int(self.edit_poll_timeout / self.edit_poll_interval)
+
+        for attempt in range(1, max_attempts + 1):
+            async with session.get(status_url, headers=headers) as resp:
+                result = await resp.json()
+
+                if result.get("error"):
+                    raise Exception(
+                        f"任务出错: {result['error']}: {result.get('message', 'Unknown error')}"
+                    )
+
+                status = result.get("status", "unknown")
+
+                if status == "success":
+                    output = result.get("output", {})
+                    file_url = output.get("file_url")
+                    if file_url:
+                        return file_url
+                    else:
+                        raise Exception("任务完成但未返回图片 URL")
+
+                elif status in ["failed", "cancelled"]:
+                    raise Exception(f"图生图任务 {status}")
+
+                # 继续等待
+                logger.debug(f"图生图任务 {task_id} 状态: {status} (第 {attempt} 次检查)")
+
+            await asyncio.sleep(self.edit_poll_interval)
+
+        raise Exception(f"图生图任务超时（等待超过 {self.edit_poll_timeout} 秒）")
+
+    async def _edit_image(
+        self,
+        prompt: str,
+        image_data_list: list[bytes],
+        task_types: list[str] | None = None,
+    ) -> str:
+        """执行图生图，返回本地文件路径"""
+        if not image_data_list:
+            raise ValueError("请提供至少一张图片")
+
+        # 默认任务类型
+        if task_types is None:
+            task_types = ["id"]  # 默认保持身份特征
+
+        # 验证任务类型
+        valid_types = [t for t in task_types if t in EDIT_TASK_TYPES]
+        if not valid_types:
+            valid_types = ["id"]
+
+        # 创建任务
+        task_id, api_key = await self._create_edit_task(prompt, image_data_list, valid_types)
+        logger.info(f"图生图任务已创建: {task_id}")
+
+        # 轮询等待结果
+        file_url = await self._poll_edit_task(task_id, api_key)
+
+        # 下载结果图片
+        filepath = await self._download_image(file_url)
+
+        # 触发清理
+        self._generation_count += 1
+        if self._generation_count >= CLEANUP_INTERVAL:
+            self._generation_count = 0
+            task = asyncio.create_task(self._cleanup_old_images())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+
+        return filepath
+
+    async def _download_image_bytes(self, url: str, timeout: int = 30) -> bytes | None:
+        """下载图片并返回二进制数据，失败返回 None"""
+        if not url or not url.startswith(("http://", "https://")):
+            return None
+
+        session = await self._get_http_session()
+        try:
+            async with session.get(
+                url, timeout=aiohttp.ClientTimeout(total=timeout)
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.read()
+                else:
+                    logger.warning(f"下载图片失败: HTTP {resp.status}, URL: {url[:60]}...")
+        except Exception as e:
+            logger.warning(f"下载图片异常: {type(e).__name__}, URL: {url[:60]}...")
+        return None
+
+    async def _extract_images_from_event(
+        self, event: AstrMessageEvent
+    ) -> list[bytes]:
+        """从消息事件中提取图片二进制数据列表
+
+        支持：
+        1. 回复/引用消息中的图片（优先）
+        2. 当前消息中的图片
+        3. 多图输入
+        4. base64 格式图片
+        """
+        images: list[bytes] = []
+
+        # 获取原始消息对象
+        message_obj = event.message_obj
+        chain = message_obj.message
+
+        logger.debug(f"[_extract_images] 开始提取图片, 消息链长度: {len(chain)}")
+
+        # 1. 从回复/引用消息中提取图片（优先）
+        for seg in chain:
+            if isinstance(seg, Reply):
+                logger.debug(f"[_extract_images] 发现 Reply 段, chain={getattr(seg, 'chain', None)}")
+                if hasattr(seg, "chain") and seg.chain:
+                    for chain_item in seg.chain:
+                        if isinstance(chain_item, Image):
+                            img_data = await self._load_image_data(chain_item)
+                            if img_data:
+                                images.append(img_data)
+                                logger.debug(f"[_extract_images] 从回复链提取图片: {len(img_data)} bytes")
+
+        # 2. 从当前消息中提取图片
+        for seg in chain:
+            if isinstance(seg, Image):
+                img_data = await self._load_image_data(seg)
+                if img_data:
+                    images.append(img_data)
+                    logger.debug(f"[_extract_images] 从当前消息提取图片: {len(img_data)} bytes")
+
+        logger.info(f"[_extract_images] 共提取到 {len(images)} 张图片")
+        return images
+
+    async def _load_image_data(self, img: Image) -> bytes | None:
+        """从 Image 对象加载图片二进制数据
+        
+        优先级：本地文件 > base64 > URL下载
+        """
+        # 1. 尝试从本地文件读取（NapCat/LLOneBot 会缓存图片到本地）
+        file_path = getattr(img, "file", None)
+        if file_path and not file_path.startswith(("http://", "https://")):
+            # 可能是本地路径或文件名
+            local_path = Path(file_path)
+            if local_path.is_file():
+                try:
+                    return local_path.read_bytes()
+                except Exception as e:
+                    logger.debug(f"读取本地文件失败: {e}")
+
+        # 2. 尝试 base64
+        b64 = getattr(img, "base64", None)
+        if b64:
+            try:
+                return base64.b64decode(b64)
+            except Exception:
+                pass
+
+        # 3. 尝试从 URL 下载
+        url = getattr(img, "url", None)
+        if url:
+            return await self._download_image_bytes(url)
+
+        return None
+
+    @filter.llm_tool(name="edit_image")  # type: ignore
+    async def edit(
+        self,
+        event: AstrMessageEvent,
+        prompt: str,
+        use_message_images: bool = True,
+        task_types: str = "id",
+    ):
+        """编辑用户发送的图片或引用的图片。当用户发送/引用了图片并希望修改、改图、换背景、换风格、换衣服、P图时调用此工具。
+
+        获取图片的方式：
+        - use_message_images=true（默认）：自动获取用户消息或引用消息中的图片
+
+        重要提示：
+        - 当消息中包含 [Image Caption: ...] 图片描述时，说明用户发送了图片，应调用此工具并设置 use_message_images=true
+        - gchat.qpic.cn 等 QQ 临时链接无法直接访问，必须使用 use_message_images=true 来获取
+        - 调用成功后图片会自动发送给用户
+
+        Args:
+            prompt(string): 图片编辑提示词，描述用户希望对图片做的修改，如"换成吊带裙"、"背景换成海边"、"转成动漫风格"等
+            use_message_images(boolean): 是否自动获取用户消息中的图片，默认 true（推荐）
+            task_types(string): 任务类型，逗号分隔。可选值: id(保持身份/默认), style(风格迁移), subject(主体替换), background(背景替换), element(元素编辑)。默认为 id
+        """
+        user_id = event.get_sender_id()
+        request_id = f"edit_{user_id}"
+
+        # 防抖检查
+        if self._check_debounce(request_id):
+            return "操作太快了，请稍后再试。"
+
+        if request_id in self.processing_users:
+            return "您有正在进行的图生图任务，请稍候..."
+
+        # 提取图片
+        image_data_list: list[bytes] = []
+        if use_message_images:
+            image_data_list = await self._extract_images_from_event(event)
+            logger.debug(f"[edit_image LLM] use_message_images=True, 提取到 {len(image_data_list)} 张图片")
+
+        if not image_data_list:
+            return "请在消息中附带需要编辑的图片。提示：发送图片或引用图片后再发送修改指令。"
+
+        self.processing_users.add(request_id)
+
+        # 解析任务类型
+        types = [t.strip() for t in task_types.split(",") if t.strip()]
+
+        # 启动后台任务，立即返回（非阻塞）
+        async def _background_edit():
+            try:
+                image_path = await self._edit_image(prompt, image_data_list, types)
+                await event.send(
+                    event.chain_result([Image.fromFileSystem(image_path)])  # type: ignore
+                )
+                logger.info(f"[edit_image] 图生图完成: {prompt[:50]}...")
+            except Exception as e:
+                logger.error(f"[edit_image] 图生图失败: {e}", exc_info=True)
+                await event.send(event.plain_result(f"编辑图片失败: {str(e) or type(e).__name__}"))
+            finally:
+                self.processing_users.discard(request_id)
+
+        task = asyncio.create_task(_background_edit())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+        return f"正在编辑图片，请稍候...（提示词: {prompt[:30]}...）"
+
+    @filter.command("aiedit")
+    async def edit_image_command(self, event: AstrMessageEvent, prompt: str):
+        """图生图指令（图像编辑）
+
+        用法: /aiedit <提示词> [任务类型]
+        示例: /aiedit 把背景换成海边 background
+        支持任务类型: id(保持身份), style(风格迁移), subject(主体), background(背景), element(元素)
+        可组合使用，如: /aiedit 生成结婚照 id,style
+        """
+        if not prompt:
+            yield event.plain_result(
+                "请提供提示词！使用方法：/aiedit <提示词> [任务类型]\n"
+                "示例: /aiedit 把背景换成海边 background\n"
+                "支持任务类型: id, style, subject, background, element"
+            )
+            return
+
+        user_id = event.get_sender_id()
+        request_id = f"edit_{user_id}"
+
+        # 防抖检查
+        if self._check_debounce(request_id):
+            yield event.plain_result("操作太快了，请稍后再试。")
+            return
+
+        if request_id in self.processing_users:
+            yield event.plain_result("您有正在进行的图生图任务，请稍候...")
+            return
+
+        # 提取图片
+        image_data_list = await self._extract_images_from_event(event)
+        if not image_data_list:
+            yield event.plain_result(
+                "请在消息中附带需要编辑的图片！\n"
+                "使用方法：发送图片并附带 /aiedit <提示词>"
+            )
+            return
+
+        self.processing_users.add(request_id)
+
+        # 解析任务类型参数
+        task_types: list[str] = ["id"]  # 默认
+        prompt_parts = prompt.rsplit(" ", 1)
+        if len(prompt_parts) > 1:
+            potential_types = prompt_parts[1]
+            # 检查是否是有效的任务类型
+            parsed_types = [t.strip() for t in potential_types.split(",")]
+            if all(t in EDIT_TASK_TYPES for t in parsed_types):
+                task_types = parsed_types
+                prompt = prompt_parts[0]
+
+        try:
+            image_path = await self._edit_image(prompt, image_data_list, task_types)
+            yield event.chain_result([Image.fromFileSystem(image_path)])  # type: ignore
+
+        except Exception as e:
+            logger.error(f"图生图失败: {e}")
+            yield event.plain_result(f"编辑图片失败: {str(e)}")
+        finally:
+            self.processing_users.discard(request_id)
 
     @filter.llm_tool(name="draw_image")  # type: ignore
     async def draw(self, event: AstrMessageEvent, prompt: str):
