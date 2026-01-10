@@ -1,12 +1,12 @@
 {
     "base_url": {
         "description": "API Base URL",
+        "hint": "Gitee AI API 地址",
         "type": "string",
-        "default": "https://ai.gitee.com/v1",
-        "hint": "Gitee AI API 地址"
+        "default": "https://ai.gitee.com/v1"
     },
     "api_key": {
-        "description": "API 密钥 (支持多 Key 轮询)",
+        "description": "API 密钥",
         "type": "list",
         "hint": "Gitee AI API Key，支持配置多个 Key 以实现轮询调用",
         "default": [],
@@ -14,68 +14,91 @@
     },
     "model": {
         "description": "使用的模型名称",
+        "hint": "例如: z-image-turbo",
         "type": "string",
-        "default": "z-image-turbo",
-        "hint": "例如: z-image-turbo"
+        "default": "z-image-turbo"
     },
     "size": {
         "description": "图片大小",
+        "hint": "例如: 1024x1024",
         "type": "string",
-        "default": "1024x1024",
-        "hint": "例如: 1024x1024"
-    },
-    "num_inference_steps": {
-        "description": "推理步数",
-        "type": "int",
-        "default": 9,
-        "hint": "推理步数，默认 9"
+        "options": [
+            "256x256",
+            "512x512",
+            "1024x1024",
+            "2048x2048",
+            "1152x896",
+            "2048x1536",
+            "768x1024",
+            "1536x2048",
+            "2048x1360",
+            "1360x2048",
+            "1024x576",
+            "2048x1152",
+            "576x1024",
+            "1152x2048"
+        ],
+        "default": "1024x1024"
     },
     "negative_prompt": {
         "description": "负面提示词",
-        "type": "string",
-        "default": "",
-        "hint": "用于指定不希望出现在生成图片中的内容"
+        "hint": "用于指定不希望出现在生成图片中的内容",
+        "type": "text",
+        "default": "low quality, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, normal quality, jpeg artifacts, signature, watermark, username, blurry"
     },
-    "edit_base_url": {
-        "description": "图生图 API Base URL",
-        "type": "string",
-        "default": "https://ai.gitee.com/v1",
-        "hint": "图生图 API 地址，留空则使用文生图的 base_url"
-    },
-    "edit_api_key": {
-        "description": "图生图 API 密钥 (支持多 Key 轮询)",
-        "type": "list",
-        "hint": "图生图 API Key，留空则使用文生图的 api_key",
-        "default": []
-    },
-    "edit_model": {
-        "description": "图生图模型名称",
-        "type": "string",
-        "default": "Qwen-Image-Edit-2511",
-        "hint": "例如: Qwen-Image-Edit-2511"
-    },
-    "edit_num_inference_steps": {
-        "description": "图生图推理步数",
+    "num_inference_steps": {
+        "description": "推理步数",
+        "hint": "推理步数，默认 9",
         "type": "int",
-        "default": 4,
-        "hint": "图生图推理步数，默认 4"
+        "slider": {
+            "min": 1,
+            "max": 20,
+            "step": 1
+        },
+        "default": 9
     },
-    "edit_guidance_scale": {
-        "description": "图生图引导系数",
-        "type": "float",
-        "default": 1.0,
-        "hint": "引导系数，控制生成图片与提示词的一致性，默认 1.0"
-    },
-    "edit_poll_interval": {
-        "description": "图生图轮询间隔(秒)",
+    "timeout": {
+        "description": "API 请求超时时间",
+        "hint": "API 请求超时时间，单位秒",
         "type": "int",
-        "default": 5,
-        "hint": "轮询任务状态的间隔时间，默认 5 秒"
+        "slider": {
+            "min": 60,
+            "max": 600,
+            "step": 10
+        },
+        "default": 300
     },
-    "edit_poll_timeout": {
-        "description": "图生图轮询超时(秒)",
+    "max_retries": {
+        "description": "最大重试次数",
+        "hint": "如果 API 调用失败，将尝试重试此次数",
         "type": "int",
-        "default": 300,
-        "hint": "轮询超时时间，默认 300 秒(5分钟)"
+        "slider": {
+            "min": 0,
+            "max": 5,
+            "step": 1
+        },
+        "default": 2
+    },
+    "max_cached_images": {
+        "description": "图片最大缓存数",
+        "hint": "超过此数时，将清理一半的旧缓存图",
+        "type": "int",
+        "slider": {
+            "min": 10,
+            "max": 100,
+            "step": 1
+        },
+        "default": 50
+    },
+    "debounce_interval": {
+        "description": "防抖时长",
+        "hint": "防抖时间内无法重复提交生图请求，每个用户单独计时",
+        "type": "int",
+        "slider": {
+            "min": 0,
+            "max": 60,
+            "step": 1
+        },
+        "default": 10
     }
 }
