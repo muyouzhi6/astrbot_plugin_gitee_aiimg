@@ -12,6 +12,7 @@ from typing import Optional
 
 import aiofiles
 import aiohttp
+from mcp.types import CallToolResult, ImageContent
 from openai import AsyncOpenAI
 
 from astrbot.api import logger
@@ -293,9 +294,17 @@ class GiteeAIImage(Star):
         self.processing_users.add(request_id)
         try:
             image_path = await self._generate_image(prompt)
-            await event.send(event.chain_result([Image.fromFileSystem(image_path)]))  # type: ignore
-            # 返回 None 让 Agent 识别为"直接发送给用户"，从而结束工具循环
-            return None
+            # 读取图片并转为 base64
+            async with aiofiles.open(image_path, "rb") as f:
+                image_bytes = await f.read()
+            image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+            # 返回 CallToolResult 包含 ImageContent
+            # 框架会自动发送图片给用户，并告诉 LLM "返回了图片(已直接发送给用户)"
+            # 然后 LLM 可以继续生成文本回复
+            return CallToolResult(
+                content=[ImageContent(type="image", data=image_b64, mimeType="image/jpeg")]
+            )
 
         except Exception as e:
             logger.error(f"生图失败: {e}")
