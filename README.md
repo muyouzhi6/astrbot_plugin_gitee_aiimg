@@ -45,13 +45,13 @@
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `edit_base_url` | 图生图 API 地址（留空使用文生图地址） | `""` |
-| `edit_api_key` | 图生图 API Key（留空使用文生图 Key） | `[]` |
-| `edit_model` | 图生图模型名称 | `Qwen-Image-Edit-2511` |
-| `edit_num_inference_steps` | 图生图推理步数 | `4` |
-| `edit_guidance_scale` | 引导系数 | `1.0` |
-| `edit_poll_interval` | 轮询间隔（秒） | `5` |
-| `edit_poll_timeout` | 轮询超时（秒） | `300` |
+| `base_url` | 图生图 API 地址（留空使用文生图地址） | `""` |
+| `api_key` | 图生图 API Key（留空使用文生图 Key） | `[]` |
+| `model` | 图生图模型名称 | `Qwen-Image-Edit-2511` |
+| `num_inference_steps` | 图生图推理步数 | `4` |
+| `guidance_scale` | 引导系数 | `1.0` |
+| `poll_interval` | 轮询间隔（秒） | `5` |
+| `poll_timeout` | 轮询超时（秒） | `300` |
 
 ### 配置说明
 
