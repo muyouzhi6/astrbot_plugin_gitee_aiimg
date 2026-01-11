@@ -69,8 +69,12 @@ class GiteeAIImage(Star):
         if not prompt:
             return "需提供提示词prompt"
 
+        # 使用配置的尺寸
+        target_size = self.config.get("size", "1024x1024")
+        logger.debug(f"[draw_image LLM] 使用配置尺寸: {target_size}")
+
         try:
-            image_path = await self.service.generate(prompt)
+            image_path = await self.service.generate(prompt, size=target_size)
             await event.send(event.chain_result([Image.fromFileSystem(str(image_path))]))
             return f"图片已生成并发送。Prompt: {prompt}"
 
@@ -112,11 +116,19 @@ class GiteeAIImage(Star):
             prompt = prompt_parts[0]
 
         # 确定目标尺寸
-        target_size = self.config["size"]
-        if ratio != "1:1" or (
-            ratio == "1:1" and self.config["size"] not in self.SUPPORTED_RATIOS["1:1"]
-        ):
+        # 1. 如果用户指定了非 1:1 的比例，使用该比例的第一个尺寸
+        # 2. 如果用户指定了 1:1 或没有指定比例，使用配置中的 size
+        # 3. 如果配置的 size 不在支持列表中，使用默认的 1024x1024
+        if ratio != "1:1":
             target_size = self.SUPPORTED_RATIOS[ratio][0]
+        else:
+            config_size = self.config.get("size", "1024x1024")
+            if config_size in self.SUPPORTED_RATIOS["1:1"]:
+                target_size = config_size
+            else:
+                target_size = "1024x1024"
+
+        logger.debug(f"[aiimg] 比例={ratio}, 配置size={self.config.get('size')}, 最终size={target_size}")
 
         try:
             image_path = await self.service.generate(prompt, size=target_size)

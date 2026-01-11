@@ -89,6 +89,8 @@ class ImageService:
         if size:
             kwargs["size"] = size
 
+        logger.debug(f"[generate] 调用 API: model={kwargs['model']}, size={kwargs.get('size', '未指定')}")
+
         try:
             resp: ImagesResponse = await client.images.generate(**kwargs)
         except Exception as e:
