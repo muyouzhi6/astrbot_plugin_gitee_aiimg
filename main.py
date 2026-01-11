@@ -233,7 +233,7 @@ class GiteeAIImage(Star):
         try:
             image_path = await self.edit.edit(prompt, bytes_images, types)
             await event.send(
-                event.chain_result([Image.fromFileSystem(image_path)])
+                event.chain_result([Image.fromFileSystem(str(image_path))])
             )
             logger.info(f"[edit_image] 图生图完成: {prompt[:50]}...")
         except Exception as e:
