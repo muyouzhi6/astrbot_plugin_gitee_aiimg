@@ -3,7 +3,7 @@ from astrbot.core.platform.astr_message_event import AstrMessageEvent
 
 
 async def get_images_from_event(event: AstrMessageEvent) -> list[Image]:
-    """从消息事件中提取图片二进制数据列表
+    """从消息事件中提取图片组件列表
 
     支持：
     1. 回复/引用消息中的图片（优先）

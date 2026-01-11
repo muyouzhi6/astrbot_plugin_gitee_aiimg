@@ -122,7 +122,7 @@ class GiteeAIImage(Star):
         finally:
             self.processing_users.discard(request_id)
 
-    @filter.command("aiedit", aliases=["图生图"])
+    @filter.command("aiedit", alias={"图生图"})
     async def edit_image_command(self, event: AstrMessageEvent, prompt: str):
         """aiedit <提示词> <任务类型>
         支持任务类型: id(保持身份), style(风格迁移), subject(主体), background(背景), element(元素)
@@ -174,7 +174,7 @@ class GiteeAIImage(Star):
                 images=bytes_images,
                 task_types=types,
             )
-            yield event.chain_result([Image.fromFileSystem(image_path)])
+            yield event.chain_result([Image.fromFileSystem(str(image_path))])
 
         except Exception as e:
             logger.error(f"图生图失败: {e}")

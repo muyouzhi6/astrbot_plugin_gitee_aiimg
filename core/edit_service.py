@@ -97,7 +97,9 @@ class ImageEditService:
 
                 status = result.get("status")
                 if status == "success":
-                    return result.get("output", {}).get("file_url")
+                    file_url = result.get("output", {}).get("file_url")
+                    if not file_url:
+                        raise RuntimeError("任务成功但未返回 file_url")
                 if status in {"failed", "cancelled"}:
                     raise RuntimeError(f"任务失败: {status}")
 
