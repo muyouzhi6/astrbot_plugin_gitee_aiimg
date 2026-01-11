@@ -100,5 +100,62 @@
             "step": 1
         },
         "default": 10
+    },
+    "edit_base_url": {
+        "description": "图生图 API Base URL",
+        "hint": "图生图 API 地址，留空则使用文生图的 base_url",
+        "type": "string",
+        "default": ""
+    },
+    "edit_api_key": {
+        "description": "图生图 API 密钥",
+        "type": "list",
+        "hint": "图生图 API Key，留空则使用文生图的 api_key",
+        "default": []
+    },
+    "edit_model": {
+        "description": "图生图模型名称",
+        "hint": "例如: Qwen-Image-Edit-2511",
+        "type": "string",
+        "default": "Qwen-Image-Edit-2511"
+    },
+    "edit_num_inference_steps": {
+        "description": "图生图推理步数",
+        "hint": "图生图推理步数，默认 4",
+        "type": "int",
+        "slider": {
+            "min": 1,
+            "max": 20,
+            "step": 1
+        },
+        "default": 4
+    },
+    "edit_guidance_scale": {
+        "description": "图生图引导系数",
+        "hint": "控制生成图片与提示词的一致性，默认 1.0",
+        "type": "float",
+        "default": 1.0
+    },
+    "edit_poll_interval": {
+        "description": "图生图轮询间隔(秒)",
+        "hint": "轮询任务状态的间隔时间，默认 5 秒",
+        "type": "int",
+        "slider": {
+            "min": 1,
+            "max": 30,
+            "step": 1
+        },
+        "default": 5
+    },
+    "edit_poll_timeout": {
+        "description": "图生图轮询超时(秒)",
+        "hint": "轮询超时时间，默认 300 秒(5分钟)",
+        "type": "int",
+        "slider": {
+            "min": 60,
+            "max": 600,
+            "step": 30
+        },
+        "default": 300
     }
 }
