@@ -4,6 +4,8 @@ from pathlib import Path
 
 import aiohttp
 
+from astrbot.api import logger
+
 from .image_manager import ImageManager
 
 EDIT_TASK_TYPES = {"id", "style", "subject", "background", "element"}
@@ -32,7 +34,6 @@ class ImageEditService:
             self._session = aiohttp.ClientSession()
         return self._session
 
-
     def _next_key(self) -> str:
         if not self.api_keys:
             raise RuntimeError("没有可用的 edit API Key")
@@ -45,10 +46,9 @@ class ImageEditService:
         prompt: str,
         images: list[bytes],
         task_types: Iterable[str],
-    ) -> tuple[str, str]:
+        api_key: str,
+    ) -> str:
         session = await self._session_get()
-        api_key = self._next_key()
-
         data = aiohttp.FormData()
         data.add_field("prompt", prompt)
         data.add_field("model", self.econf["model"])
@@ -66,7 +66,6 @@ class ImageEditService:
                 filename=f"image_{i}.jpg",
                 content_type="image/jpeg",
             )
-
         async with session.post(
             f"{self.base_url}/async/images/edits",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -80,7 +79,7 @@ class ImageEditService:
             if not task_id:
                 raise RuntimeError("未返回 task_id")
 
-            return task_id, api_key
+            return task_id
 
     async def _poll_task(self, task_id: str, api_key: str) -> str:
         session = await self._session_get()
@@ -88,7 +87,7 @@ class ImageEditService:
 
         max_rounds = self.econf["poll_timeout"] // self.econf["poll_interval"]
 
-        for _ in range(max_rounds):
+        for i in range(max_rounds):
             async with session.get(
                 url,
                 headers={"Authorization": f"Bearer {api_key}"},
@@ -100,9 +99,10 @@ class ImageEditService:
                     file_url = result.get("output", {}).get("file_url")
                     if not file_url:
                         raise RuntimeError("任务成功但未返回 file_url")
+                    return file_url
                 if status in {"failed", "cancelled"}:
                     raise RuntimeError(f"任务失败: {status}")
-
+            logger.debug(f"[图生图轮询] 第{i + 1}轮任务状态：{status}")
             await asyncio.sleep(self.econf["poll_interval"])
 
         raise TimeoutError("图生图任务超时")
@@ -115,7 +115,7 @@ class ImageEditService:
     ) -> Path:
         if not images:
             raise ValueError("至少需要一张图片")
-
-        task_id, key = await self._create_task(prompt, images, task_types)
-        file_url = await self._poll_task(task_id, key)
+        api_key = self._next_key()
+        task_id = await self._create_task(prompt, images, task_types, api_key)
+        file_url = await self._poll_task(task_id, api_key)
         return await self.imgr.download_image(file_url)

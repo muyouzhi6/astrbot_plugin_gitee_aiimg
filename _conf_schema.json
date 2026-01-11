@@ -167,7 +167,7 @@
         "default": 50
     },
     "debounce_interval": {
-        "description": "防抖时长",
+        "description": "防抖时长（秒）",
         "hint": "防抖时间内无法重复提交生图请求，每个用户单独计时",
         "type": "int",
         "slider": {
