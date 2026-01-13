@@ -49,7 +49,7 @@
                 "description": "负面提示词",
                 "hint": "用于指定不希望出现在生成图片中的内容",
                 "type": "text",
-                "default": "low quality, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, normal quality, jpeg artifacts, signature, watermark, username, blurry"
+                "default": ""
             },
             "num_inference_steps": {
                 "description": "推理步数",
