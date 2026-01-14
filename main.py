@@ -53,10 +53,77 @@ class GiteeAIImage(Star):
         self.draw = ImageDrawService(self.config, self.imgr)
         self.edit = EditRouter(self.config, self.imgr)
 
+        # 动态注册预设命令 (方案C: /手办化 直接触发)
+        self._register_preset_commands()
+
         logger.info(
             f"[GiteeAIImage] 插件初始化完成: "
             f"改图后端={self.edit.get_available_backends()}, "
             f"预设={len(self.edit.get_preset_names())}个"
+        )
+
+    def _register_preset_commands(self):
+        """动态注册预设命令
+
+        为每个预设创建对应的命令，如 /手办化, /Q版化 等
+        同时支持 /g手办化 (强制Gemini) 和 /q手办化 (强制千问)
+        """
+        preset_names = self.edit.get_preset_names()
+        if not preset_names:
+            return
+
+        for preset_name in preset_names:
+            # 创建闭包捕获 preset_name
+            self._create_and_register_preset_handler(preset_name)
+
+        logger.info(f"[GiteeAIImage] 已注册 {len(preset_names)} 个预设命令")
+
+    def _create_and_register_preset_handler(self, preset_name: str):
+        """为单个预设创建并注册命令处理器"""
+
+        # 默认后端命令: /手办化
+        async def preset_handler(event: AstrMessageEvent):
+            await self._do_edit_direct(event, "", preset=preset_name)
+
+        preset_handler.__name__ = f"preset_{preset_name}"
+        preset_handler.__doc__ = f"预设改图: {preset_name}"
+
+        self.context.register_commands(
+            star_name="astrbot_plugin_gitee",
+            command_name=preset_name,
+            desc=f"预设改图: {preset_name}",
+            priority=5,
+            awaitable=preset_handler,
+        )
+
+        # Gemini 强制命令: /g手办化
+        async def preset_gemini_handler(event: AstrMessageEvent):
+            await self._do_edit_direct(event, "", backend="gemini", preset=preset_name)
+
+        preset_gemini_handler.__name__ = f"preset_g_{preset_name}"
+        preset_gemini_handler.__doc__ = f"预设改图(Gemini): {preset_name}"
+
+        self.context.register_commands(
+            star_name="astrbot_plugin_gitee",
+            command_name=f"g{preset_name}",
+            desc=f"预设改图(Gemini): {preset_name}",
+            priority=5,
+            awaitable=preset_gemini_handler,
+        )
+
+        # 千问强制命令: /q手办化
+        async def preset_qwen_handler(event: AstrMessageEvent):
+            await self._do_edit_direct(event, "", backend="gitee", preset=preset_name)
+
+        preset_qwen_handler.__name__ = f"preset_q_{preset_name}"
+        preset_qwen_handler.__doc__ = f"预设改图(千问): {preset_name}"
+
+        self.context.register_commands(
+            star_name="astrbot_plugin_gitee",
+            command_name=f"q{preset_name}",
+            desc=f"预设改图(千问): {preset_name}",
+            priority=5,
+            awaitable=preset_qwen_handler,
         )
 
     async def terminate(self):
@@ -320,6 +387,74 @@ Gemini: 4K高清，效果好，需代理
 
     # ==================== 内部方法 ====================
 
+    async def _do_edit_direct(
+        self,
+        event: AstrMessageEvent,
+        prompt: str,
+        backend: str | None = None,
+        preset: str | None = None,
+    ):
+        """改图执行入口 (非 generator 版本，用于动态注册的命令)
+
+        使用 event.send() 直接发送消息，不使用 yield
+        """
+        user_id = event.get_sender_id()
+        request_id = f"edit_{user_id}"
+
+        # 防抖
+        if self.debouncer.hit(request_id):
+            await event.send(event.plain_result("操作太快了，请稍后再试"))
+            return
+
+        # 获取图片
+        image_segs = await get_images_from_event(event)
+        if not image_segs:
+            await event.send(event.plain_result(
+                "请发送或引用图片！\n"
+                "用法: 发送图片 + 命令\n"
+                "或: 引用图片消息 + 命令"
+            ))
+            return
+
+        bytes_images = [
+            base64.b64decode(await seg.convert_to_base64())
+            for seg in image_segs
+        ]
+
+        # 并发控制 (原子操作)
+        async with self._processing_lock:
+            if request_id in self.processing_users:
+                await event.send(event.plain_result("您有正在进行的改图任务，请稍候..."))
+                return
+            self.processing_users.add(request_id)
+
+        try:
+            # 确定显示名称
+            backend_name = backend or self.config.get("edit", {}).get("default_backend", "gemini")
+            display_name = preset or prompt[:20] or "改图"
+
+            await event.send(event.plain_result(f"🎨 [{backend_name}] {display_name} 处理中..."))
+
+            t_start = time.perf_counter()
+            image_path = await self.edit.edit(
+                prompt=prompt,
+                images=bytes_images,
+                backend=backend,
+                preset=preset,
+            )
+            t_end = time.perf_counter()
+
+            await event.send(event.chain_result([
+                Image.fromFileSystem(str(image_path)),
+                Plain(f"\n✅ [{backend_name}] 完成 ({t_end - t_start:.1f}s)")
+            ]))
+
+        except Exception as e:
+            logger.error(f"[改图] 失败: {e}", exc_info=True)
+            await event.send(event.plain_result(f"改图失败: {str(e)}"))
+        finally:
+            self.processing_users.discard(request_id)
+
     async def _do_edit(
         self,
         event: AstrMessageEvent,
@@ -327,7 +462,13 @@ Gemini: 4K高清，效果好，需代理
         backend: str | None = None,
         preset: str | None = None,
     ):
-        """统一改图执行入口"""
+        """统一改图执行入口
+
+        预设触发逻辑:
+        1. 如果 preset 参数已指定，直接使用
+        2. 否则检查 prompt 是否匹配预设名，若匹配则自动转为预设
+        3. 都不匹配则作为普通提示词处理
+        """
         user_id = event.get_sender_id()
         request_id = f"edit_{user_id}"
 
@@ -335,6 +476,15 @@ Gemini: 4K高清，效果好，需代理
         if self.debouncer.hit(request_id):
             yield event.plain_result("操作太快了，请稍后再试")
             return
+
+        # 预设自动检测: prompt 完全匹配预设名时，自动转为预设
+        if not preset and prompt:
+            prompt_stripped = prompt.strip()
+            preset_names = self.edit.get_preset_names()
+            if prompt_stripped in preset_names:
+                preset = prompt_stripped
+                prompt = ""  # 清空 prompt，使用预设的提示词
+                logger.debug(f"[改图] 自动匹配预设: {preset}")
 
         # 获取图片
         image_segs = await get_images_from_event(event)
