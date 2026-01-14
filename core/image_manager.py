@@ -34,22 +34,29 @@ class ImageManager:
 
     async def download_image(self, url: str) -> Path:
         """下载远程图片并保存到本地，返回文件路径"""
+        t0 = time.time()
         session = await self._session_get()
         async with session.get(url) as resp:
             if resp.status != 200:
                 raise RuntimeError(f"图片下载失败 HTTP {resp.status}")
             data = await resp.read()
+        logger.info(f"[ImageManager] 网络下载耗时: {time.time() - t0:.2f}s, 大小: {len(data)} bytes")
 
         return await self.save_image(data)
 
     async def save_image(self, data: bytes) -> Path:
         """保存 bytes 图片到本地"""
+        t0 = time.time()
         filename = f"{int(time.time())}_{id(data)}.jpg"
         path = self.image_dir / filename
 
         async with aiofiles.open(path, "wb") as f:
             await f.write(data)
+        
+        t1 = time.time()
         await self.cleanup_old_images()
+        logger.info(f"[ImageManager] 保存耗时: {t1 - t0:.2f}s, 清理耗时: {time.time() - t1:.2f}s")
+        
         return path
 
     async def save_base64_image(self, b64: str) -> Path:
