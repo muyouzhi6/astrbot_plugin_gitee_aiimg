@@ -91,67 +91,178 @@
         "hint": "",
         "type": "object",
         "items": {
-            "base_url": {
-                "description": "图生图 API Base URL",
-                "hint": "图生图 API 地址",
+            "default_backend": {
+                "description": "默认改图后端",
+                "hint": "gemini=Gemini原生API(支持4K), gitee=Gitee千问模型",
                 "type": "string",
-                "default": "https://ai.gitee.com/v1"
+                "options": ["gemini", "gitee"],
+                "default": "gemini"
             },
-            "api_keys": {
-                "description": "图生图 API 密钥",
+            "fallback": {
+                "description": "降级配置",
+                "hint": "",
+                "type": "object",
+                "items": {
+                    "enabled": {
+                        "description": "启用自动降级",
+                        "hint": "主后端失败后自动切换到备用后端",
+                        "type": "bool",
+                        "default": true
+                    },
+                    "max_retries": {
+                        "description": "主后端最大重试次数",
+                        "hint": "重试N次全部失败后才降级到备用后端",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 5,
+                            "step": 1
+                        },
+                        "default": 2
+                    },
+                    "retry_delay": {
+                        "description": "重试间隔(秒)",
+                        "hint": "使用指数退避：第1次等待N秒，第2次等待2N秒...",
+                        "type": "int",
+                        "slider": {
+                            "min": 1,
+                            "max": 10,
+                            "step": 1
+                        },
+                        "default": 2
+                    }
+                }
+            },
+            "gitee": {
+                "description": "Gitee 千问后端配置",
+                "hint": "",
+                "type": "object",
+                "items": {
+                    "base_url": {
+                        "description": "API Base URL",
+                        "hint": "Gitee AI API 地址",
+                        "type": "string",
+                        "default": "https://ai.gitee.com/v1"
+                    },
+                    "api_keys": {
+                        "description": "API 密钥",
+                        "type": "list",
+                        "hint": "留空则使用文生图的 api_keys",
+                        "default": []
+                    },
+                    "model": {
+                        "description": "模型名称",
+                        "type": "string",
+                        "default": "Qwen-Image-Edit-2511",
+                        "hint": "例如: Qwen-Image-Edit-2511"
+                    },
+                    "num_inference_steps": {
+                        "description": "推理步数",
+                        "hint": "图生图推理步数，默认 4",
+                        "type": "int",
+                        "slider": {
+                            "min": 1,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": 4
+                    },
+                    "guidance_scale": {
+                        "description": "引导系数",
+                        "hint": "控制生成图片与提示词的一致性，默认 1.0",
+                        "type": "float",
+                        "slider": {
+                            "min": 1,
+                            "max": 5,
+                            "step": 0.1
+                        },
+                        "default": 1.0
+                    },
+                    "poll_interval": {
+                        "description": "轮询间隔(秒)",
+                        "hint": "轮询任务状态的间隔时间，默认 5 秒",
+                        "type": "int",
+                        "slider": {
+                            "min": 1,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": 5
+                    },
+                    "poll_timeout": {
+                        "description": "轮询超时(秒)",
+                        "hint": "轮询超时时间，默认 300 秒(5分钟)",
+                        "type": "int",
+                        "slider": {
+                            "min": 60,
+                            "max": 600,
+                            "step": 10
+                        },
+                        "default": 300
+                    }
+                }
+            },
+            "gemini": {
+                "description": "Gemini 后端配置",
+                "hint": "",
+                "type": "object",
+                "items": {
+                    "api_url": {
+                        "description": "API Base URL",
+                        "hint": "Gemini 官方或代理地址",
+                        "type": "string",
+                        "default": "https://generativelanguage.googleapis.com"
+                    },
+                    "api_keys": {
+                        "description": "API 密钥池",
+                        "type": "list",
+                        "hint": "支持多 Key 轮询，至少配置一个",
+                        "default": [],
+                        "obvious_hint": true
+                    },
+                    "model": {
+                        "description": "模型名称",
+                        "type": "string",
+                        "default": "gemini-2.0-flash-preview-image-generation",
+                        "hint": "支持图片生成的 Gemini 模型"
+                    },
+                    "resolution": {
+                        "description": "输出分辨率",
+                        "hint": "4K 可获得最高质量输出",
+                        "type": "string",
+                        "options": ["1K", "2K", "4K"],
+                        "default": "4K"
+                    },
+                    "use_proxy": {
+                        "description": "启用代理",
+                        "hint": "是否使用代理访问 Gemini API",
+                        "type": "bool",
+                        "default": false
+                    },
+                    "proxy_url": {
+                        "description": "代理地址",
+                        "hint": "格式: http://127.0.0.1:7890",
+                        "type": "string",
+                        "default": ""
+                    },
+                    "timeout": {
+                        "description": "请求超时(秒)",
+                        "hint": "API 请求超时时间",
+                        "type": "int",
+                        "slider": {
+                            "min": 60,
+                            "max": 300,
+                            "step": 10
+                        },
+                        "default": 120
+                    }
+                }
+            },
+            "presets": {
+                "description": "自定义预设提示词",
+                "hint": "格式: 触发词:英文提示词。内置预设: 手办化/Q版化/动漫化/赛博朋克/油画风/水彩风/素描风/像素风",
                 "type": "list",
-                "hint": "图生图 API Key，留空则使用文生图的 api_key",
                 "default": []
-            },
-            "model": {
-                "description": "模型名称",
-                "type": "string",
-                "default": "Qwen-Image-Edit-2511",
-                "hint": "例如: Qwen-Image-Edit-2511"
-            },
-            "num_inference_steps": {
-                "description": "推理步数",
-                "hint": "图生图推理步数，默认 4",
-                "type": "int",
-                "slider": {
-                    "min": 1,
-                    "max": 20,
-                    "step": 1
-                },
-                "default": 4
-            },
-            "guidance_scale": {
-                "description": "引导系数",
-                "hint": "图生图引导系数，控制生成图片与提示词的一致性，默认 1.0",
-                "type": "float",
-                "slider": {
-                    "min": 1,
-                    "max": 5,
-                    "step": 0.1
-                },
-                "default": 1.0
-            },
-            "poll_interval": {
-                "description": "轮询间隔(秒)",
-                "hint": "图生图轮询任务状态的间隔时间，默认 5 秒",
-                "type": "int",
-                "slider": {
-                    "min": 1,
-                    "max": 20,
-                    "step": 1
-                },
-                "default": 5
-            },
-            "poll_timeout": {
-                "description": "轮询超时(秒)",
-                "hint": "图生图轮询超时时间，默认 300 秒(5分钟)",
-                "type": "int",
-                "slider": {
-                    "min": 60,
-                    "max": 600,
-                    "step": 10
-                },
-                "default": 300
             }
         }
     },

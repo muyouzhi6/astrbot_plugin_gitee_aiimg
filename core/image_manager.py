@@ -67,7 +67,7 @@ class ImageManager:
     async def cleanup_old_images(self) -> None:
         """清理旧图片（按比例清理，默认清一半）"""
         try:
-            max_keep: int = self.config["max_cached_images"]
+            max_keep: int = self.config.get("max_cached_images", 50)
 
             images: list[Path] = list(self.image_dir.iterdir())
             total = len(images)
