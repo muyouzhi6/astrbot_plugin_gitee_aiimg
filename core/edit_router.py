@@ -27,42 +27,8 @@ if TYPE_CHECKING:
 EditBackendType = Union[GeminiEditBackend, GiteeEditBackend]
 
 
-# 内置预设提示词
-BUILTIN_PRESETS: dict[str, str] = {
-    "手办化": (
-        "Transform this image into a high-quality collectible figurine/action figure style. "
-        "Maintain the subject's facial features and identity. "
-        "Add detailed sculpting, glossy finish, and display base."
-    ),
-    "Q版化": (
-        "Transform into cute chibi/Q-version style with big head and small body proportions. "
-        "Keep the character recognizable with exaggerated cute features."
-    ),
-    "动漫化": (
-        "Transform into anime/manga art style with vibrant colors, "
-        "clean lines, and expressive features typical of Japanese animation."
-    ),
-    "赛博朋克": (
-        "Transform into cyberpunk style with neon lights, futuristic elements, "
-        "holographic effects, and dark urban atmosphere."
-    ),
-    "油画风": (
-        "Transform into oil painting style with visible brushstrokes, "
-        "rich textures, and classical artistic composition."
-    ),
-    "水彩风": (
-        "Transform into watercolor painting style with soft edges, "
-        "translucent color washes, and delicate artistic effects."
-    ),
-    "素描风": (
-        "Transform into pencil sketch style with detailed line work, "
-        "shading techniques, and artistic drawing aesthetics."
-    ),
-    "像素风": (
-        "Transform into pixel art style with retro 8-bit/16-bit aesthetics, "
-        "limited color palette, and blocky pixel details."
-    ),
-}
+# 内置预设提示词 (留空，用户可通过配置自定义)
+BUILTIN_PRESETS: dict[str, str] = {}
 
 
 class EditRouter:
