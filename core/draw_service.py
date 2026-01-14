@@ -1,9 +1,20 @@
+import time
 from pathlib import Path
 
 from openai import AsyncOpenAI
 from openai.types.images_response import ImagesResponse
 
+from astrbot.api import logger
+
 from .image_manager import ImageManager
+
+# 不支持 negative_prompt 的模型（会把负向提示词当正向处理，导致出图畸形）
+MODELS_WITHOUT_NEGATIVE_PROMPT = frozenset({
+    "z-image-turbo",
+    "z-image-base",
+    "flux.1-dev",
+    "flux.1-schnell",
+})
 
 
 class ImageDrawService:
@@ -58,23 +69,38 @@ class ImageDrawService:
         }
 
         if self.dconf.get("negative_prompt"):
-            kwargs["extra_body"]["negative_prompt"] = self.dconf["negative_prompt"]
+            # 部分模型不支持 negative_prompt，会把它当正向提示词处理导致出图畸形
+            model_name = self.dconf["model"].lower()
+            if model_name not in MODELS_WITHOUT_NEGATIVE_PROMPT:
+                kwargs["extra_body"]["negative_prompt"] = self.dconf["negative_prompt"]
 
         kwargs["size"] = size or self.dconf["size"]
 
+        t0 = time.time()
         try:
             resp: ImagesResponse = await client.images.generate(**kwargs)
         except Exception as e:
+            logger.error(f"[生图] API 调用失败，耗时: {time.time() - t0:.2f}s")
             self._raise_api_error(e)
+            raise  # never reached, but makes type checker happy
+
+        api_time = time.time() - t0
+        logger.info(f"[生图] API 响应耗时: {api_time:.2f}s")
 
         if not resp.data:
             raise RuntimeError("未返回图片数据")
 
         img = resp.data[0]
+        
+        t1 = time.time()
         if img.url:
-            return await self.imgr.download_image(img.url)
+            result = await self.imgr.download_image(img.url)
+            logger.info(f"[生图] 下载图片耗时: {time.time() - t1:.2f}s, URL: {img.url[:60]}...")
+            return result
         if img.b64_json:
-            return await self.imgr.save_base64_image(img.b64_json)
+            result = await self.imgr.save_base64_image(img.b64_json)
+            logger.info(f"[生图] 保存 base64 图片耗时: {time.time() - t1:.2f}s")
+            return result
 
         raise RuntimeError("返回数据不包含图片")
 
