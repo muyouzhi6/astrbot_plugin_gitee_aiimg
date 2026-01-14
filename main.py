@@ -187,68 +187,6 @@ class GiteeAIImage(Star):
         async for result in self._do_edit(event, prompt, backend="gitee"):
             yield result
 
-    # ==================== 预设命令 ====================
-
-    @filter.command("手办化")
-    async def preset_figurine(self, event: AstrMessageEvent):
-        """手办化效果"""
-        async for result in self._do_edit(event, "", preset="手办化"):
-            yield result
-
-    @filter.command("g手办化")
-    async def preset_figurine_gemini(self, event: AstrMessageEvent):
-        """手办化效果 (Gemini)"""
-        async for result in self._do_edit(event, "", backend="gemini", preset="手办化"):
-            yield result
-
-    @filter.command("q手办化")
-    async def preset_figurine_qwen(self, event: AstrMessageEvent):
-        """手办化效果 (千问)"""
-        async for result in self._do_edit(event, "", backend="gitee", preset="手办化"):
-            yield result
-
-    @filter.command("Q版化")
-    async def preset_chibi(self, event: AstrMessageEvent):
-        """Q版化效果"""
-        async for result in self._do_edit(event, "", preset="Q版化"):
-            yield result
-
-    @filter.command("动漫化")
-    async def preset_anime(self, event: AstrMessageEvent):
-        """动漫化效果"""
-        async for result in self._do_edit(event, "", preset="动漫化"):
-            yield result
-
-    @filter.command("赛博朋克")
-    async def preset_cyberpunk(self, event: AstrMessageEvent):
-        """赛博朋克效果"""
-        async for result in self._do_edit(event, "", preset="赛博朋克"):
-            yield result
-
-    @filter.command("油画风")
-    async def preset_oil(self, event: AstrMessageEvent):
-        """油画风效果"""
-        async for result in self._do_edit(event, "", preset="油画风"):
-            yield result
-
-    @filter.command("水彩风")
-    async def preset_watercolor(self, event: AstrMessageEvent):
-        """水彩风效果"""
-        async for result in self._do_edit(event, "", preset="水彩风"):
-            yield result
-
-    @filter.command("素描风")
-    async def preset_sketch(self, event: AstrMessageEvent):
-        """素描风效果"""
-        async for result in self._do_edit(event, "", preset="素描风"):
-            yield result
-
-    @filter.command("像素风")
-    async def preset_pixel(self, event: AstrMessageEvent):
-        """像素风效果"""
-        async for result in self._do_edit(event, "", preset="像素风"):
-            yield result
-
     # ==================== 管理命令 ====================
 
     @filter.command("预设列表")
@@ -258,19 +196,27 @@ class GiteeAIImage(Star):
         backends = self.edit.get_available_backends()
         default = self.config.get("edit", {}).get("default_backend", "gemini")
 
-        msg = "📋 改图预设列表\n"
+        if not presets:
+            msg = "📋 改图预设列表\n"
+            msg += "━━━━━━━━━━━━━━\n"
+            msg += f"🔧 可用后端: {', '.join(backends)}\n"
+            msg += f"⭐ 默认后端: {default}\n"
+            msg += "━━━━━━━━━━━━━━\n"
+            msg += "📌 暂无预设\n"
+            msg += "━━━━━━━━━━━━━━\n"
+            msg += "💡 在配置文件 edit.presets 中添加:\n"
+            msg += '  格式: "触发词:英文提示词"'
+        else:
+            msg = "📋 改图预设列表\n"
+            msg += "━━━━━━━━━━━━━━\n"
+            msg += f"🔧 可用后端: {', '.join(backends)}\n"
+            msg += f"⭐ 默认后端: {default}\n"
+            msg += "━━━━━━━━━━━━━━\n"
+            msg += "📌 预设:\n"
+            for name in presets:
+                msg += f"  • {name}\n"
         msg += "━━━━━━━━━━━━━━\n"
-        msg += f"🔧 可用后端: {', '.join(backends)}\n"
-        msg += f"⭐ 默认后端: {default}\n"
-        msg += "━━━━━━━━━━━━━━\n"
-        msg += "📌 预设:\n"
-        for name in presets:
-            msg += f"  • {name}\n"
-        msg += "━━━━━━━━━━━━━━\n"
-        msg += "💡 用法:\n"
-        msg += "  /手办化 [图片]\n"
-        msg += "  /g手办化 [图片] (强制Gemini)\n"
-        msg += "  /q手办化 [图片] (强制千问)"
+        msg += "💡 用法: /aiedit <提示词> [图片]"
 
         yield event.plain_result(msg)
 
@@ -284,23 +230,18 @@ class GiteeAIImage(Star):
 /gedit <提示词>   强制 Gemini (4K)
 /qedit <提示词>   强制千问
 
-━━ 预设命令 ━━
-/手办化  /Q版化  /动漫化
-/赛博朋克  /油画风  /水彩风
-/素描风  /像素风
-
-预设也支持前缀:
-/g手办化 = Gemini 手办化
-/q手办化 = 千问手办化
-
 ━━ 使用方式 ━━
 1. 发送图片 + 命令
 2. 引用图片消息 + 命令
-3. 先发命令再发图片
 
 ━━ 后端说明 ━━
 Gemini: 4K高清，效果好，需代理
-千问: 国内直连，速度快，效果稳定"""
+千问: 国内直连，速度快，效果稳定
+
+━━ 自定义预设 ━━
+在配置 edit.presets 中添加:
+格式: "触发词:英文提示词"
+示例: "手办化:Transform into figurine style" """
 
         yield event.plain_result(msg)
 
