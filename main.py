@@ -1,13 +1,25 @@
+"""
+Gitee AI 图像生成插件
+
+功能:
+- 文生图 (z-image-turbo)
+- 图生图/改图 (Gemini / Gitee 千问，可切换)
+- 预设提示词
+- 智能降级
+"""
+
+import asyncio
 import base64
+import time
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import Image
+from astrbot.api.message_components import Image, Plain
 from astrbot.api.star import Context, Star, StarTools
 
 from .core.debouncer import Debouncer
 from .core.draw_service import ImageDrawService
-from .core.edit_service import ImageEditService
+from .core.edit_router import EditRouter
 from .core.image_manager import ImageManager
 from .core.utils import get_images_from_event
 
@@ -31,21 +43,29 @@ class GiteeAIImage(Star):
         self.config = config
         self.data_dir = StarTools.get_data_dir()
 
-        # 并发控制
+        # 并发控制 (带锁保护)
         self.processing_users: set[str] = set()
+        self._processing_lock = asyncio.Lock()
 
     async def initialize(self):
         self.debouncer = Debouncer(self.config)
         self.imgr = ImageManager(self.config, self.data_dir)
         self.draw = ImageDrawService(self.config, self.imgr)
-        self.edit = ImageEditService(self.config, self.imgr)
+        self.edit = EditRouter(self.config, self.imgr)
 
+        logger.info(
+            f"[GiteeAIImage] 插件初始化完成: "
+            f"改图后端={self.edit.get_available_backends()}, "
+            f"预设={len(self.edit.get_preset_names())}个"
+        )
 
     async def terminate(self):
         self.debouncer.clear_all()
         await self.imgr.close()
         await self.draw.close()
         await self.edit.close()
+
+    # ==================== 文生图 ====================
 
     @filter.llm_tool()
     async def gitee_draw_image(self, event: AstrMessageEvent, prompt: str):
@@ -63,17 +83,23 @@ class GiteeAIImage(Star):
         if self.debouncer.hit(request_id):
             return "操作太快了，请稍后再试。"
 
-        if request_id in self.processing_users:
-            return "您有正在进行的生图任务，请稍候..."
-        self.processing_users.add(request_id)
+        # 并发控制 (原子操作)
+        async with self._processing_lock:
+            if request_id in self.processing_users:
+                return "您有正在进行的生图任务，请稍候..."
+            self.processing_users.add(request_id)
 
         try:
+            t_start = time.perf_counter()
             image_path = await self.draw.generate(prompt)
+            t_end = time.perf_counter()
+
             await event.send(event.chain_result([Image.fromFileSystem(str(image_path))]))
+            logger.info(f"[文生图] 完成: {prompt[:30]}..., 耗时={t_end - t_start:.2f}s")
             return f"图片已生成并发送。Prompt: {prompt}"
 
         except Exception as e:
-            logger.error(f"生图失败: {e}")
+            logger.error(f"[文生图] 失败: {e}")
             return f"生成图片时遇到问题: {str(e)}"
         finally:
             self.processing_users.discard(request_id)
@@ -106,82 +132,179 @@ class GiteeAIImage(Star):
             yield event.plain_result("操作太快了，请稍后再试")
             return
 
-        # 并发控制
-        if request_id in self.processing_users:
-            yield event.plain_result("您有正在进行的生图任务，请稍候...")
-            return
-        self.processing_users.add(request_id)
+        # 并发控制 (原子操作)
+        async with self._processing_lock:
+            if request_id in self.processing_users:
+                yield event.plain_result("您有正在进行的生图任务，请稍候...")
+                return
+            self.processing_users.add(request_id)
 
         try:
+            t_start = time.perf_counter()
+            yield event.plain_result(f"🎨 正在生成图片...")
+
             image_path = await self.draw.generate(prompt, size=size)
-            yield event.chain_result([Image.fromFileSystem(str(image_path))])
+            t_end = time.perf_counter()
+
+            yield event.chain_result([
+                Image.fromFileSystem(str(image_path)),
+                Plain(f"\n✅ 生成完成 ({t_end - t_start:.1f}s)")
+            ])
 
         except Exception as e:
-            logger.error(f"生图失败: {e}")
+            logger.error(f"[文生图] 失败: {e}")
             yield event.plain_result(f"生成图片失败: {str(e)}")
         finally:
             self.processing_users.discard(request_id)
 
-    @filter.command("aiedit", alias={"图生图"})
-    async def edit_image_command(self, event: AstrMessageEvent, prompt: str):
-        """aiedit <提示词> <任务类型>
-        支持任务类型: id(保持身份), style(风格迁移), subject(主体), background(背景), element(元素)
+    # ==================== 图生图/改图 ====================
+
+    @filter.command("aiedit", alias={"图生图", "改图"})
+    async def edit_image_default(self, event: AstrMessageEvent, prompt: str):
+        """使用默认后端改图
+
+        用法: /aiedit <提示词>
+        需要同时发送或引用图片
         """
-        # 解析参数
-        if not prompt:
-            yield event.plain_result(
-                "请提供提示词！使用方法：/aiedit <提示词> [任务类型]\n"
-                "示例: /aiedit 把背景换成海边 background\n"
-                "支持任务类型: id, style, subject, background, element"
-            )
-            return
-        types: list[str] = ["id"]
-        end_parts = prompt.rsplit(" ", 1)
-        if len(end_parts) > 1:
-            types = [t.strip() for t in end_parts[1].split(",")]
-            prompt = end_parts[0]
+        async for result in self._do_edit(event, prompt, backend=None):
+            yield result
 
-        # 请求ID
-        user_id = event.get_sender_id()
-        request_id = f"edit_{user_id}"
+    @filter.command("gedit", alias={"g改图"})
+    async def edit_image_gemini(self, event: AstrMessageEvent, prompt: str):
+        """使用 Gemini 改图
 
-        # 防抖检查
-        if self.debouncer.hit(request_id):
-            yield event.plain_result("操作太快了，请稍后再试。")
-            return
+        用法: /gedit <提示词>
+        """
+        async for result in self._do_edit(event, prompt, backend="gemini"):
+            yield result
 
-        # 提取图片
-        image_segs = await get_images_from_event(event)
-        if not image_segs:
-            yield event.plain_result(
-                "请在消息中附带需要编辑的图片！\n"
-                "使用方法：发送图片并附带 /aiedit <提示词>"
-            )
-            return
-        b64_images = [await seg.convert_to_base64() for seg in image_segs]
-        bytes_images = [base64.b64decode(b64) for b64 in b64_images]
+    @filter.command("qedit", alias={"q改图"})
+    async def edit_image_qwen(self, event: AstrMessageEvent, prompt: str):
+        """使用 Gitee 千问改图
 
-        # 并发控制
-        if request_id in self.processing_users:
-            yield event.plain_result("您有正在进行的图生图任务，请稍候...")
-            return
-        self.processing_users.add(request_id)
+        用法: /qedit <提示词>
+        """
+        async for result in self._do_edit(event, prompt, backend="gitee"):
+            yield result
 
-        # 请求
-        try:
-            image_path = await self.edit.edit(
-                prompt=prompt,
-                images=bytes_images,
-                task_types=types,
-            )
-            yield event.chain_result([Image.fromFileSystem(str(image_path))])
+    # ==================== 预设命令 ====================
 
-        except Exception as e:
-            logger.error(f"图生图失败: {e}")
-            yield event.plain_result(f"编辑图片失败: {str(e)}")
-        finally:
-            self.processing_users.discard(request_id)
+    @filter.command("手办化")
+    async def preset_figurine(self, event: AstrMessageEvent):
+        """手办化效果"""
+        async for result in self._do_edit(event, "", preset="手办化"):
+            yield result
 
+    @filter.command("g手办化")
+    async def preset_figurine_gemini(self, event: AstrMessageEvent):
+        """手办化效果 (Gemini)"""
+        async for result in self._do_edit(event, "", backend="gemini", preset="手办化"):
+            yield result
+
+    @filter.command("q手办化")
+    async def preset_figurine_qwen(self, event: AstrMessageEvent):
+        """手办化效果 (千问)"""
+        async for result in self._do_edit(event, "", backend="gitee", preset="手办化"):
+            yield result
+
+    @filter.command("Q版化")
+    async def preset_chibi(self, event: AstrMessageEvent):
+        """Q版化效果"""
+        async for result in self._do_edit(event, "", preset="Q版化"):
+            yield result
+
+    @filter.command("动漫化")
+    async def preset_anime(self, event: AstrMessageEvent):
+        """动漫化效果"""
+        async for result in self._do_edit(event, "", preset="动漫化"):
+            yield result
+
+    @filter.command("赛博朋克")
+    async def preset_cyberpunk(self, event: AstrMessageEvent):
+        """赛博朋克效果"""
+        async for result in self._do_edit(event, "", preset="赛博朋克"):
+            yield result
+
+    @filter.command("油画风")
+    async def preset_oil(self, event: AstrMessageEvent):
+        """油画风效果"""
+        async for result in self._do_edit(event, "", preset="油画风"):
+            yield result
+
+    @filter.command("水彩风")
+    async def preset_watercolor(self, event: AstrMessageEvent):
+        """水彩风效果"""
+        async for result in self._do_edit(event, "", preset="水彩风"):
+            yield result
+
+    @filter.command("素描风")
+    async def preset_sketch(self, event: AstrMessageEvent):
+        """素描风效果"""
+        async for result in self._do_edit(event, "", preset="素描风"):
+            yield result
+
+    @filter.command("像素风")
+    async def preset_pixel(self, event: AstrMessageEvent):
+        """像素风效果"""
+        async for result in self._do_edit(event, "", preset="像素风"):
+            yield result
+
+    # ==================== 管理命令 ====================
+
+    @filter.command("预设列表")
+    async def list_presets(self, event: AstrMessageEvent):
+        """列出所有可用预设"""
+        presets = self.edit.get_preset_names()
+        backends = self.edit.get_available_backends()
+        default = self.config.get("edit", {}).get("default_backend", "gemini")
+
+        msg = "📋 改图预设列表\n"
+        msg += "━━━━━━━━━━━━━━\n"
+        msg += f"🔧 可用后端: {', '.join(backends)}\n"
+        msg += f"⭐ 默认后端: {default}\n"
+        msg += "━━━━━━━━━━━━━━\n"
+        msg += "📌 预设:\n"
+        for name in presets:
+            msg += f"  • {name}\n"
+        msg += "━━━━━━━━━━━━━━\n"
+        msg += "💡 用法:\n"
+        msg += "  /手办化 [图片]\n"
+        msg += "  /g手办化 [图片] (强制Gemini)\n"
+        msg += "  /q手办化 [图片] (强制千问)"
+
+        yield event.plain_result(msg)
+
+    @filter.command("改图帮助")
+    async def edit_help(self, event: AstrMessageEvent):
+        """显示改图帮助"""
+        msg = """🎨 改图功能帮助
+
+━━ 基础命令 ━━
+/aiedit <提示词>  使用默认后端
+/gedit <提示词>   强制 Gemini (4K)
+/qedit <提示词>   强制千问
+
+━━ 预设命令 ━━
+/手办化  /Q版化  /动漫化
+/赛博朋克  /油画风  /水彩风
+/素描风  /像素风
+
+预设也支持前缀:
+/g手办化 = Gemini 手办化
+/q手办化 = 千问手办化
+
+━━ 使用方式 ━━
+1. 发送图片 + 命令
+2. 引用图片消息 + 命令
+3. 先发命令再发图片
+
+━━ 后端说明 ━━
+Gemini: 4K高清，效果好，需代理
+千问: 国内直连，速度快，效果稳定"""
+
+        yield event.plain_result(msg)
+
+    # ==================== LLM 工具 ====================
 
     @filter.llm_tool()
     async def gitee_edit_image(
@@ -189,7 +312,7 @@ class GiteeAIImage(Star):
         event: AstrMessageEvent,
         prompt: str,
         use_message_images: bool = True,
-        task_types: str = "id",
+        backend: str = "auto",
     ):
         """编辑用户发送的图片或引用的图片。当用户发送/引用了图片并希望修改、改图、换背景、换风格、换衣服、P图时调用此工具。
 
@@ -198,13 +321,12 @@ class GiteeAIImage(Star):
 
         重要提示：
         - 当消息中包含 [Image Caption: ...] 图片描述时，说明用户发送了图片，应调用此工具并设置 use_message_images=true
-        - gchat.qpic.cn 等 QQ 临时链接无法直接访问，必须使用 use_message_images=true 来获取
         - 调用成功后图片会自动发送给用户
 
         Args:
-            prompt(string): 图片编辑提示词，描述用户希望对图片做的修改，如"换成吊带裙"、"背景换成海边"、"转成动漫风格"等
-            use_message_images(boolean): 是否自动获取用户消息中的图片，默认 true（推荐）
-            task_types(string): 任务类型，逗号分隔。可选值: id(保持身份/默认), style(风格迁移), subject(主体替换), background(背景替换), element(元素编辑)。默认为 id
+            prompt(string): 图片编辑提示词，描述用户希望对图片做的修改
+            use_message_images(boolean): 是否自动获取用户消息中的图片，默认 true
+            backend(string): 使用的后端: auto=自动选择, gemini=Gemini, gitee=千问
         """
         user_id = event.get_sender_id()
         request_id = f"edit_{user_id}"
@@ -222,22 +344,102 @@ class GiteeAIImage(Star):
         if not bytes_images:
             return "请在消息中附带需要编辑的图片。提示：发送图片或引用图片后再发送修改指令。"
 
-        # 解析任务类型
-        types = [t.strip() for t in task_types.split(",") if t.strip()]
-
-        # 并发控制
-        if request_id in self.processing_users:
-            return "您有正在进行的图生图任务，请稍候..."
-        self.processing_users.add(request_id)
+        # 并发控制 (原子操作)
+        async with self._processing_lock:
+            if request_id in self.processing_users:
+                return "您有正在进行的图生图任务，请稍候..."
+            self.processing_users.add(request_id)
 
         try:
-            image_path = await self.edit.edit(prompt, bytes_images, types)
+            t_start = time.perf_counter()
+
+            # 确定后端
+            target_backend = None if backend == "auto" else backend
+
+            image_path = await self.edit.edit(
+                prompt=prompt,
+                images=bytes_images,
+                backend=target_backend,
+            )
+
+            t_end = time.perf_counter()
+
             await event.send(
                 event.chain_result([Image.fromFileSystem(str(image_path))])
             )
-            logger.info(f"[edit_image] 图生图完成: {prompt[:50]}...")
+            logger.info(f"[LLM改图] 完成: {prompt[:30]}..., 耗时={t_end - t_start:.2f}s")
+            return f"图片已编辑并发送。"
+
         except Exception as e:
-            logger.error(f"[edit_image] 图生图失败: {e}", exc_info=True)
+            logger.error(f"[LLM改图] 失败: {e}", exc_info=True)
             await event.send(event.plain_result(f"编辑图片失败: {str(e) or type(e).__name__}"))
+            return f"编辑失败: {e}"
+        finally:
+            self.processing_users.discard(request_id)
+
+    # ==================== 内部方法 ====================
+
+    async def _do_edit(
+        self,
+        event: AstrMessageEvent,
+        prompt: str,
+        backend: str | None = None,
+        preset: str | None = None,
+    ):
+        """统一改图执行入口"""
+        user_id = event.get_sender_id()
+        request_id = f"edit_{user_id}"
+
+        # 防抖
+        if self.debouncer.hit(request_id):
+            yield event.plain_result("操作太快了，请稍后再试")
+            return
+
+        # 获取图片
+        image_segs = await get_images_from_event(event)
+        if not image_segs:
+            yield event.plain_result(
+                "请发送或引用图片！\n"
+                "用法: 发送图片 + /aiedit <提示词>\n"
+                "或: 引用图片消息 + /aiedit <提示词>"
+            )
+            return
+
+        bytes_images = [
+            base64.b64decode(await seg.convert_to_base64())
+            for seg in image_segs
+        ]
+
+        # 并发控制 (原子操作)
+        async with self._processing_lock:
+            if request_id in self.processing_users:
+                yield event.plain_result("您有正在进行的改图任务，请稍候...")
+                return
+            self.processing_users.add(request_id)
+
+        try:
+            # 确定显示名称
+            backend_name = backend or self.config.get("edit", {}).get("default_backend", "gemini")
+            display_name = preset or prompt[:20] or "改图"
+
+            yield event.plain_result(f"🎨 [{backend_name}] {display_name} 处理中...")
+
+            t_start = time.perf_counter()
+            image_path = await self.edit.edit(
+                prompt=prompt,
+                images=bytes_images,
+                backend=backend,
+                preset=preset,
+            )
+            t_end = time.perf_counter()
+
+            yield event.chain_result([
+                Image.fromFileSystem(str(image_path)),
+                Plain(f"\n✅ [{backend_name}] 完成 ({t_end - t_start:.1f}s)")
+            ])
+
+        except Exception as e:
+            logger.error(f"[改图] 失败: {e}", exc_info=True)
+            yield event.plain_result(f"改图失败: {str(e)}")
         finally:
             self.processing_users.discard(request_id)
