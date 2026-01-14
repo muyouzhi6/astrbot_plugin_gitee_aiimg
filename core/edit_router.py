@@ -135,10 +135,16 @@ class EditRouter:
         if not self.backends:
             raise RuntimeError("无可用改图后端，请检查 API Key 配置")
 
-        # 1. 预设处理
+        # 1. 预设处理 (支持预设+追加提示词)
         if preset and preset in self.presets:
-            prompt = self.presets[preset]
-            logger.debug(f"[EditRouter] 使用预设 '{preset}'")
+            preset_prompt = self.presets[preset]
+            if prompt:
+                # 预设 + 追加提示词: "预设内容, 用户追加内容"
+                prompt = f"{preset_prompt}, {prompt}"
+                logger.debug(f"[EditRouter] 使用预设 '{preset}' + 追加: {prompt[:50]}...")
+            else:
+                prompt = preset_prompt
+                logger.debug(f"[EditRouter] 使用预设 '{preset}'")
 
         if not prompt:
             prompt = "Transform this image with artistic style"
@@ -177,7 +183,6 @@ class EditRouter:
 
         t_start = time.perf_counter()
         last_error: Exception | None = None
-        backend_instance = self.backends[backend]
 
         # 主后端重试
         for attempt in range(max_retries + 1):

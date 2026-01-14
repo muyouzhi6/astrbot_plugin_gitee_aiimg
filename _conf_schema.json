@@ -260,7 +260,7 @@
             },
             "presets": {
                 "description": "自定义预设提示词",
-                "hint": "格式: 触发词:英文提示词。内置预设: 手办化/Q版化/动漫化/赛博朋克/油画风/水彩风/素描风/像素风",
+                "hint": "格式: 触发词:英文提示词。例如: 手办化:Transform into figurine style",
                 "type": "list",
                 "default": []
             }

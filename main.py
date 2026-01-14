@@ -21,7 +21,7 @@ from .core.debouncer import Debouncer
 from .core.draw_service import ImageDrawService
 from .core.edit_router import EditRouter
 from .core.image_manager import ImageManager
-from .core.utils import get_images_from_event
+from .core.utils import close_session, get_images_from_event
 
 
 class GiteeAIImage(Star):
@@ -79,14 +79,20 @@ class GiteeAIImage(Star):
         logger.info(f"[GiteeAIImage] 已注册 {len(preset_names)} 个预设命令")
 
     def _create_and_register_preset_handler(self, preset_name: str):
-        """为单个预设创建并注册命令处理器"""
+        """为单个预设创建并注册命令处理器
+
+        支持: /手办化 [额外提示词]
+        例如: /手办化 加点金色元素
+        """
 
         # 默认后端命令: /手办化
         async def preset_handler(event: AstrMessageEvent):
-            await self._do_edit_direct(event, "", preset=preset_name)
+            # 提取命令后的额外提示词
+            extra_prompt = self._extract_extra_prompt(event, preset_name)
+            await self._do_edit_direct(event, extra_prompt, preset=preset_name)
 
         preset_handler.__name__ = f"preset_{preset_name}"
-        preset_handler.__doc__ = f"预设改图: {preset_name}"
+        preset_handler.__doc__ = f"预设改图: {preset_name} [额外提示词]"
 
         self.context.register_commands(
             star_name="astrbot_plugin_gitee",
@@ -98,10 +104,11 @@ class GiteeAIImage(Star):
 
         # Gemini 强制命令: /g手办化
         async def preset_gemini_handler(event: AstrMessageEvent):
-            await self._do_edit_direct(event, "", backend="gemini", preset=preset_name)
+            extra_prompt = self._extract_extra_prompt(event, f"g{preset_name}")
+            await self._do_edit_direct(event, extra_prompt, backend="gemini", preset=preset_name)
 
         preset_gemini_handler.__name__ = f"preset_g_{preset_name}"
-        preset_gemini_handler.__doc__ = f"预设改图(Gemini): {preset_name}"
+        preset_gemini_handler.__doc__ = f"预设改图(Gemini): {preset_name} [额外提示词]"
 
         self.context.register_commands(
             star_name="astrbot_plugin_gitee",
@@ -113,10 +120,11 @@ class GiteeAIImage(Star):
 
         # 千问强制命令: /q手办化
         async def preset_qwen_handler(event: AstrMessageEvent):
-            await self._do_edit_direct(event, "", backend="gitee", preset=preset_name)
+            extra_prompt = self._extract_extra_prompt(event, f"q{preset_name}")
+            await self._do_edit_direct(event, extra_prompt, backend="gitee", preset=preset_name)
 
         preset_qwen_handler.__name__ = f"preset_q_{preset_name}"
-        preset_qwen_handler.__doc__ = f"预设改图(千问): {preset_name}"
+        preset_qwen_handler.__doc__ = f"预设改图(千问): {preset_name} [额外提示词]"
 
         self.context.register_commands(
             star_name="astrbot_plugin_gitee",
@@ -126,11 +134,26 @@ class GiteeAIImage(Star):
             awaitable=preset_qwen_handler,
         )
 
+    def _extract_extra_prompt(self, event: AstrMessageEvent, command_name: str) -> str:
+        """从消息中提取命令后的额外提示词
+
+        例如: "/手办化 加点金色元素" -> "加点金色元素"
+        """
+        msg = event.message_str.strip()
+        # 移除命令前缀 (/, !, 等)
+        if msg and msg[0] in "/!！":
+            msg = msg[1:]
+        # 移除命令名
+        if msg.startswith(command_name):
+            msg = msg[len(command_name):].strip()
+        return msg
+
     async def terminate(self):
         self.debouncer.clear_all()
         await self.imgr.close()
         await self.draw.close()
         await self.edit.close()
+        await close_session()  # 关闭 utils.py 的 HTTP 会话
 
     # ==================== 文生图 ====================
 
