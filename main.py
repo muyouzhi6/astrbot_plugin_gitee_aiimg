@@ -8,18 +8,18 @@ Gitee AI 图像生成插件
 - 智能降级
 """
 
-import asyncio
 import base64
 import time
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import Image, Plain
+from astrbot.api.message_components import Image
 from astrbot.api.star import Context, Star, StarTools
 
 from .core.debouncer import Debouncer
 from .core.draw_service import ImageDrawService
 from .core.edit_router import EditRouter
+from .core.emoji_feedback import mark_failed, mark_processing, mark_success
 from .core.image_manager import ImageManager
 from .core.utils import close_session, get_images_from_event
 
@@ -42,10 +42,6 @@ class GiteeAIImage(Star):
         super().__init__(context)
         self.config = config
         self.data_dir = StarTools.get_data_dir()
-
-        # 并发控制 (带锁保护)
-        self.processing_users: set[str] = set()
-        self._processing_lock = asyncio.Lock()
 
     async def initialize(self):
         self.debouncer = Debouncer(self.config)
@@ -137,7 +133,12 @@ class GiteeAIImage(Star):
     def _extract_extra_prompt(self, event: AstrMessageEvent, command_name: str) -> str:
         """从消息中提取命令后的额外提示词
 
-        例如: "/手办化 加点金色元素" -> "加点金色元素"
+        支持格式:
+        - /手办化 加点金色元素 -> "加点金色元素"
+        - /手办化@张三 背景是星空 -> "背景是星空"
+        - /手办化@张三@李四 背景是星空 -> "背景是星空"
+
+        注意: message_str 中 @用户 会被替换为空格或移除
         """
         msg = event.message_str.strip()
         # 移除命令前缀 (/, !, 等)
@@ -145,8 +146,9 @@ class GiteeAIImage(Star):
             msg = msg[1:]
         # 移除命令名
         if msg.startswith(command_name):
-            msg = msg[len(command_name):].strip()
-        return msg
+            msg = msg[len(command_name):]
+        # 清理多余空格
+        return msg.strip()
 
     async def terminate(self):
         self.debouncer.clear_all()
@@ -173,12 +175,6 @@ class GiteeAIImage(Star):
         if self.debouncer.hit(request_id):
             return "操作太快了，请稍后再试。"
 
-        # 并发控制 (原子操作)
-        async with self._processing_lock:
-            if request_id in self.processing_users:
-                return "您有正在进行的生图任务，请稍候..."
-            self.processing_users.add(request_id)
-
         try:
             t_start = time.perf_counter()
             image_path = await self.draw.generate(prompt)
@@ -191,8 +187,6 @@ class GiteeAIImage(Star):
         except Exception as e:
             logger.error(f"[文生图] 失败: {e}")
             return f"生成图片时遇到问题: {str(e)}"
-        finally:
-            self.processing_users.discard(request_id)
 
     @filter.command("aiimg", alias={"文生图"})
     async def generate_image_command(self, event: AstrMessageEvent, prompt: str):
@@ -222,30 +216,27 @@ class GiteeAIImage(Star):
             yield event.plain_result("操作太快了，请稍后再试")
             return
 
-        # 并发控制 (原子操作)
-        async with self._processing_lock:
-            if request_id in self.processing_users:
-                yield event.plain_result("您有正在进行的生图任务，请稍候...")
-                return
-            self.processing_users.add(request_id)
+        # 标记处理中
+        await mark_processing(event)
 
         try:
             t_start = time.perf_counter()
-            yield event.plain_result(f"🎨 正在生成图片...")
-
             image_path = await self.draw.generate(prompt, size=size)
             t_end = time.perf_counter()
 
+            # 发送结果图片
             yield event.chain_result([
                 Image.fromFileSystem(str(image_path)),
-                Plain(f"\n✅ 生成完成 ({t_end - t_start:.1f}s)")
             ])
+
+            # 标记成功
+            await mark_success(event)
+            logger.info(f"[文生图] 完成: {prompt[:30] if prompt else '文生图'}..., 耗时={t_end - t_start:.2f}s")
 
         except Exception as e:
             logger.error(f"[文生图] 失败: {e}")
+            await mark_failed(event)
             yield event.plain_result(f"生成图片失败: {str(e)}")
-        finally:
-            self.processing_users.discard(request_id)
 
     # ==================== 图生图/改图 ====================
 
@@ -370,16 +361,14 @@ Gemini: 4K高清，效果好，需代理
         bytes_images: list[bytes] = []
         if use_message_images:
             image_segs = await get_images_from_event(event)
-            b64_images = [await seg.convert_to_base64() for seg in image_segs]
-            bytes_images = [base64.b64decode(b64) for b64 in b64_images]
+            for seg in image_segs:
+                try:
+                    b64 = await seg.convert_to_base64()
+                    bytes_images.append(base64.b64decode(b64))
+                except Exception as e:
+                    logger.warning(f"[LLM改图] 图片转换失败，跳过: {e}")
         if not bytes_images:
             return "请在消息中附带需要编辑的图片。提示：发送图片或引用图片后再发送修改指令。"
-
-        # 并发控制 (原子操作)
-        async with self._processing_lock:
-            if request_id in self.processing_users:
-                return "您有正在进行的图生图任务，请稍候..."
-            self.processing_users.add(request_id)
 
         try:
             t_start = time.perf_counter()
@@ -405,8 +394,6 @@ Gemini: 4K高清，效果好，需代理
             logger.error(f"[LLM改图] 失败: {e}", exc_info=True)
             await event.send(event.plain_result(f"编辑图片失败: {str(e) or type(e).__name__}"))
             return f"编辑失败: {e}"
-        finally:
-            self.processing_users.discard(request_id)
 
     # ==================== 内部方法 ====================
 
@@ -431,6 +418,7 @@ Gemini: 4K高清，效果好，需代理
 
         # 获取图片
         image_segs = await get_images_from_event(event)
+        logger.debug(f"[改图] 获取到 {len(image_segs)} 个图片段")
         if not image_segs:
             await event.send(event.plain_result(
                 "请发送或引用图片！\n"
@@ -439,25 +427,24 @@ Gemini: 4K高清，效果好，需代理
             ))
             return
 
-        bytes_images = [
-            base64.b64decode(await seg.convert_to_base64())
-            for seg in image_segs
-        ]
+        bytes_images: list[bytes] = []
+        for i, seg in enumerate(image_segs):
+            try:
+                logger.debug(f"[改图] 转换图片 {i+1}/{len(image_segs)}...")
+                b64 = await seg.convert_to_base64()
+                bytes_images.append(base64.b64decode(b64))
+                logger.debug(f"[改图] 图片 {i+1} 转换成功, 大小={len(bytes_images[-1])} bytes")
+            except Exception as e:
+                logger.warning(f"[改图] 图片 {i+1} 转换失败，跳过: {e}")
 
-        # 并发控制 (原子操作)
-        async with self._processing_lock:
-            if request_id in self.processing_users:
-                await event.send(event.plain_result("您有正在进行的改图任务，请稍候..."))
-                return
-            self.processing_users.add(request_id)
+        if not bytes_images:
+            await event.send(event.plain_result("图片处理失败，请重试"))
+            return
+
+        # 标记处理中
+        await mark_processing(event)
 
         try:
-            # 确定显示名称
-            backend_name = backend or self.config.get("edit", {}).get("default_backend", "gemini")
-            display_name = preset or prompt[:20] or "改图"
-
-            await event.send(event.plain_result(f"🎨 [{backend_name}] {display_name} 处理中..."))
-
             t_start = time.perf_counter()
             image_path = await self.edit.edit(
                 prompt=prompt,
@@ -467,16 +454,20 @@ Gemini: 4K高清，效果好，需代理
             )
             t_end = time.perf_counter()
 
+            # 发送结果图片
             await event.send(event.chain_result([
                 Image.fromFileSystem(str(image_path)),
-                Plain(f"\n✅ [{backend_name}] 完成 ({t_end - t_start:.1f}s)")
             ]))
+
+            # 标记成功
+            await mark_success(event)
+            display_name = preset or (prompt[:20] if prompt else "改图")
+            logger.info(f"[改图] 完成: {display_name}..., 耗时={t_end - t_start:.2f}s")
 
         except Exception as e:
             logger.error(f"[改图] 失败: {e}", exc_info=True)
+            await mark_failed(event)
             await event.send(event.plain_result(f"改图失败: {str(e)}"))
-        finally:
-            self.processing_users.discard(request_id)
 
     async def _do_edit(
         self,
@@ -519,25 +510,22 @@ Gemini: 4K高清，效果好，需代理
             )
             return
 
-        bytes_images = [
-            base64.b64decode(await seg.convert_to_base64())
-            for seg in image_segs
-        ]
+        bytes_images: list[bytes] = []
+        for seg in image_segs:
+            try:
+                b64 = await seg.convert_to_base64()
+                bytes_images.append(base64.b64decode(b64))
+            except Exception as e:
+                logger.warning(f"[改图] 图片转换失败，跳过: {e}")
 
-        # 并发控制 (原子操作)
-        async with self._processing_lock:
-            if request_id in self.processing_users:
-                yield event.plain_result("您有正在进行的改图任务，请稍候...")
-                return
-            self.processing_users.add(request_id)
+        if not bytes_images:
+            yield event.plain_result("图片处理失败，请重试")
+            return
+
+        # 标记处理中
+        await mark_processing(event)
 
         try:
-            # 确定显示名称
-            backend_name = backend or self.config.get("edit", {}).get("default_backend", "gemini")
-            display_name = preset or prompt[:20] or "改图"
-
-            yield event.plain_result(f"🎨 [{backend_name}] {display_name} 处理中...")
-
             t_start = time.perf_counter()
             image_path = await self.edit.edit(
                 prompt=prompt,
@@ -547,13 +535,17 @@ Gemini: 4K高清，效果好，需代理
             )
             t_end = time.perf_counter()
 
+            # 发送结果图片
             yield event.chain_result([
                 Image.fromFileSystem(str(image_path)),
-                Plain(f"\n✅ [{backend_name}] 完成 ({t_end - t_start:.1f}s)")
             ])
 
+            # 标记成功
+            await mark_success(event)
+            display_name = preset or (prompt[:20] if prompt else "改图")
+            logger.info(f"[改图] 完成: {display_name}..., 耗时={t_end - t_start:.2f}s")
+
         except Exception as e:
-            logger.error(f"[改图] 失败: {e}", exc_info=True)
+            logger.error(f"[改图] 失败: {e}")
+            await mark_failed(event)
             yield event.plain_result(f"改图失败: {str(e)}")
-        finally:
-            self.processing_users.discard(request_id)

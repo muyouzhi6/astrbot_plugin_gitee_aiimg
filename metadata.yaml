@@ -1,10 +1,9 @@
 name: astrbot_plugin_gitee_aiimg
 display_name: Gitee生图插件
 desc: 接入 Gitee AI 图像生成模型。支持文生图和图生图，支持 LLM 调用和命令调用，支持多种图片比例和多 Key 轮询
-version: v2.4.0
+version: v2.1.2
 author: 木有知、Zhalslar 
 repo: https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg
-
 
 
 

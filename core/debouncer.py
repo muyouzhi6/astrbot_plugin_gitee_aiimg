@@ -11,7 +11,7 @@ class Debouncer:
             ttl: 操作记录最长保留时间（秒）
             cleanup_threshold: 记录数量超过该值时触发清理
         """
-        self._interval = config["debounce_interval"]
+        self._interval = config.get("debounce_interval", 3)
         self._ttl = 300
         self._cleanup_threshold = 100
 
