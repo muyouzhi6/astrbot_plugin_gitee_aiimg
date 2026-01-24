@@ -1,3 +1,4 @@
 aiofiles
 aiohttp
+httpx>=0.24.0
 openai

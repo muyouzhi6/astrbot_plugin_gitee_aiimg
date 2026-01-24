@@ -266,6 +266,127 @@
             }
         }
     },
+    "video": {
+        "description": "视频生成配置 (Grok imagine)",
+        "hint": "",
+        "type": "object",
+        "items": {
+            "enabled": {
+                "description": "启用视频生成",
+                "type": "bool",
+                "default": true
+            },
+            "server_url": {
+                "description": "Grok API 服务地址",
+                "hint": "默认: https://api.x.ai（自动补全 /v1/chat/completions）",
+                "type": "string",
+                "default": "https://api.x.ai"
+            },
+            "api_key": {
+                "description": "Grok API 密钥",
+                "type": "string",
+                "hint": "填写 x.ai / grok2api 的 API Key",
+                "default": "",
+                "obvious_hint": true
+            },
+            "model": {
+                "description": "模型ID",
+                "type": "string",
+                "hint": "例如: grok-imagine-0.9",
+                "default": "grok-imagine-0.9"
+            },
+            "timeout_seconds": {
+                "description": "请求超时(秒)",
+                "type": "int",
+                "hint": "最大 3600 秒",
+                "slider": {
+                    "min": 1,
+                    "max": 3600,
+                    "step": 10
+                },
+                "default": 180
+            },
+            "max_retries": {
+                "description": "最大重试次数",
+                "hint": "失败后自动重试次数（0=不重试）",
+                "type": "int",
+                "slider": {
+                    "min": 0,
+                    "max": 5,
+                    "step": 1
+                },
+                "default": 2
+            },
+            "empty_response_retry": {
+                "description": "无视频URL重试次数",
+                "hint": "当 API 返回 200 但未解析到视频URL 时的额外重试次数",
+                "type": "int",
+                "slider": {
+                    "min": 0,
+                    "max": 10,
+                    "step": 1
+                },
+                "default": 2
+            },
+            "retry_delay": {
+                "description": "重试基础间隔(秒)",
+                "hint": "指数退避：retry_delay * 2^attempt",
+                "type": "int",
+                "slider": {
+                    "min": 0,
+                    "max": 30,
+                    "step": 1
+                },
+                "default": 2
+            },
+            "send_mode": {
+                "description": "发送方式",
+                "hint": "auto=URL失败再下载；url=仅URL；file=下载后本地文件",
+                "type": "string",
+                "options": ["auto", "url", "file"],
+                "default": "auto"
+            },
+            "send_timeout_seconds": {
+                "description": "发送超时(秒)",
+                "hint": "发送 Video 组件等待时间",
+                "type": "int",
+                "slider": {
+                    "min": 10,
+                    "max": 300,
+                    "step": 10
+                },
+                "default": 90
+            },
+            "download_timeout_seconds": {
+                "description": "下载视频超时(秒)",
+                "hint": "send_mode=file/auto 时用于下载",
+                "type": "int",
+                "slider": {
+                    "min": 30,
+                    "max": 3600,
+                    "step": 30
+                },
+                "default": 300
+            },
+            "max_cached_videos": {
+                "description": "本地视频最大缓存数",
+                "hint": "send_mode=file/auto 时用于防止盘满（0=不清理）",
+                "type": "int",
+                "slider": {
+                    "min": 0,
+                    "max": 200,
+                    "step": 1
+                },
+                "default": 20
+            },
+            "presets": {
+                "description": "自定义视频预设提示词",
+                "hint": "格式: 预设名:英文提示词 例如: 日常:Daily outfit, cinematic, walking",
+                "type": "list",
+                "default": []
+            }
+        }
+    },
     "max_cached_images": {
         "description": "图片最大缓存数",
         "hint": "超过此数时，将清理一半的旧缓存图",

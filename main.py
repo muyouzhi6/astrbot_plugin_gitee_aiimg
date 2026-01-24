@@ -4,23 +4,27 @@ Gitee AI 图像生成插件
 功能:
 - 文生图 (z-image-turbo)
 - 图生图/改图 (Gemini / Gitee 千问，可切换)
+- 视频生成 (Grok imagine, 参考图 + 提示词)
 - 预设提示词
 - 智能降级
 """
 
+import asyncio
 import base64
 import time
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import Image
+from astrbot.api.message_components import Image, Video
 from astrbot.api.star import Context, Star, StarTools
 
 from .core.debouncer import Debouncer
 from .core.draw_service import ImageDrawService
 from .core.edit_router import EditRouter
 from .core.emoji_feedback import mark_failed, mark_processing, mark_success
+from .core.grok_video_service import GrokVideoService
 from .core.image_manager import ImageManager
+from .core.video_manager import VideoManager
 from .core.utils import close_session, get_images_from_event
 
 
@@ -48,6 +52,12 @@ class GiteeAIImage(Star):
         self.imgr = ImageManager(self.config, self.data_dir)
         self.draw = ImageDrawService(self.config, self.imgr)
         self.edit = EditRouter(self.config, self.imgr)
+        self.videomgr = VideoManager(self.config, self.data_dir)
+        self.video = GrokVideoService(self.config)
+
+        self._video_lock = asyncio.Lock()
+        self._video_in_progress: set[str] = set()
+        self._video_tasks: set[asyncio.Task] = set()
 
         # 动态注册预设命令 (方案C: /手办化 直接触发)
         self._register_preset_commands()
@@ -55,7 +65,9 @@ class GiteeAIImage(Star):
         logger.info(
             f"[GiteeAIImage] 插件初始化完成: "
             f"改图后端={self.edit.get_available_backends()}, "
-            f"预设={len(self.edit.get_preset_names())}个"
+            f"改图预设={len(self.edit.get_preset_names())}个, "
+            f"视频启用={self.video.enabled}, "
+            f"视频预设={len(self.video.get_preset_names())}个"
         )
 
     def _register_preset_commands(self):
@@ -141,8 +153,9 @@ class GiteeAIImage(Star):
         注意: message_str 中 @用户 会被替换为空格或移除
         """
         msg = event.message_str.strip()
-        # 移除命令前缀 (/, !, 等)
-        if msg and msg[0] in "/!！":
+        # 移除命令前缀 (/, !, ., 等)
+        # 兼容唤醒前缀：.视频 / 。视频 / ．视频
+        if msg and msg[0] in "/!！.。．":
             msg = msg[1:]
         # 移除命令名
         if msg.startswith(command_name):
@@ -152,6 +165,14 @@ class GiteeAIImage(Star):
 
     async def terminate(self):
         self.debouncer.clear_all()
+        try:
+            tasks = list(getattr(self, "_video_tasks", []))
+            for t in tasks:
+                t.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+        except Exception:
+            pass
         await self.imgr.close()
         await self.draw.close()
         await self.edit.close()
@@ -196,6 +217,7 @@ class GiteeAIImage(Star):
         示例: /aiimg 一个女孩 9:16
         支持比例: 1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16
         """
+        event.should_call_llm(True)
         # 解析参数
         arg = event.message_str.partition(" ")[2]
         if not arg:
@@ -247,6 +269,7 @@ class GiteeAIImage(Star):
         用法: /aiedit <提示词>
         需要同时发送或引用图片
         """
+        event.should_call_llm(True)
         async for result in self._do_edit(event, prompt, backend=None):
             yield result
 
@@ -256,6 +279,7 @@ class GiteeAIImage(Star):
 
         用法: /gedit <提示词>
         """
+        event.should_call_llm(True)
         async for result in self._do_edit(event, prompt, backend="gemini"):
             yield result
 
@@ -265,14 +289,75 @@ class GiteeAIImage(Star):
 
         用法: /qedit <提示词>
         """
+        event.should_call_llm(True)
         async for result in self._do_edit(event, prompt, backend="gitee"):
             yield result
+
+    # ==================== 视频生成 ====================
+
+    @filter.command("视频")
+    async def generate_video_command(self, event: AstrMessageEvent):
+        """生成视频
+
+        用法:
+        - /视频 <提示词>
+        - /视频 <预设名> [额外提示词]
+        """
+        event.should_call_llm(True)
+        arg = self._extract_extra_prompt(event, "视频")
+        if not arg:
+            yield event.plain_result("用法: /视频 <提示词> 或 /视频 <预设名> [额外提示词]")
+            return
+
+        preset, prompt = self._parse_video_args(arg)
+
+        user_id = str(event.get_sender_id() or "")
+        request_id = f"video_{user_id}"
+
+        if self.debouncer.hit(request_id):
+            yield event.plain_result("操作太快了，请稍后再试")
+            return
+
+        if not await self._video_begin(user_id):
+            yield event.plain_result("你已有一个视频任务正在进行中，请等待完成后再试")
+            return
+
+        await mark_processing(event)
+
+        try:
+            task = asyncio.create_task(
+                self._async_generate_video(event, prompt, preset, user_id)
+            )
+        except Exception as e:
+            await self._video_end(user_id)
+            await mark_failed(event)
+            return
+
+        self._video_tasks.add(task)
+        task.add_done_callback(lambda t: self._video_tasks.discard(t))
+        return
+
+    @filter.command("视频预设列表")
+    async def list_video_presets(self, event: AstrMessageEvent):
+        """列出所有可用视频预设"""
+        event.should_call_llm(True)
+        presets = self.video.get_preset_names()
+        if not presets:
+            yield event.plain_result("📋 视频预设列表\n暂无预设（请在配置 video.presets 中添加）")
+            return
+
+        msg = "📋 视频预设列表\n"
+        for name in presets:
+            msg += f"- {name}\n"
+        msg += "\n用法: /视频 <预设名> [额外提示词]"
+        yield event.plain_result(msg)
 
     # ==================== 管理命令 ====================
 
     @filter.command("预设列表")
     async def list_presets(self, event: AstrMessageEvent):
         """列出所有可用预设"""
+        event.should_call_llm(True)
         presets = self.edit.get_preset_names()
         backends = self.edit.get_available_backends()
         default = self.config.get("edit", {}).get("default_backend", "gemini")
@@ -304,6 +389,7 @@ class GiteeAIImage(Star):
     @filter.command("改图帮助")
     async def edit_help(self, event: AstrMessageEvent):
         """显示改图帮助"""
+        event.should_call_llm(True)
         msg = """🎨 改图功能帮助
 
 ━━ 基础命令 ━━
@@ -395,7 +481,168 @@ Gemini: 4K高清，效果好，需代理
             await event.send(event.plain_result(f"编辑图片失败: {str(e) or type(e).__name__}"))
             return f"编辑失败: {e}"
 
+    @filter.llm_tool()
+    async def grok_generate_video(self, event: AstrMessageEvent, prompt: str):
+        """根据用户发送/引用的图片生成视频。
+
+        Args:
+            prompt(string): 视频提示词。支持 "预设名 额外提示词"（与 `/视频 预设名 额外提示词` 一致）
+        """
+        arg = (prompt or "").strip()
+        if not arg:
+            return "需要提供视频提示词"
+
+        preset, extra_prompt = self._parse_video_args(arg)
+
+        user_id = str(event.get_sender_id() or "")
+        request_id = f"video_{user_id}"
+
+        if self.debouncer.hit(request_id):
+            return "操作太快了，请稍后再试"
+
+        if not await self._video_begin(user_id):
+            return "你已有一个视频任务正在进行中，请等待完成后再试"
+
+        await mark_processing(event)
+
+        try:
+            task = asyncio.create_task(
+                self._async_generate_video(event, extra_prompt, preset, user_id)
+            )
+        except Exception as e:
+            await self._video_end(user_id)
+            await mark_failed(event)
+            return ""
+
+        self._video_tasks.add(task)
+        task.add_done_callback(lambda t: self._video_tasks.discard(t))
+
+        return ""
+
     # ==================== 内部方法 ====================
+
+    def _parse_video_args(self, text: str) -> tuple[str | None, str]:
+        """解析 /视频 参数，返回 (preset, prompt)
+
+        - 当第一个 token 命中预设名时：preset=该 token, prompt=剩余内容
+        - 否则：preset=None, prompt=text
+        """
+        text = (text or "").strip()
+        if not text:
+            return None, ""
+
+        first, _, rest = text.partition(" ")
+        if first and first in getattr(self.video, "presets", {}):
+            return first, rest.strip()
+        return None, text
+
+    async def _video_begin(self, user_id: str) -> bool:
+        """单用户并发保护：成功占用返回 True，否则 False"""
+        user_id = str(user_id or "")
+        async with self._video_lock:
+            if user_id in self._video_in_progress:
+                return False
+            self._video_in_progress.add(user_id)
+            return True
+
+    async def _video_end(self, user_id: str) -> None:
+        user_id = str(user_id or "")
+        async with self._video_lock:
+            self._video_in_progress.discard(user_id)
+
+    async def _send_video_result(self, event: AstrMessageEvent, video_url: str) -> None:
+        mode = str(self.config.get("video", {}).get("send_mode", "auto")).strip().lower()
+        if mode not in {"auto", "url", "file"}:
+            mode = "auto"
+
+        send_timeout = int(self.config.get("video", {}).get("send_timeout_seconds", 90) or 90)
+        send_timeout = max(10, min(send_timeout, 300))
+
+        # 1) URL 发送（优先）
+        if mode in {"auto", "url"}:
+            try:
+                await asyncio.wait_for(
+                    event.send(event.chain_result([Video.fromURL(video_url)])),
+                    timeout=float(send_timeout),
+                )
+                return
+            except Exception as e:
+                if mode == "url":
+                    raise
+                logger.warning(f"[视频] URL 发送失败，尝试本地文件降级: {e}")
+
+        # 2) 下载 + 本地文件发送
+        download_timeout = int(
+            self.config.get("video", {}).get("download_timeout_seconds", self.video.timeout_seconds)
+            or self.video.timeout_seconds
+        )
+        download_timeout = max(1, min(download_timeout, 3600))
+
+        if mode in {"auto", "file"}:
+            try:
+                video_path = await self.videomgr.download_video(
+                    video_url, timeout_seconds=download_timeout
+                )
+                await asyncio.wait_for(
+                    event.send(
+                        event.chain_result([Video.fromFileSystem(str(video_path))])
+                    ),
+                    timeout=float(send_timeout),
+                )
+                return
+            except Exception as e:
+                if mode == "file":
+                    raise
+                logger.warning(f"[视频] 本地文件发送失败，回退为文本链接: {e}")
+
+        # 3) 最终兜底：发出可点击链接
+        await event.send(event.plain_result(video_url))
+
+    async def _async_generate_video(
+        self,
+        event: AstrMessageEvent,
+        prompt: str,
+        preset: str | None,
+        user_id: str,
+    ) -> None:
+        try:
+            image_segs = await get_images_from_event(event)
+            if not image_segs:
+                await mark_failed(event)
+                return
+
+            image_bytes: bytes | None = None
+            for i, seg in enumerate(image_segs):
+                try:
+                    b64 = await seg.convert_to_base64()
+                    image_bytes = base64.b64decode(b64)
+                    break
+                except Exception as e:
+                    logger.warning(f"[视频] 图片 {i + 1} 转换失败，跳过: {e}")
+
+            if not image_bytes:
+                await mark_failed(event)
+                return
+
+            t_start = time.perf_counter()
+            video_url = await self.video.generate_video_url(
+                prompt=prompt,
+                image_bytes=image_bytes,
+                preset=preset,
+            )
+            t_end = time.perf_counter()
+
+            await self._send_video_result(event, video_url)
+            await mark_success(event)
+
+            display_name = preset or (prompt[:20] if prompt else "视频")
+            logger.info(f"[视频] 完成: {display_name}..., 耗时={t_end - t_start:.2f}s")
+
+        except Exception as e:
+            logger.error(f"[视频] 失败: {e}", exc_info=True)
+            await mark_failed(event)
+        finally:
+            await self._video_end(user_id)
 
     async def _do_edit_direct(
         self,
