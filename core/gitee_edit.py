@@ -15,6 +15,8 @@ import aiohttp
 
 from astrbot.api import logger
 
+from .image_format import guess_image_mime_and_ext
+
 if TYPE_CHECKING:
     from .image_manager import ImageManager
 
@@ -119,7 +121,9 @@ class GiteeEditBackend:
         # 创建任务
         task_id = await self._create_task(prompt, images, task_types, api_key)
         t_create = time.perf_counter()
-        logger.debug(f"[Gitee] 任务创建成功: {task_id}, 耗时: {t_create - t_start:.2f}s")
+        logger.debug(
+            f"[Gitee] 任务创建成功: {task_id}, 耗时: {t_create - t_start:.2f}s"
+        )
 
         # 轮询结果
         file_url = await self._poll_task(task_id, api_key)
@@ -159,11 +163,12 @@ class GiteeEditBackend:
                 data.add_field("task_types", t)
 
         for i, img in enumerate(images):
+            mime, ext = guess_image_mime_and_ext(img)
             data.add_field(
                 "image",
                 img,
-                filename=f"image_{i}.jpg",
-                content_type="image/jpeg",
+                filename=f"image_{i}.{ext}",
+                content_type=mime,
             )
 
         try:

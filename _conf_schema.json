@@ -266,6 +266,44 @@
             }
         }
     },
+    "selfie": {
+        "description": "Bot 自拍（参考照）",
+        "hint": "上传参考人像后，/自拍 和 LLM 工具 aiimg_generate 会基于该人脸生成自拍（可附加参考图：衣服/姿势/场景）",
+        "type": "object",
+        "items": {
+            "enabled": {
+                "description": "启用自拍参考照功能",
+                "type": "bool",
+                "default": true
+            },
+            "reference_images": {
+                "description": "自拍参考人像（可多张）",
+                "hint": "建议上传清晰正脸照，可多张做不同角度参考（WebUI 上传后会存到插件数据目录）",
+                "type": "file",
+                "default": [],
+                "file_types": ["jpg", "jpeg", "png", "webp"]
+            },
+            "prefer_backend": {
+                "description": "自拍优先后端",
+                "hint": "auto=按改图默认后端；gemini=强制 Gemini；gitee=强制千问",
+                "type": "string",
+                "options": ["auto", "gemini", "gitee"],
+                "default": "auto"
+            },
+            "gitee_task_types": {
+                "description": "千问自拍任务类型",
+                "hint": "仅在使用千问后端时生效。默认: id/background/style",
+                "type": "list",
+                "default": ["id", "background", "style"]
+            },
+            "prompt_prefix": {
+                "description": "自拍提示词前缀",
+                "hint": "用于强调“人脸一致/其它参考图仅作风格姿势”等规则。留空使用内置默认。",
+                "type": "text",
+                "default": ""
+            }
+        }
+    },
     "video": {
         "description": "视频生成配置 (Grok imagine)",
         "hint": "",

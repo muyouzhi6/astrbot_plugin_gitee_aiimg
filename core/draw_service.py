@@ -9,12 +9,14 @@ from astrbot.api import logger
 from .image_manager import ImageManager
 
 # 不支持 negative_prompt 的模型（会把负向提示词当正向处理，导致出图畸形）
-MODELS_WITHOUT_NEGATIVE_PROMPT = frozenset({
-    "z-image-turbo",
-    "z-image-base",
-    "flux.1-dev",
-    "flux.1-schnell",
-})
+MODELS_WITHOUT_NEGATIVE_PROMPT = frozenset(
+    {
+        "z-image-turbo",
+        "z-image-base",
+        "flux.1-dev",
+        "flux.1-schnell",
+    }
+)
 
 
 class ImageDrawService:
@@ -91,11 +93,13 @@ class ImageDrawService:
             raise RuntimeError("未返回图片数据")
 
         img = resp.data[0]
-        
+
         t1 = time.time()
         if img.url:
             result = await self.imgr.download_image(img.url)
-            logger.info(f"[生图] 下载图片耗时: {time.time() - t1:.2f}s, URL: {img.url[:60]}...")
+            logger.info(
+                f"[生图] 下载图片耗时: {time.time() - t1:.2f}s, URL: {img.url[:60]}..."
+            )
             return result
         if img.b64_json:
             result = await self.imgr.save_base64_image(img.b64_json)
