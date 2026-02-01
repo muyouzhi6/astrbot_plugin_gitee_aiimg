@@ -20,6 +20,7 @@ from typing import Any
 from urllib.parse import urljoin
 
 import httpx
+
 from astrbot.api import logger
 
 
@@ -60,7 +61,7 @@ def _is_valid_video_url(url: str) -> bool:
     lowered = url.lower()
     if not any(ext in lowered for ext in (".mp4", ".webm", ".mov")):
         return False
-    if any(c in url for c in ['<', '>', '"', "'", "\n", "\r", "\t"]):
+    if any(c in url for c in ["<", ">", '"', "'", "\n", "\r", "\t"]):
         return False
     return True
 
@@ -97,8 +98,8 @@ def _extract_video_url_from_content(content: str) -> str | None:
 
     # Markdown [text](url)
     md_patterns = [
-        r'!?\[[^\]]*\]\(([^\)]+\.(?:mp4|webm|mov)[^\)]*)\)',
-        r'!?\[[^\]]*\]:\s*([^\s]+\.(?:mp4|webm|mov)[^\s]*)',
+        r"!?\[[^\]]*\]\(([^\)]+\.(?:mp4|webm|mov)[^\)]*)\)",
+        r"!?\[[^\]]*\]:\s*([^\s]+\.(?:mp4|webm|mov)[^\s]*)",
     ]
     for pattern in md_patterns:
         match = re.search(pattern, content, re.IGNORECASE)
@@ -110,7 +111,9 @@ def _extract_video_url_from_content(content: str) -> str | None:
     return None
 
 
-def _deep_find_video_url(data: Any, *, max_depth: int = 6, max_nodes: int = 2000) -> str | None:
+def _deep_find_video_url(
+    data: Any, *, max_depth: int = 6, max_nodes: int = 2000
+) -> str | None:
     """在不确定响应结构时，做一次有限深度的全局扫描，尽量找到视频 URL。"""
     queue: deque[tuple[Any, int]] = deque([(data, 0)])
     seen = 0
@@ -124,7 +127,9 @@ def _deep_find_video_url(data: Any, *, max_depth: int = 6, max_nodes: int = 2000
             continue
 
         if isinstance(obj, str):
-            url = _extract_video_url_from_content(obj) or (obj.strip() if _is_valid_video_url(obj) else None)
+            url = _extract_video_url_from_content(obj) or (
+                obj.strip() if _is_valid_video_url(obj) else None
+            )
             if url:
                 return url
             continue
@@ -151,7 +156,9 @@ def _deep_find_video_url(data: Any, *, max_depth: int = 6, max_nodes: int = 2000
     return None
 
 
-def _extract_video_url_from_response(response_data: Any) -> tuple[str | None, str | None]:
+def _extract_video_url_from_response(
+    response_data: Any,
+) -> tuple[str | None, str | None]:
     """
     Returns: (video_url, error_message)
     """
@@ -188,7 +195,15 @@ def _extract_video_url_from_response(response_data: Any) -> tuple[str | None, st
                     if url:
                         return url, None
                 if isinstance(part, dict):
-                    part_url = part.get("url") or part.get("video_url") or (part.get("video_url", {}) if isinstance(part.get("video_url"), dict) else None)
+                    part_url = (
+                        part.get("url")
+                        or part.get("video_url")
+                        or (
+                            part.get("video_url", {})
+                            if isinstance(part.get("video_url"), dict)
+                            else None
+                        )
+                    )
                     if isinstance(part_url, str) and _is_valid_video_url(part_url):
                         return part_url, None
                     if isinstance(part_url, dict):
@@ -207,7 +222,11 @@ def _extract_video_url_from_response(response_data: Any) -> tuple[str | None, st
             if isinstance(items, list):
                 for item in items:
                     if isinstance(item, dict):
-                        url = item.get("url") or item.get("file_url") or item.get("video_url")
+                        url = (
+                            item.get("url")
+                            or item.get("file_url")
+                            or item.get("video_url")
+                        )
                         if isinstance(url, str) and _is_valid_video_url(url):
                             return url, None
 
@@ -219,7 +238,9 @@ def _extract_video_url_from_response(response_data: Any) -> tuple[str | None, st
         content_preview = ""
         if isinstance(content, str):
             content_preview = content[:200]
-        logger.warning(f"[GrokVideo] 未能提取视频 URL，content 片段: {content_preview}...")
+        logger.warning(
+            f"[GrokVideo] 未能提取视频 URL，content 片段: {content_preview}..."
+        )
         return None, "未能从 API 响应中提取到有效的视频 URL"
     except Exception as e:
         logger.warning(f"[GrokVideo] URL 提取异常: {e}")
@@ -232,9 +253,14 @@ class GrokVideoService:
         self.vconf = config.get("video", {})
 
         self.enabled: bool = bool(self.vconf.get("enabled", True))
-        self.server_url: str = str(self.vconf.get("server_url", "https://api.x.ai")).rstrip("/")
+        self.server_url: str = str(
+            self.vconf.get("server_url", "https://api.x.ai")
+        ).rstrip("/")
         self.api_key: str = str(self.vconf.get("api_key", "")).strip()
-        self.model: str = str(self.vconf.get("model", "grok-imagine-0.9")).strip() or "grok-imagine-0.9"
+        self.model: str = (
+            str(self.vconf.get("model", "grok-imagine-0.9")).strip()
+            or "grok-imagine-0.9"
+        )
 
         self.timeout_seconds: int = _clamp_int(
             self.vconf.get("timeout_seconds", 180),
@@ -341,7 +367,9 @@ class GrokVideoService:
         )
 
         async def _request_once() -> Any:
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            async with httpx.AsyncClient(
+                timeout=timeout, follow_redirects=True
+            ) as client:
                 resp = await client.post(self.api_url, json=payload, headers=headers)
 
             if resp.status_code != 200:
@@ -350,12 +378,16 @@ class GrokVideoService:
                     raise RuntimeError("Grok API Key 无效或已过期 (401)")
                 if resp.status_code == 403:
                     raise RuntimeError("Grok API 访问被拒绝 (403)")
-                raise RuntimeError(f"Grok API 请求失败 HTTP {resp.status_code}: {detail}")
+                raise RuntimeError(
+                    f"Grok API 请求失败 HTTP {resp.status_code}: {detail}"
+                )
 
             try:
                 return resp.json()
             except Exception as e:
-                raise RuntimeError(f"API 响应 JSON 解析失败: {e}, body={resp.text[:200]}") from e
+                raise RuntimeError(
+                    f"API 响应 JSON 解析失败: {e}, body={resp.text[:200]}"
+                ) from e
 
         async def _request_with_retries() -> Any:
             last_exc: Exception | None = None
@@ -370,7 +402,9 @@ class GrokVideoService:
                     last_exc = e
                     if attempt >= self.max_retries:
                         break
-                    delay = max(0, self.retry_delay) * (2**attempt) + random.uniform(0, 0.5)
+                    delay = max(0, self.retry_delay) * (2**attempt) + random.uniform(
+                        0, 0.5
+                    )
                     logger.warning(f"[GrokVideo] 请求失败: {e}，{delay:.1f}s 后重试...")
                     await asyncio.sleep(delay)
             raise last_exc or RuntimeError("请求失败")
@@ -384,7 +418,9 @@ class GrokVideoService:
             video_url, parse_error = _extract_video_url_from_response(data)
             if video_url:
                 t_end = time.perf_counter()
-                logger.info(f"[GrokVideo] 成功: 耗时={t_end - t_start:.2f}s, url={video_url[:80]}...")
+                logger.info(
+                    f"[GrokVideo] 成功: 耗时={t_end - t_start:.2f}s, url={video_url[:80]}..."
+                )
                 return video_url
 
             last_parse_error = parse_error or "API 响应未包含视频 URL"
@@ -392,7 +428,9 @@ class GrokVideoService:
                 break
 
             delay = max(0, self.retry_delay) * (2**attempt) + random.uniform(0, 0.5)
-            logger.warning(f"[GrokVideo] 响应无视频URL: {last_parse_error}，{delay:.1f}s 后重试...")
+            logger.warning(
+                f"[GrokVideo] 响应无视频URL: {last_parse_error}，{delay:.1f}s 后重试..."
+            )
             await asyncio.sleep(delay)
 
         raise RuntimeError(f"Grok 视频生成失败: {last_parse_error}")

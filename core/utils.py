@@ -7,7 +7,6 @@
 import asyncio
 import base64
 import io
-from typing import TYPE_CHECKING
 
 import aiohttp
 
@@ -69,7 +68,7 @@ async def download_image(url: str, retries: int = 3) -> bytes | None:
                     return await resp.read()
                 logger.warning(f"[下载图片] HTTP {resp.status}: {url[:60]}...")
         except asyncio.TimeoutError:
-            logger.warning(f"[下载图片] 超时 (第{i+1}次): {url[:60]}...")
+            logger.warning(f"[下载图片] 超时 (第{i + 1}次): {url[:60]}...")
         except Exception as e:
             if i < retries - 1:
                 await asyncio.sleep(1)
@@ -143,8 +142,10 @@ async def get_images_from_event(
     """
     image_segs: list[Image] = []
     chain = event.get_messages()
-    
-    logger.debug(f"[get_images] 消息链长度: {len(chain)}, 内容: {[type(seg).__name__ for seg in chain]}")
+
+    logger.debug(
+        f"[get_images] 消息链长度: {len(chain)}, 内容: {[type(seg).__name__ for seg in chain]}"
+    )
 
     # 获取机器人自己的 ID（用于过滤@机器人）
     self_id = ""
@@ -169,13 +170,15 @@ async def get_images_from_event(
             for chain_item in seg.chain:
                 if isinstance(chain_item, Image):
                     image_segs.append(chain_item)
-                    logger.debug(f"[get_images] 从回复中获取图片")
+                    logger.debug("[get_images] 从回复中获取图片")
 
     # 2. 当前消息中的图片
     for seg in chain:
         if isinstance(seg, Image):
             image_segs.append(seg)
-            logger.debug(f"[get_images] 从当前消息获取图片: url={getattr(seg, 'url', 'N/A')[:50] if getattr(seg, 'url', None) else 'N/A'}")
+            logger.debug(
+                f"[get_images] 从当前消息获取图片: url={getattr(seg, 'url', 'N/A')[:50] if getattr(seg, 'url', None) else 'N/A'}"
+            )
 
     logger.debug(f"[get_images] 图片段数量: {len(image_segs)}, @用户: {at_user_ids}")
 

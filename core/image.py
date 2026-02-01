@@ -1,4 +1,3 @@
-
 import asyncio
 import base64
 import os
@@ -106,7 +105,9 @@ class ImageManager:
                 if resp.status == 200:
                     return await resp.read()
                 else:
-                    logger.warning(f"下载图片失败: HTTP {resp.status}, URL: {url[:60]}...")
+                    logger.warning(
+                        f"下载图片失败: HTTP {resp.status}, URL: {url[:60]}..."
+                    )
         except Exception as e:
             logger.warning(f"下载图片异常: {type(e).__name__}, URL: {url[:60]}...")
         return None
@@ -130,14 +131,18 @@ class ImageManager:
         # 1. 从回复/引用消息中提取图片（优先）
         for seg in chain:
             if isinstance(seg, Reply):
-                logger.debug(f"[extract_images] 发现 Reply 段, chain={getattr(seg, 'chain', None)}")
+                logger.debug(
+                    f"[extract_images] 发现 Reply 段, chain={getattr(seg, 'chain', None)}"
+                )
                 if hasattr(seg, "chain") and seg.chain:
                     for chain_item in seg.chain:
                         if isinstance(chain_item, Image):
                             img_data = await self._load_image_data(chain_item)
                             if img_data:
                                 images.append(img_data)
-                                logger.debug(f"[extract_images] 从回复链提取图片: {len(img_data)} bytes")
+                                logger.debug(
+                                    f"[extract_images] 从回复链提取图片: {len(img_data)} bytes"
+                                )
 
         # 2. 从当前消息中提取图片
         for seg in chain:
@@ -145,7 +150,9 @@ class ImageManager:
                 img_data = await self._load_image_data(seg)
                 if img_data:
                     images.append(img_data)
-                    logger.debug(f"[extract_images] 从当前消息提取图片: {len(img_data)} bytes")
+                    logger.debug(
+                        f"[extract_images] 从当前消息提取图片: {len(img_data)} bytes"
+                    )
 
         logger.info(f"[extract_images] 共提取到 {len(images)} 张图片")
         return images
@@ -178,7 +185,9 @@ class ImageManager:
                     cached_path = cache_dir / file_path
                     if cached_path.is_file():
                         try:
-                            logger.debug(f"[_load_image_data] 从缓存目录读取: {cached_path}")
+                            logger.debug(
+                                f"[_load_image_data] 从缓存目录读取: {cached_path}"
+                            )
                             return cached_path.read_bytes()
                         except Exception as e:
                             logger.debug(f"读取缓存文件失败: {e}")

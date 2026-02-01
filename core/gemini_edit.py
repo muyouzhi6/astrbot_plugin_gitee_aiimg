@@ -19,6 +19,8 @@ import aiohttp
 
 from astrbot.api import logger
 
+from .image_format import guess_image_mime_and_ext
+
 if TYPE_CHECKING:
     from .image_manager import ImageManager
 
@@ -34,7 +36,9 @@ class GeminiEditBackend:
 
         # Gemini 配置
         gemini_conf = config.get("edit", {}).get("gemini", {})
-        self.api_url = gemini_conf.get("api_url", "https://generativelanguage.googleapis.com")
+        self.api_url = gemini_conf.get(
+            "api_url", "https://generativelanguage.googleapis.com"
+        )
         self.model = gemini_conf.get("model", "gemini-3-pro-image-preview")
         self.resolution = gemini_conf.get("resolution", "4K")
         self.timeout = gemini_conf.get("timeout", 120)
@@ -126,12 +130,15 @@ class GeminiEditBackend:
 
         parts: list[dict] = [{"text": final_prompt}]
         for img_bytes in images:
-            parts.append({
-                "inlineData": {
-                    "mimeType": "image/jpeg",
-                    "data": base64.b64encode(img_bytes).decode(),
+            mime, _ = guess_image_mime_and_ext(img_bytes)
+            parts.append(
+                {
+                    "inlineData": {
+                        "mimeType": mime,
+                        "data": base64.b64encode(img_bytes).decode(),
+                    }
                 }
-            })
+            )
 
         payload = {
             "contents": [{"parts": parts}],
@@ -143,8 +150,14 @@ class GeminiEditBackend:
             "safetySettings": [
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                 {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                {
+                    "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                    "threshold": "BLOCK_NONE",
+                },
+                {
+                    "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                    "threshold": "BLOCK_NONE",
+                },
             ],
         }
 
@@ -168,12 +181,18 @@ class GeminiEditBackend:
                 proxy=proxy,
             ) as resp:
                 t_api = time.perf_counter()
-                logger.debug(f"[Gemini] API 响应状态: {resp.status}, 耗时: {t_api - t_start:.2f}s")
+                logger.debug(
+                    f"[Gemini] API 响应状态: {resp.status}, 耗时: {t_api - t_start:.2f}s"
+                )
 
                 if resp.status != 200:
                     error_text = await resp.text()
-                    logger.error(f"[Gemini] API 错误 ({resp.status}): {error_text[:500]}")
-                    raise RuntimeError(f"Gemini API 错误 ({resp.status}): {error_text[:200]}")
+                    logger.error(
+                        f"[Gemini] API 错误 ({resp.status}): {error_text[:500]}"
+                    )
+                    raise RuntimeError(
+                        f"Gemini API 错误 ({resp.status}): {error_text[:200]}"
+                    )
 
                 data = await resp.json()
 

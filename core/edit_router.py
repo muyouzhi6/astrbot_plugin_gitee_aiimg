@@ -13,7 +13,7 @@ import asyncio
 import time
 from collections.abc import Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING
 
 from astrbot.api import logger
 
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from .image_manager import ImageManager
 
 # 后端类型
-EditBackendType = Union[GeminiEditBackend, GiteeEditBackend]
+EditBackendType = GeminiEditBackend | GiteeEditBackend
 
 
 # 内置预设提示词 (留空，用户可通过配置自定义)
@@ -141,7 +141,9 @@ class EditRouter:
             if prompt:
                 # 预设 + 追加提示词: "预设内容, 用户追加内容"
                 prompt = f"{preset_prompt}, {prompt}"
-                logger.debug(f"[EditRouter] 使用预设 '{preset}' + 追加: {prompt[:50]}...")
+                logger.debug(
+                    f"[EditRouter] 使用预设 '{preset}' + 追加: {prompt[:50]}..."
+                )
             else:
                 prompt = preset_prompt
                 logger.debug(f"[EditRouter] 使用预设 '{preset}'")
@@ -159,9 +161,7 @@ class EditRouter:
             if not available:
                 raise RuntimeError("无可用改图后端")
             target_backend = available[0]
-            logger.warning(
-                f"[EditRouter] 指定后端不可用，切换到 {target_backend}"
-            )
+            logger.warning(f"[EditRouter] 指定后端不可用，切换到 {target_backend}")
 
         # 3. 执行 (带重试和降级)
         return await self._execute_with_fallback(
@@ -196,7 +196,9 @@ class EditRouter:
                 if backend == "gitee":
                     gitee_backend = self.backends[backend]
                     assert isinstance(gitee_backend, GiteeEditBackend)
-                    result = await gitee_backend.edit(prompt, images, task_types=task_types)
+                    result = await gitee_backend.edit(
+                        prompt, images, task_types=task_types
+                    )
                 else:
                     gemini_backend = self.backends[backend]
                     assert isinstance(gemini_backend, GeminiEditBackend)
@@ -211,13 +213,11 @@ class EditRouter:
 
             except Exception as e:
                 last_error = e
-                logger.warning(
-                    f"[EditRouter] [{backend}] 第{attempt + 1}次失败: {e}"
-                )
+                logger.warning(f"[EditRouter] [{backend}] 第{attempt + 1}次失败: {e}")
 
                 if attempt < max_retries:
                     # 指数退避
-                    delay = retry_delay * (2 ** attempt)
+                    delay = retry_delay * (2**attempt)
                     logger.info(f"[EditRouter] {delay}s 后重试...")
                     await asyncio.sleep(delay)
 
@@ -240,7 +240,9 @@ class EditRouter:
                     fallback_instance = self.backends[fallback_target]
                     if fallback_target == "gitee":
                         assert isinstance(fallback_instance, GiteeEditBackend)
-                        result = await fallback_instance.edit(prompt, images, task_types=task_types)
+                        result = await fallback_instance.edit(
+                            prompt, images, task_types=task_types
+                        )
                     else:
                         assert isinstance(fallback_instance, GeminiEditBackend)
                         result = await fallback_instance.edit(prompt, images)

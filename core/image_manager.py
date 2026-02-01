@@ -1,4 +1,3 @@
-
 import asyncio
 import base64
 import os
@@ -23,6 +22,7 @@ class ImageManager:
         self.cleanup_batch_ratio = 0.5
 
         self._session: aiohttp.ClientSession | None = None
+
     async def _session_get(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
@@ -40,7 +40,9 @@ class ImageManager:
             if resp.status != 200:
                 raise RuntimeError(f"图片下载失败 HTTP {resp.status}")
             data = await resp.read()
-        logger.info(f"[ImageManager] 网络下载耗时: {time.time() - t0:.2f}s, 大小: {len(data)} bytes")
+        logger.info(
+            f"[ImageManager] 网络下载耗时: {time.time() - t0:.2f}s, 大小: {len(data)} bytes"
+        )
 
         return await self.save_image(data)
 
@@ -52,11 +54,13 @@ class ImageManager:
 
         async with aiofiles.open(path, "wb") as f:
             await f.write(data)
-        
+
         t1 = time.time()
         await self.cleanup_old_images()
-        logger.info(f"[ImageManager] 保存耗时: {t1 - t0:.2f}s, 清理耗时: {time.time() - t1:.2f}s")
-        
+        logger.info(
+            f"[ImageManager] 保存耗时: {t1 - t0:.2f}s, 清理耗时: {time.time() - t1:.2f}s"
+        )
+
         return path
 
     async def save_base64_image(self, b64: str) -> Path:

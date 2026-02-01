@@ -9,7 +9,6 @@ from astrbot.api import logger
 
 from .image import ImageManager
 
-
 # 图生图支持的任务类型
 EDIT_TASK_TYPES = ["id", "style", "subject", "background", "element"]
 
@@ -89,7 +88,9 @@ class ImageService:
         if size:
             kwargs["size"] = size
 
-        logger.debug(f"[generate] 调用 API: model={kwargs['model']}, size={kwargs.get('size', '未指定')}")
+        logger.debug(
+            f"[generate] 调用 API: model={kwargs['model']}, size={kwargs.get('size', '未指定')}"
+        )
 
         try:
             resp: ImagesResponse = await client.images.generate(**kwargs)
@@ -205,7 +206,9 @@ class ImageService:
 
             task_id = result.get("task_id")
             if not task_id:
-                raise RuntimeError(f"创建图生图任务失败：未返回 task_id。响应: {result}")
+                raise RuntimeError(
+                    f"创建图生图任务失败：未返回 task_id。响应: {result}"
+                )
 
             return task_id, api_key
 
@@ -241,7 +244,9 @@ class ImageService:
                 elif status in ["failed", "cancelled"]:
                     raise RuntimeError(f"图生图任务 {status}")
 
-                logger.debug(f"图生图任务 {task_id} 状态: {status} (第 {attempt} 次检查)")
+                logger.debug(
+                    f"图生图任务 {task_id} 状态: {status} (第 {attempt} 次检查)"
+                )
 
             await asyncio.sleep(poll_interval)
 
@@ -267,7 +272,9 @@ class ImageService:
             valid_types = ["id"]
 
         # 创建任务
-        task_id, api_key = await self._create_edit_task(prompt, image_data_list, valid_types)
+        task_id, api_key = await self._create_edit_task(
+            prompt, image_data_list, valid_types
+        )
         logger.info(f"图生图任务已创建: {task_id}")
 
         # 轮询等待结果

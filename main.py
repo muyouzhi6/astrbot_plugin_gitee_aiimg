@@ -4,6 +4,7 @@ Gitee AI 图像生成插件
 功能:
 - 文生图 (z-image-turbo)
 - 图生图/改图 (Gemini / Gitee 千问，可切换)
+- Bot 自拍（参考照）：上传参考人像后用改图模型生成自拍
 - 视频生成 (Grok imagine, 参考图 + 提示词)
 - 预设提示词
 - 智能降级
@@ -12,6 +13,7 @@ Gitee AI 图像生成插件
 import asyncio
 import base64
 import time
+from pathlib import Path
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -24,8 +26,10 @@ from .core.edit_router import EditRouter
 from .core.emoji_feedback import mark_failed, mark_processing, mark_success
 from .core.grok_video_service import GrokVideoService
 from .core.image_manager import ImageManager
-from .core.video_manager import VideoManager
+from .core.nanobanana import NanoBananaService
+from .core.ref_store import ReferenceStore
 from .core.utils import close_session, get_images_from_event
+from .core.video_manager import VideoManager
 
 
 class GiteeAIImage(Star):
@@ -52,6 +56,8 @@ class GiteeAIImage(Star):
         self.imgr = ImageManager(self.config, self.data_dir)
         self.draw = ImageDrawService(self.config, self.imgr)
         self.edit = EditRouter(self.config, self.imgr)
+        self.nb = NanoBananaService(self.config, self.imgr)
+        self.refs = ReferenceStore(self.data_dir)
         self.videomgr = VideoManager(self.config, self.data_dir)
         self.video = GrokVideoService(self.config)
 
@@ -113,7 +119,9 @@ class GiteeAIImage(Star):
         # Gemini 强制命令: /g手办化
         async def preset_gemini_handler(event: AstrMessageEvent):
             extra_prompt = self._extract_extra_prompt(event, f"g{preset_name}")
-            await self._do_edit_direct(event, extra_prompt, backend="gemini", preset=preset_name)
+            await self._do_edit_direct(
+                event, extra_prompt, backend="gemini", preset=preset_name
+            )
 
         preset_gemini_handler.__name__ = f"preset_g_{preset_name}"
         preset_gemini_handler.__doc__ = f"预设改图(Gemini): {preset_name} [额外提示词]"
@@ -129,7 +137,9 @@ class GiteeAIImage(Star):
         # 千问强制命令: /q手办化
         async def preset_qwen_handler(event: AstrMessageEvent):
             extra_prompt = self._extract_extra_prompt(event, f"q{preset_name}")
-            await self._do_edit_direct(event, extra_prompt, backend="gitee", preset=preset_name)
+            await self._do_edit_direct(
+                event, extra_prompt, backend="gitee", preset=preset_name
+            )
 
         preset_qwen_handler.__name__ = f"preset_q_{preset_name}"
         preset_qwen_handler.__doc__ = f"预设改图(千问): {preset_name} [额外提示词]"
@@ -159,7 +169,7 @@ class GiteeAIImage(Star):
             msg = msg[1:]
         # 移除命令名
         if msg.startswith(command_name):
-            msg = msg[len(command_name):]
+            msg = msg[len(command_name) :]
         # 清理多余空格
         return msg.strip()
 
@@ -176,38 +186,10 @@ class GiteeAIImage(Star):
         await self.imgr.close()
         await self.draw.close()
         await self.edit.close()
+        await self.nb.close()
         await close_session()  # 关闭 utils.py 的 HTTP 会话
 
     # ==================== 文生图 ====================
-
-    @filter.llm_tool()
-    async def gitee_draw_image(self, event: AstrMessageEvent, prompt: str):
-        """根据提示词生成图片。
-
-        Args:
-            prompt(string): 图片提示词，需要包含主体、场景、风格等描述
-        """
-        if not prompt:
-            return "需提供提示词prompt"
-
-        user_id = event.get_sender_id()
-        request_id = f"generate_{user_id}"
-
-        if self.debouncer.hit(request_id):
-            return "操作太快了，请稍后再试。"
-
-        try:
-            t_start = time.perf_counter()
-            image_path = await self.draw.generate(prompt)
-            t_end = time.perf_counter()
-
-            await event.send(event.chain_result([Image.fromFileSystem(str(image_path))]))
-            logger.info(f"[文生图] 完成: {prompt[:30]}..., 耗时={t_end - t_start:.2f}s")
-            return f"图片已生成并发送。Prompt: {prompt}"
-
-        except Exception as e:
-            logger.error(f"[文生图] 失败: {e}")
-            return f"生成图片时遇到问题: {str(e)}"
 
     @filter.command("aiimg", alias={"文生图"})
     async def generate_image_command(self, event: AstrMessageEvent, prompt: str):
@@ -247,13 +229,17 @@ class GiteeAIImage(Star):
             t_end = time.perf_counter()
 
             # 发送结果图片
-            yield event.chain_result([
-                Image.fromFileSystem(str(image_path)),
-            ])
+            yield event.chain_result(
+                [
+                    Image.fromFileSystem(str(image_path)),
+                ]
+            )
 
             # 标记成功
             await mark_success(event)
-            logger.info(f"[文生图] 完成: {prompt[:30] if prompt else '文生图'}..., 耗时={t_end - t_start:.2f}s")
+            logger.info(
+                f"[文生图] 完成: {prompt[:30] if prompt else '文生图'}..., 耗时={t_end - t_start:.2f}s"
+            )
 
         except Exception as e:
             logger.error(f"[文生图] 失败: {e}")
@@ -293,6 +279,82 @@ class GiteeAIImage(Star):
         async for result in self._do_edit(event, prompt, backend="gitee"):
             yield result
 
+    # ==================== Bot 自拍（参考照） ====================
+
+    @filter.command("自拍")
+    async def selfie_command(self, event: AstrMessageEvent):
+        """使用“自拍参考照”生成 Bot 自拍。
+
+        用法:
+        - /自拍 <提示词>
+        - 可附带多张参考图（衣服/姿势/场景）作为额外参考
+        """
+        event.should_call_llm(True)
+        prompt = self._extract_extra_prompt(event, "自拍")
+        async for result in self._do_selfie(event, prompt, backend=None):
+            yield result
+
+    @filter.command("g自拍")
+    async def selfie_command_gemini(self, event: AstrMessageEvent):
+        """强制使用 Gemini 生成自拍：/g自拍 <提示词>"""
+        event.should_call_llm(True)
+        prompt = self._extract_extra_prompt(event, "g自拍")
+        async for result in self._do_selfie(event, prompt, backend="gemini"):
+            yield result
+
+    @filter.command("q自拍")
+    async def selfie_command_gitee(self, event: AstrMessageEvent):
+        """强制使用千问生成自拍：/q自拍 <提示词>"""
+        event.should_call_llm(True)
+        prompt = self._extract_extra_prompt(event, "q自拍")
+        async for result in self._do_selfie(event, prompt, backend="gitee"):
+            yield result
+
+    @filter.command("自拍参考")
+    async def selfie_reference_command(self, event: AstrMessageEvent):
+        """管理自拍参考照（建议仅管理员使用）。
+
+        用法:
+        - 发送图片 + /自拍参考 设置
+        - /自拍参考 查看
+        - /自拍参考 删除
+        """
+        event.should_call_llm(True)
+        arg = self._extract_extra_prompt(event, "自拍参考")
+        action, _, _rest = (arg or "").strip().partition(" ")
+        action = action.strip().lower()
+
+        if not action or action in {"帮助", "help", "h"}:
+            msg = (
+                "📸 自拍参考照\n"
+                "━━━━━━━━━━━━━━\n"
+                "设置：发送图片 + /自拍参考 设置\n"
+                "查看：/自拍参考 查看\n"
+                "删除：/自拍参考 删除\n"
+                "━━━━━━━━━━━━━━\n"
+                "生成自拍：/自拍 <提示词>\n"
+                "可附带额外参考图（衣服/姿势/场景）"
+            )
+            yield event.plain_result(msg)
+            return
+
+        if action in {"设置", "set"}:
+            async for result in self._set_selfie_reference(event):
+                yield result
+            return
+
+        if action in {"查看", "show", "看"}:
+            async for result in self._show_selfie_reference(event):
+                yield result
+            return
+
+        if action in {"删除", "del", "delete"}:
+            async for result in self._delete_selfie_reference(event):
+                yield result
+            return
+
+        yield event.plain_result("未知操作。用法：/自拍参考 （查看帮助）")
+
     # ==================== 视频生成 ====================
 
     @filter.command("视频")
@@ -306,7 +368,9 @@ class GiteeAIImage(Star):
         event.should_call_llm(True)
         arg = self._extract_extra_prompt(event, "视频")
         if not arg:
-            yield event.plain_result("用法: /视频 <提示词> 或 /视频 <预设名> [额外提示词]")
+            yield event.plain_result(
+                "用法: /视频 <提示词> 或 /视频 <预设名> [额外提示词]"
+            )
             return
 
         preset, prompt = self._parse_video_args(arg)
@@ -328,7 +392,7 @@ class GiteeAIImage(Star):
             task = asyncio.create_task(
                 self._async_generate_video(event, prompt, preset, user_id)
             )
-        except Exception as e:
+        except Exception:
             await self._video_end(user_id)
             await mark_failed(event)
             return
@@ -343,7 +407,9 @@ class GiteeAIImage(Star):
         event.should_call_llm(True)
         presets = self.video.get_preset_names()
         if not presets:
-            yield event.plain_result("📋 视频预设列表\n暂无预设（请在配置 video.presets 中添加）")
+            yield event.plain_result(
+                "📋 视频预设列表\n暂无预设（请在配置 video.presets 中添加）"
+            )
             return
 
         msg = "📋 视频预设列表\n"
@@ -414,7 +480,24 @@ Gemini: 4K高清，效果好，需代理
 
     # ==================== LLM 工具 ====================
 
-    @filter.llm_tool()
+    @filter.llm_tool(name="gitee_draw_image")
+    async def gitee_draw_image(self, event: AstrMessageEvent, prompt: str):
+        """（兼容旧版本）根据提示词生成图片。
+
+        Args:
+            prompt(string): 图片提示词，需要包含主体、场景、风格等描述
+        """
+        # 兜底：如果模型误调用了旧工具，但用户其实在要“自拍参考照”，这里自动纠正到自拍逻辑。
+        if await self._should_use_selfie_ref(event, prompt):
+            return await self.aiimg_generate(
+                event,
+                prompt=prompt,
+                mode="selfie_ref",
+                backend="auto",
+            )
+        return await self.aiimg_generate(event, prompt=prompt, mode="text", backend="auto")
+
+    @filter.llm_tool(name="gitee_edit_image")
     async def gitee_edit_image(
         self,
         event: AstrMessageEvent,
@@ -422,64 +505,111 @@ Gemini: 4K高清，效果好，需代理
         use_message_images: bool = True,
         backend: str = "auto",
     ):
-        """编辑用户发送的图片或引用的图片。当用户发送/引用了图片并希望修改、改图、换背景、换风格、换衣服、P图时调用此工具。
-
-        获取图片的方式：
-        - use_message_images=true（默认）：自动获取用户消息或引用消息中的图片
-
-        重要提示：
-        - 当消息中包含 [Image Caption: ...] 图片描述时，说明用户发送了图片，应调用此工具并设置 use_message_images=true
-        - 调用成功后图片会自动发送给用户
+        """（兼容旧版本）编辑用户发送的图片或引用的图片。
 
         Args:
-            prompt(string): 图片编辑提示词，描述用户希望对图片做的修改
-            use_message_images(boolean): 是否自动获取用户消息中的图片，默认 true
-            backend(string): 使用的后端: auto=自动选择, gemini=Gemini, gitee=千问
+            prompt(string): 图片编辑提示词
+            use_message_images(boolean): 是否自动获取用户消息中的图片（目前仅支持 true）
+            backend(string): auto=自动选择, gemini=Gemini, gitee=千问
         """
-        user_id = event.get_sender_id()
-        request_id = f"edit_{user_id}"
+        if not use_message_images:
+            return "当前仅支持 use_message_images=true（请附带/引用图片后再调用）"
+        # 兜底：如果模型误调用了旧工具，但用户其实在要“自拍参考照”，这里自动纠正到自拍逻辑。
+        if await self._should_use_selfie_ref(event, prompt):
+            return await self.aiimg_generate(
+                event,
+                prompt=prompt,
+                mode="selfie_ref",
+                backend=backend,
+            )
+        return await self.aiimg_generate(event, prompt=prompt, mode="edit", backend=backend)
 
-        # 防抖检查
+    @filter.llm_tool(name="aiimg_generate")
+    async def aiimg_generate(
+        self,
+        event: AstrMessageEvent,
+        prompt: str,
+        mode: str = "auto",
+        backend: str = "auto",
+    ):
+        """统一图片生成/改图/自拍（参考照）工具。
+
+        使用建议（给 LLM 的决策规则）：
+        - 用户发送/引用了图片，并要求“改图/换背景/换风格/修图/换衣服”等：用 mode=edit（或 mode=auto）
+        - 用户要求“bot 自拍/来一张你自己的自拍”，且已设置自拍参考照：用 mode=selfie_ref（或 mode=auto）
+        - 纯文生图（用户没有给图片）：用 mode=text（或 mode=auto）
+
+        Args:
+            prompt(string): 提示词
+            mode(string): auto=自动判断, text=文生图, edit=改图, selfie_ref=参考照自拍
+            backend(string): auto=自动选择, gemini=Gemini, gitee=千问
+        """
+        prompt = (prompt or "").strip()
+        m = (mode or "auto").strip().lower()
+
+        user_id = event.get_sender_id()
+        request_id = f"aiimg_{user_id}"
         if self.debouncer.hit(request_id):
             return "操作太快了，请稍后再试"
 
-        # 提取图片
-        bytes_images: list[bytes] = []
-        if use_message_images:
-            image_segs = await get_images_from_event(event)
-            for seg in image_segs:
-                try:
-                    b64 = await seg.convert_to_base64()
-                    bytes_images.append(base64.b64decode(b64))
-                except Exception as e:
-                    logger.warning(f"[LLM改图] 图片转换失败，跳过: {e}")
-        if not bytes_images:
-            return "请在消息中附带需要编辑的图片。提示：发送图片或引用图片后再发送修改指令。"
+        b = (backend or "auto").strip().lower()
+        target_backend = None if b == "auto" else b
 
         try:
-            t_start = time.perf_counter()
+            await mark_processing(event)
 
-            # 确定后端
-            target_backend = None if backend == "auto" else backend
+            if m in {"selfie_ref", "selfie", "ref"}:
+                await self._do_selfie_llm(
+                    event,
+                    prompt=prompt,
+                    backend=target_backend,
+                )
+                await mark_success(event)
+                return "自拍已生成并发送。"
 
-            image_path = await self.edit.edit(
-                prompt=prompt,
-                images=bytes_images,
-                backend=target_backend,
-            )
+            # 自动模式：优先识别“自拍”语义 + 已配置参考照
+            if m == "auto" and await self._should_use_selfie_ref(event, prompt):
+                await self._do_selfie_llm(
+                    event,
+                    prompt=prompt,
+                    backend=target_backend,
+                )
+                await mark_success(event)
+                return "自拍已生成并发送。"
 
-            t_end = time.perf_counter()
+            # 改图：用户消息中有图片（不含头像兜底）或显式指定
+            has_msg_images = await self._has_message_images(event)
+            if m in {"edit", "img2img", "aiedit"} or (m == "auto" and has_msg_images):
+                image_segs = await get_images_from_event(event, include_avatar=True)
+                bytes_images = await self._image_segs_to_bytes(image_segs)
+                if not bytes_images:
+                    await mark_failed(event)
+                    return "请在消息中附带需要编辑的图片（可发送图片或引用图片）。"
 
-            await event.send(
-                event.chain_result([Image.fromFileSystem(str(image_path))])
-            )
-            logger.info(f"[LLM改图] 完成: {prompt[:30]}..., 耗时={t_end - t_start:.2f}s")
-            return f"图片已编辑并发送。"
+                image_path = await self.edit.edit(
+                    prompt=prompt,
+                    images=bytes_images,
+                    backend=target_backend,
+                )
+                await event.send(
+                    event.chain_result([Image.fromFileSystem(str(image_path))])
+                )
+                await mark_success(event)
+                return "图片已编辑并发送。"
+
+            # 默认：文生图
+            if not prompt:
+                prompt = "a selfie photo"
+
+            image_path = await self.draw.generate(prompt)
+            await event.send(event.chain_result([Image.fromFileSystem(str(image_path))]))
+            await mark_success(event)
+            return "图片已生成并发送。"
 
         except Exception as e:
-            logger.error(f"[LLM改图] 失败: {e}", exc_info=True)
-            await event.send(event.plain_result(f"编辑图片失败: {str(e) or type(e).__name__}"))
-            return f"编辑失败: {e}"
+            logger.error(f"[aiimg_generate] 失败: {e}", exc_info=True)
+            await mark_failed(event)
+            return f"生成失败: {str(e) or type(e).__name__}"
 
     @filter.llm_tool()
     async def grok_generate_video(self, event: AstrMessageEvent, prompt: str):
@@ -509,7 +639,7 @@ Gemini: 4K高清，效果好，需代理
             task = asyncio.create_task(
                 self._async_generate_video(event, extra_prompt, preset, user_id)
             )
-        except Exception as e:
+        except Exception:
             await self._video_end(user_id)
             await mark_failed(event)
             return ""
@@ -551,11 +681,15 @@ Gemini: 4K高清，效果好，需代理
             self._video_in_progress.discard(user_id)
 
     async def _send_video_result(self, event: AstrMessageEvent, video_url: str) -> None:
-        mode = str(self.config.get("video", {}).get("send_mode", "auto")).strip().lower()
+        mode = (
+            str(self.config.get("video", {}).get("send_mode", "auto")).strip().lower()
+        )
         if mode not in {"auto", "url", "file"}:
             mode = "auto"
 
-        send_timeout = int(self.config.get("video", {}).get("send_timeout_seconds", 90) or 90)
+        send_timeout = int(
+            self.config.get("video", {}).get("send_timeout_seconds", 90) or 90
+        )
         send_timeout = max(10, min(send_timeout, 300))
 
         # 1) URL 发送（优先）
@@ -573,7 +707,9 @@ Gemini: 4K高清，效果好，需代理
 
         # 2) 下载 + 本地文件发送
         download_timeout = int(
-            self.config.get("video", {}).get("download_timeout_seconds", self.video.timeout_seconds)
+            self.config.get("video", {}).get(
+                "download_timeout_seconds", self.video.timeout_seconds
+            )
             or self.video.timeout_seconds
         )
         download_timeout = max(1, min(download_timeout, 3600))
@@ -667,22 +803,24 @@ Gemini: 4K高清，效果好，需代理
         image_segs = await get_images_from_event(event)
         logger.debug(f"[改图] 获取到 {len(image_segs)} 个图片段")
         if not image_segs:
-            await event.send(event.plain_result(
-                "请发送或引用图片！\n"
-                "用法: 发送图片 + 命令\n"
-                "或: 引用图片消息 + 命令"
-            ))
+            await event.send(
+                event.plain_result(
+                    "请发送或引用图片！\n用法: 发送图片 + 命令\n或: 引用图片消息 + 命令"
+                )
+            )
             return
 
         bytes_images: list[bytes] = []
         for i, seg in enumerate(image_segs):
             try:
-                logger.debug(f"[改图] 转换图片 {i+1}/{len(image_segs)}...")
+                logger.debug(f"[改图] 转换图片 {i + 1}/{len(image_segs)}...")
                 b64 = await seg.convert_to_base64()
                 bytes_images.append(base64.b64decode(b64))
-                logger.debug(f"[改图] 图片 {i+1} 转换成功, 大小={len(bytes_images[-1])} bytes")
+                logger.debug(
+                    f"[改图] 图片 {i + 1} 转换成功, 大小={len(bytes_images[-1])} bytes"
+                )
             except Exception as e:
-                logger.warning(f"[改图] 图片 {i+1} 转换失败，跳过: {e}")
+                logger.warning(f"[改图] 图片 {i + 1} 转换失败，跳过: {e}")
 
         if not bytes_images:
             await event.send(event.plain_result("图片处理失败，请重试"))
@@ -702,9 +840,13 @@ Gemini: 4K高清，效果好，需代理
             t_end = time.perf_counter()
 
             # 发送结果图片
-            await event.send(event.chain_result([
-                Image.fromFileSystem(str(image_path)),
-            ]))
+            await event.send(
+                event.chain_result(
+                    [
+                        Image.fromFileSystem(str(image_path)),
+                    ]
+                )
+            )
 
             # 标记成功
             await mark_success(event)
@@ -783,9 +925,11 @@ Gemini: 4K高清，效果好，需代理
             t_end = time.perf_counter()
 
             # 发送结果图片
-            yield event.chain_result([
-                Image.fromFileSystem(str(image_path)),
-            ])
+            yield event.chain_result(
+                [
+                    Image.fromFileSystem(str(image_path)),
+                ]
+            )
 
             # 标记成功
             await mark_success(event)
@@ -796,3 +940,274 @@ Gemini: 4K高清，效果好，需代理
             logger.error(f"[改图] 失败: {e}")
             await mark_failed(event)
             yield event.plain_result(f"改图失败: {str(e)}")
+
+    # ==================== 自拍参考照：内部实现 ====================
+
+    def _get_selfie_conf(self) -> dict:
+        conf = self.config.get("selfie", {}) if isinstance(self.config, dict) else {}
+        return conf if isinstance(conf, dict) else {}
+
+    def _get_selfie_ref_store_key(self, event: AstrMessageEvent) -> str:
+        """用于 ReferenceStore 的固定 key（按 bot self_id 隔离）。"""
+        self_id = ""
+        try:
+            if hasattr(event, "get_self_id"):
+                self_id = str(event.get_self_id() or "").strip()
+        except Exception:
+            self_id = ""
+        return f"bot_selfie_{self_id}" if self_id else "bot_selfie"
+
+    def _resolve_data_rel_path(self, rel_path: str) -> Path | None:
+        """将 data_dir 下的相对路径解析为绝对路径，并阻止路径穿越。"""
+        if not isinstance(rel_path, str) or not rel_path.strip():
+            return None
+        rel = rel_path.replace("\\", "/").lstrip("/")
+        parts = [p for p in rel.split("/") if p]
+        if any(p in {".", ".."} for p in parts):
+            return None
+        base = Path(self.data_dir).resolve(strict=False)
+        target = (base / "/".join(parts)).resolve(strict=False)
+        try:
+            target.relative_to(base)
+        except ValueError:
+            return None
+        return target
+
+    def _get_config_selfie_reference_paths(self) -> list[Path]:
+        """从 WebUI file 配置项读取参考图路径。"""
+        conf = self._get_selfie_conf()
+        ref_list = conf.get("reference_images", [])
+        if not isinstance(ref_list, list):
+            return []
+
+        paths: list[Path] = []
+        for rel_path in ref_list:
+            p = self._resolve_data_rel_path(str(rel_path))
+            if not p:
+                continue
+            if p.is_file():
+                paths.append(p)
+        return paths
+
+    async def _get_selfie_reference_paths(
+        self, event: AstrMessageEvent
+    ) -> tuple[list[Path], str]:
+        """返回(路径列表, 来源)；来源=webui/store/none"""
+        webui_paths = self._get_config_selfie_reference_paths()
+        if webui_paths:
+            return webui_paths, "webui"
+
+        store_key = self._get_selfie_ref_store_key(event)
+        store_paths = await self.refs.get_paths(store_key)
+        if store_paths:
+            return store_paths, "store"
+
+        return [], "none"
+
+    async def _read_paths_bytes(self, paths: list[Path]) -> list[bytes]:
+        out: list[bytes] = []
+        for p in paths:
+            try:
+                data = await asyncio.to_thread(p.read_bytes)
+            except Exception:
+                continue
+            if data:
+                out.append(data)
+        return out
+
+    async def _image_segs_to_bytes(self, image_segs: list) -> list[bytes]:
+        """将 Image 组件列表转换为 bytes。"""
+        out: list[bytes] = []
+        for seg in image_segs:
+            try:
+                b64 = await seg.convert_to_base64()
+                out.append(base64.b64decode(b64))
+            except Exception as e:
+                logger.warning(f"[图片] 转换失败，跳过: {e}")
+        return out
+
+    async def _has_message_images(self, event: AstrMessageEvent) -> bool:
+        """仅检测用户消息/引用里的图片（不含头像兜底）。"""
+        image_segs = await get_images_from_event(event, include_avatar=False)
+        return bool(image_segs)
+
+    def _is_selfie_prompt(self, prompt: str) -> bool:
+        text = (prompt or "").strip()
+        if not text:
+            return True  # 空提示词时，/自拍 默认走自拍逻辑
+        lowered = text.lower()
+        if "自拍" in text or "selfie" in lowered:
+            return True
+        if any(k in text for k in ("来一张你", "来张你", "你来一张", "你来张", "看看你")):
+            return True
+        return False
+
+    async def _should_use_selfie_ref(self, event: AstrMessageEvent, prompt: str) -> bool:
+        if not self._is_selfie_prompt(prompt):
+            return False
+        paths, _ = await self._get_selfie_reference_paths(event)
+        return bool(paths)
+
+    def _build_selfie_prompt(self, prompt: str, extra_refs: int) -> str:
+        conf = self._get_selfie_conf()
+        prefix = str(conf.get("prompt_prefix", "") or "").strip()
+        if not prefix:
+            prefix = (
+                "请根据参考图生成一张新的自拍照：\n"
+                "1) 以第1张参考图的人脸身份为准（仅人脸身份特征），保持五官/气质一致。\n"
+                "2) 如果还有其它参考图，请将它们仅作为服装/姿势/构图/场景的参考。\n"
+                "3) 输出一张高质量照片风格自拍，不要拼图，不要水印。"
+            )
+
+        user_prompt = (prompt or "").strip() or "日常自拍照"
+        if extra_refs > 0:
+            return f"{prefix}\n\n用户要求：{user_prompt}\n（额外参考图数量：{extra_refs}）"
+        return f"{prefix}\n\n用户要求：{user_prompt}"
+
+    async def _generate_selfie_image(
+        self,
+        event: AstrMessageEvent,
+        prompt: str,
+        backend: str | None,
+    ) -> Path:
+        conf = self._get_selfie_conf()
+        if conf.get("enabled", True) is False:
+            raise RuntimeError("自拍功能已关闭（selfie.enabled=false）")
+
+        # 1) 读取参考照（WebUI 优先，其次命令设置的 store）
+        ref_paths, _ = await self._get_selfie_reference_paths(event)
+        ref_images = await self._read_paths_bytes(ref_paths)
+        if not ref_images:
+            raise RuntimeError(
+                "未设置自拍参考照。请先：发送图片 + /自拍参考 设置，或在 WebUI 配置 selfie.reference_images 上传。"
+            )
+
+        # 2) 读取额外参考图（衣服/姿势/场景）
+        extra_segs = await get_images_from_event(event, include_avatar=False)
+        extra_bytes = await self._image_segs_to_bytes(extra_segs)
+
+        # 3) 拼接输入图：参考照在前
+        images = [*ref_images, *extra_bytes]
+
+        final_prompt = self._build_selfie_prompt(prompt, extra_refs=len(extra_bytes))
+
+        prefer_backend = str(conf.get("prefer_backend", "auto") or "auto").strip().lower()
+        if backend is None and prefer_backend in {"gemini", "gitee"}:
+            backend = prefer_backend
+
+        # 4) 千问后端可选 task_types（仅对 gitee 生效）
+        task_types = conf.get("gitee_task_types")
+        if isinstance(task_types, list) and task_types:
+            gitee_task_types = [str(x).strip() for x in task_types if str(x).strip()]
+        else:
+            gitee_task_types = ["id", "background", "style"]
+
+        return await self.edit.edit(
+            prompt=final_prompt,
+            images=images,
+            backend=backend,
+            task_types=gitee_task_types,
+        )
+
+    async def _do_selfie_llm(
+        self,
+        event: AstrMessageEvent,
+        prompt: str,
+        backend: str | None,
+    ) -> None:
+        image_path = await self._generate_selfie_image(event, prompt, backend)
+        await event.send(event.chain_result([Image.fromFileSystem(str(image_path))]))
+
+    async def _do_selfie(
+        self,
+        event: AstrMessageEvent,
+        prompt: str,
+        backend: str | None = None,
+    ):
+        """指令 /自拍 执行入口（generator 版本）。"""
+        user_id = event.get_sender_id()
+        request_id = f"selfie_{user_id}"
+
+        if self.debouncer.hit(request_id):
+            yield event.plain_result("操作太快了，请稍后再试")
+            return
+
+        await mark_processing(event)
+
+        try:
+            image_path = await self._generate_selfie_image(event, prompt, backend)
+            yield event.chain_result([Image.fromFileSystem(str(image_path))])
+            await mark_success(event)
+        except Exception as e:
+            logger.error(f"[自拍] 失败: {e}", exc_info=True)
+            await mark_failed(event)
+            yield event.plain_result(f"自拍失败: {str(e) or type(e).__name__}")
+
+    async def _set_selfie_reference(self, event: AstrMessageEvent):
+        image_segs = await get_images_from_event(event, include_avatar=False)
+        if not image_segs:
+            yield event.plain_result("请发送或引用一张清晰的人像参考图，再发送：/自拍参考 设置")
+            return
+
+        bytes_images = await self._image_segs_to_bytes(image_segs)
+        if not bytes_images:
+            yield event.plain_result("参考图处理失败，请重试")
+            return
+
+        # 限制数量，避免一次塞太多
+        max_images = 8
+        bytes_images = bytes_images[:max_images]
+
+        store_key = self._get_selfie_ref_store_key(event)
+        try:
+            count = await self.refs.set(store_key, bytes_images)
+        except Exception as e:
+            yield event.plain_result(f"保存参考照失败: {str(e) or type(e).__name__}")
+            return
+
+        webui_paths = self._get_config_selfie_reference_paths()
+        note = ""
+        if webui_paths:
+            note = (
+                "\n⚠️ 检测到 WebUI 已配置 selfie.reference_images，运行时会优先使用 WebUI 的参考照。"
+            )
+
+        yield event.plain_result(
+            f"✅ 已保存 {count} 张自拍参考照。\n"
+            f"现在可用：/自拍 <提示词> 生成自拍。{note}"
+        )
+
+    async def _show_selfie_reference(self, event: AstrMessageEvent):
+        paths, source = await self._get_selfie_reference_paths(event)
+        if not paths:
+            yield event.plain_result(
+                "当前没有自拍参考照。\n"
+                "请先：发送图片 + /自拍参考 设置\n"
+                "或在 WebUI 配置 selfie.reference_images 上传。"
+            )
+            return
+
+        # 最多回显 5 张，避免刷屏
+        max_show = 5
+        show_paths = paths[:max_show]
+        yield event.chain_result([Image.fromFileSystem(str(p)) for p in show_paths])
+        yield event.plain_result(
+            f"📌 当前自拍参考照来源：{source}，共 {len(paths)} 张（已展示 {len(show_paths)} 张）"
+        )
+
+    async def _delete_selfie_reference(self, event: AstrMessageEvent):
+        store_key = self._get_selfie_ref_store_key(event)
+        deleted = await self.refs.delete(store_key)
+
+        webui_paths = self._get_config_selfie_reference_paths()
+        if webui_paths:
+            yield event.plain_result(
+                "已删除命令保存的自拍参考照。\n"
+                "⚠️ 但你仍配置了 WebUI 的 selfie.reference_images（运行时优先使用它）。如需彻底删除，请在 WebUI 中清空该配置。"
+            )
+            return
+
+        if deleted:
+            yield event.plain_result("✅ 已删除自拍参考照。")
+        else:
+            yield event.plain_result("当前没有已保存的自拍参考照。")

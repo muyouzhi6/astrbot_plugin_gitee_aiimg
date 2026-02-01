@@ -15,6 +15,7 @@ from typing import Any
 
 import aiofiles
 import httpx
+
 from astrbot.api import logger
 
 
@@ -103,8 +104,9 @@ class VideoManager:
                 return_exceptions=True,
             )
 
-            logger.debug(f"[VideoManager] 清理旧视频: 删除={len(to_delete)}, 当前={total - len(to_delete)}")
+            logger.debug(
+                f"[VideoManager] 清理旧视频: 删除={len(to_delete)}, 当前={total - len(to_delete)}"
+            )
 
         except Exception as e:
             logger.warning(f"[VideoManager] 清理旧视频失败: {e}")
-
