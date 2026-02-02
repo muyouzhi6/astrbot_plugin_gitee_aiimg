@@ -54,8 +54,8 @@ class GiteeAIImage(Star):
     async def initialize(self):
         self.debouncer = Debouncer(self.config)
         self.imgr = ImageManager(self.config, self.data_dir)
-        self.draw = ImageDrawService(self.config, self.imgr)
-        self.edit = EditRouter(self.config, self.imgr)
+        self.draw = ImageDrawService(self.config, self.imgr, self.data_dir)
+        self.edit = EditRouter(self.config, self.imgr, self.data_dir)
         self.nb = NanoBananaService(self.config, self.imgr)
         self.refs = ReferenceStore(self.data_dir)
         self.videomgr = VideoManager(self.config, self.data_dir)
@@ -173,6 +173,19 @@ class GiteeAIImage(Star):
         # 清理多余空格
         return msg.strip()
 
+    @staticmethod
+    def _extract_command_arg_anywhere(message: str, command_name: str) -> str:
+        """从任意位置提取“/命令 参数”，用于图片在前导致 @filter.command 不触发的场景。"""
+        msg = (message or "").strip()
+        if not msg:
+            return ""
+        for prefix in "/!！.。．":
+            token = f"{prefix}{command_name}"
+            idx = msg.find(token)
+            if idx >= 0:
+                return msg[idx + len(token) :].strip()
+        return ""
+
     async def terminate(self):
         self.debouncer.clear_all()
         try:
@@ -191,7 +204,7 @@ class GiteeAIImage(Star):
 
     # ==================== 文生图 ====================
 
-    @filter.command("aiimg", alias={"文生图"})
+    @filter.command("aiimg", alias={"文生图", "生图", "画图", "绘图", "出图"})
     async def generate_image_command(self, event: AstrMessageEvent, prompt: str):
         """生成图片指令
 
@@ -248,7 +261,7 @@ class GiteeAIImage(Star):
 
     # ==================== 图生图/改图 ====================
 
-    @filter.command("aiedit", alias={"图生图", "改图"})
+    @filter.command("aiedit", alias={"图生图", "改图", "修图"})
     async def edit_image_default(self, event: AstrMessageEvent, prompt: str):
         """使用默认后端改图
 
@@ -293,6 +306,19 @@ class GiteeAIImage(Star):
         prompt = self._extract_extra_prompt(event, "自拍")
         async for result in self._do_selfie(event, prompt, backend=None):
             yield result
+
+    @filter.regex(r"[/!！.。．]自拍(\s|$)", priority=-10)
+    async def selfie_regex_fallback(self, event: AstrMessageEvent):
+        """兼容“图片在前、文字在后”的消息：确保 /自拍 能触发。"""
+        msg = (event.message_str or "").strip()
+        # 如果本来就是以 /自拍 开头，交给 command handler，避免重复回复
+        if msg and msg[0] in "/!！.。．" and msg[1:].startswith("自拍"):
+            return
+        prompt = self._extract_command_arg_anywhere(msg, "自拍")
+        if prompt or "/自拍" in msg or "自拍" in msg:
+            async for result in self._do_selfie(event, prompt, backend=None):
+                yield result
+            event.stop_event()
 
     @filter.command("g自拍")
     async def selfie_command_gemini(self, event: AstrMessageEvent):
@@ -354,6 +380,51 @@ class GiteeAIImage(Star):
             return
 
         yield event.plain_result("未知操作。用法：/自拍参考 （查看帮助）")
+
+    @filter.regex(r"[/!！.。．]自拍参考(\s|$)", priority=-10)
+    async def selfie_reference_regex_fallback(self, event: AstrMessageEvent):
+        """兼容“图片在前、文字在后”的消息：确保 /自拍参考 能触发。"""
+        msg = (event.message_str or "").strip()
+        if msg and msg[0] in "/!！.。．" and msg[1:].startswith("自拍参考"):
+            return
+        arg = self._extract_command_arg_anywhere(msg, "自拍参考")
+        action, _, _rest = (arg or "").strip().partition(" ")
+        action = action.strip().lower()
+
+        if not action or action in {"帮助", "help", "h"}:
+            yield event.plain_result(
+                "📸 自拍参考照\n"
+                "━━━━━━━━━━━━━━\n"
+                "设置：发送图片 + /自拍参考 设置\n"
+                "查看：/自拍参考 查看\n"
+                "删除：/自拍参考 删除\n"
+                "━━━━━━━━━━━━━━\n"
+                "生成自拍：/自拍 <提示词>\n"
+                "可附带额外参考图（衣服/姿势/场景）"
+            )
+            event.stop_event()
+            return
+
+        if action in {"设置", "set"}:
+            async for r in self._set_selfie_reference(event):
+                yield r
+            event.stop_event()
+            return
+
+        if action in {"查看", "show", "看"}:
+            async for r in self._show_selfie_reference(event):
+                yield r
+            event.stop_event()
+            return
+
+        if action in {"删除", "del", "delete"}:
+            async for r in self._delete_selfie_reference(event):
+                yield r
+            event.stop_event()
+            return
+
+        yield event.plain_result("未知操作。用法：/自拍参考 （查看帮助）")
+        event.stop_event()
 
     # ==================== 视频生成 ====================
 
@@ -495,7 +566,9 @@ Gemini: 4K高清，效果好，需代理
                 mode="selfie_ref",
                 backend="auto",
             )
-        return await self.aiimg_generate(event, prompt=prompt, mode="text", backend="auto")
+        return await self.aiimg_generate(
+            event, prompt=prompt, mode="text", backend="auto"
+        )
 
     @filter.llm_tool(name="gitee_edit_image")
     async def gitee_edit_image(
@@ -522,7 +595,9 @@ Gemini: 4K高清，效果好，需代理
                 mode="selfie_ref",
                 backend=backend,
             )
-        return await self.aiimg_generate(event, prompt=prompt, mode="edit", backend=backend)
+        return await self.aiimg_generate(
+            event, prompt=prompt, mode="edit", backend=backend
+        )
 
     @filter.llm_tool(name="aiimg_generate")
     async def aiimg_generate(
@@ -531,6 +606,7 @@ Gemini: 4K高清，效果好，需代理
         prompt: str,
         mode: str = "auto",
         backend: str = "auto",
+        output: str = "",
     ):
         """统一图片生成/改图/自拍（参考照）工具。
 
@@ -542,7 +618,8 @@ Gemini: 4K高清，效果好，需代理
         Args:
             prompt(string): 提示词
             mode(string): auto=自动判断, text=文生图, edit=改图, selfie_ref=参考照自拍
-            backend(string): auto=自动选择, gemini=Gemini, gitee=千问
+            backend(string): auto=自动选择；也可填服务商别名（grok/gemini/gitee/jimeng/openai_compat 等）
+            output(string): 输出尺寸/分辨率。例: 2048x2048 或 4K（不同后端支持能力不同，留空用默认）
         """
         prompt = (prompt or "").strip()
         m = (mode or "auto").strip().lower()
@@ -552,8 +629,12 @@ Gemini: 4K高清，效果好，需代理
         if self.debouncer.hit(request_id):
             return "操作太快了，请稍后再试"
 
-        b = (backend or "auto").strip().lower()
-        target_backend = None if b == "auto" else b
+        b_raw = (backend or "auto").strip()
+        target_backend = None if b_raw.lower() == "auto" else b_raw
+
+        output = (output or "").strip()
+        size = output if output and "x" in output else None
+        resolution = output if output and size is None else None
 
         try:
             await mark_processing(event)
@@ -563,6 +644,8 @@ Gemini: 4K高清，效果好，需代理
                     event,
                     prompt=prompt,
                     backend=target_backend,
+                    size=size,
+                    resolution=resolution,
                 )
                 await mark_success(event)
                 return "自拍已生成并发送。"
@@ -573,6 +656,8 @@ Gemini: 4K高清，效果好，需代理
                     event,
                     prompt=prompt,
                     backend=target_backend,
+                    size=size,
+                    resolution=resolution,
                 )
                 await mark_success(event)
                 return "自拍已生成并发送。"
@@ -590,6 +675,8 @@ Gemini: 4K高清，效果好，需代理
                     prompt=prompt,
                     images=bytes_images,
                     backend=target_backend,
+                    size=size,
+                    resolution=resolution,
                 )
                 await event.send(
                     event.chain_result([Image.fromFileSystem(str(image_path))])
@@ -601,8 +688,15 @@ Gemini: 4K高清，效果好，需代理
             if not prompt:
                 prompt = "a selfie photo"
 
-            image_path = await self.draw.generate(prompt)
-            await event.send(event.chain_result([Image.fromFileSystem(str(image_path))]))
+            image_path = await self.draw.generate(
+                prompt,
+                provider_id=target_backend,
+                size=size,
+                resolution=resolution,
+            )
+            await event.send(
+                event.chain_result([Image.fromFileSystem(str(image_path))])
+            )
             await mark_success(event)
             return "图片已生成并发送。"
 
@@ -1038,11 +1132,15 @@ Gemini: 4K高清，效果好，需代理
         lowered = text.lower()
         if "自拍" in text or "selfie" in lowered:
             return True
-        if any(k in text for k in ("来一张你", "来张你", "你来一张", "你来张", "看看你")):
+        if any(
+            k in text for k in ("来一张你", "来张你", "你来一张", "你来张", "看看你")
+        ):
             return True
         return False
 
-    async def _should_use_selfie_ref(self, event: AstrMessageEvent, prompt: str) -> bool:
+    async def _should_use_selfie_ref(
+        self, event: AstrMessageEvent, prompt: str
+    ) -> bool:
         if not self._is_selfie_prompt(prompt):
             return False
         paths, _ = await self._get_selfie_reference_paths(event)
@@ -1061,7 +1159,9 @@ Gemini: 4K高清，效果好，需代理
 
         user_prompt = (prompt or "").strip() or "日常自拍照"
         if extra_refs > 0:
-            return f"{prefix}\n\n用户要求：{user_prompt}\n（额外参考图数量：{extra_refs}）"
+            return (
+                f"{prefix}\n\n用户要求：{user_prompt}\n（额外参考图数量：{extra_refs}）"
+            )
         return f"{prefix}\n\n用户要求：{user_prompt}"
 
     async def _generate_selfie_image(
@@ -1069,6 +1169,9 @@ Gemini: 4K高清，效果好，需代理
         event: AstrMessageEvent,
         prompt: str,
         backend: str | None,
+        *,
+        size: str | None = None,
+        resolution: str | None = None,
     ) -> Path:
         conf = self._get_selfie_conf()
         if conf.get("enabled", True) is False:
@@ -1091,9 +1194,9 @@ Gemini: 4K高清，效果好，需代理
 
         final_prompt = self._build_selfie_prompt(prompt, extra_refs=len(extra_bytes))
 
-        prefer_backend = str(conf.get("prefer_backend", "auto") or "auto").strip().lower()
-        if backend is None and prefer_backend in {"gemini", "gitee"}:
-            backend = prefer_backend
+        prefer_provider = str(conf.get("prefer_provider", "auto") or "auto").strip()
+        if backend is None and prefer_provider and prefer_provider.lower() != "auto":
+            backend = prefer_provider
 
         # 4) 千问后端可选 task_types（仅对 gitee 生效）
         task_types = conf.get("gitee_task_types")
@@ -1107,6 +1210,8 @@ Gemini: 4K高清，效果好，需代理
             images=images,
             backend=backend,
             task_types=gitee_task_types,
+            size=size,
+            resolution=resolution,
         )
 
     async def _do_selfie_llm(
@@ -1114,8 +1219,17 @@ Gemini: 4K高清，效果好，需代理
         event: AstrMessageEvent,
         prompt: str,
         backend: str | None,
+        *,
+        size: str | None = None,
+        resolution: str | None = None,
     ) -> None:
-        image_path = await self._generate_selfie_image(event, prompt, backend)
+        image_path = await self._generate_selfie_image(
+            event,
+            prompt,
+            backend,
+            size=size,
+            resolution=resolution,
+        )
         await event.send(event.chain_result([Image.fromFileSystem(str(image_path))]))
 
     async def _do_selfie(
@@ -1146,7 +1260,9 @@ Gemini: 4K高清，效果好，需代理
     async def _set_selfie_reference(self, event: AstrMessageEvent):
         image_segs = await get_images_from_event(event, include_avatar=False)
         if not image_segs:
-            yield event.plain_result("请发送或引用一张清晰的人像参考图，再发送：/自拍参考 设置")
+            yield event.plain_result(
+                "请发送或引用一张清晰的人像参考图，再发送：/自拍参考 设置"
+            )
             return
 
         bytes_images = await self._image_segs_to_bytes(image_segs)
@@ -1168,9 +1284,7 @@ Gemini: 4K高清，效果好，需代理
         webui_paths = self._get_config_selfie_reference_paths()
         note = ""
         if webui_paths:
-            note = (
-                "\n⚠️ 检测到 WebUI 已配置 selfie.reference_images，运行时会优先使用 WebUI 的参考照。"
-            )
+            note = "\n⚠️ 检测到 WebUI 已配置 selfie.reference_images，运行时会优先使用 WebUI 的参考照。"
 
         yield event.plain_result(
             f"✅ 已保存 {count} 张自拍参考照。\n"

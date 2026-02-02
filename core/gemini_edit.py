@@ -26,27 +26,22 @@ if TYPE_CHECKING:
 
 
 class GeminiEditBackend:
-    """Gemini 原生 API 改图后端"""
+    """Gemini 原生 API 图像后端（文生图 + 改图）。"""
 
     name = "Gemini"
 
-    def __init__(self, config: dict, imgr: "ImageManager"):
-        self.config = config
+    def __init__(self, *, imgr: "ImageManager", settings: dict):
         self.imgr = imgr
 
-        # Gemini 配置
-        gemini_conf = config.get("edit", {}).get("gemini", {})
-        self.api_url = gemini_conf.get(
-            "api_url", "https://generativelanguage.googleapis.com"
-        )
-        self.model = gemini_conf.get("model", "gemini-3-pro-image-preview")
-        self.resolution = gemini_conf.get("resolution", "4K")
-        self.timeout = gemini_conf.get("timeout", 120)
-        self.use_proxy = gemini_conf.get("use_proxy", False)
-        self.proxy_url = gemini_conf.get("proxy_url", "")
+        conf = settings if isinstance(settings, dict) else {}
+        self.api_url = conf.get("api_url", "https://generativelanguage.googleapis.com")
+        self.model = conf.get("model", "gemini-3-pro-image-preview")
+        self.resolution = conf.get("resolution", "4K")
+        self.timeout = conf.get("timeout", 120)
+        self.use_proxy = conf.get("use_proxy", False)
+        self.proxy_url = conf.get("proxy_url", "")
 
-        # API Key 池
-        raw_keys = gemini_conf.get("api_keys", [])
+        raw_keys = conf.get("api_keys", [])
         self.api_keys = [str(k).strip() for k in raw_keys if str(k).strip()]
         self._key_index = 0
         self._key_lock = asyncio.Lock()
@@ -54,6 +49,118 @@ class GeminiEditBackend:
         # HTTP Session (带锁保护)
         self._session: aiohttp.ClientSession | None = None
         self._session_lock = asyncio.Lock()
+
+    def _build_url(self) -> str:
+        base = str(self.api_url or "").rstrip("/")
+        if not base.endswith("v1beta"):
+            base = f"{base}/v1beta"
+        return f"{base}/models/{self.model}:generateContent"
+
+    def _proxy(self) -> str | None:
+        return self.proxy_url if self.use_proxy and self.proxy_url else None
+
+    async def _request(
+        self, parts: list[dict], *, resolution: str | None = None
+    ) -> dict:
+        api_key = await self._next_key()
+        url = self._build_url()
+        image_size = str(resolution or self.resolution or "4K").strip() or "4K"
+
+        payload = {
+            "contents": [{"parts": parts}],
+            "generationConfig": {
+                "maxOutputTokens": 8192,
+                "responseModalities": ["image", "text"],
+                "imageConfig": {"imageSize": image_size},
+            },
+            "safetySettings": [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {
+                    "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                    "threshold": "BLOCK_NONE",
+                },
+                {
+                    "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                    "threshold": "BLOCK_NONE",
+                },
+            ],
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+        }
+
+        proxy = self._proxy()
+        if proxy:
+            logger.debug(f"[Gemini] 使用代理: {proxy}")
+
+        session = await self._get_session()
+        try:
+            async with session.post(
+                url,
+                json=payload,
+                headers=headers,
+                proxy=proxy,
+            ) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    logger.error(
+                        f"[Gemini] API 错误 ({resp.status}): {error_text[:500]}"
+                    )
+                    raise RuntimeError(
+                        f"Gemini API 错误 ({resp.status}): {error_text[:200]}"
+                    )
+                data = await resp.json()
+        except asyncio.TimeoutError:
+            logger.error(f"[Gemini] 请求超时 (>{self.timeout}s)")
+            raise RuntimeError(f"Gemini 请求超时 (>{self.timeout}s)")
+        except aiohttp.ClientError as e:
+            logger.error(f"[Gemini] 网络错误: {e}")
+            raise RuntimeError(f"Gemini 网络错误: {e}")
+
+        if "error" in data:
+            error_msg = data["error"]
+            logger.error(f"[Gemini] API 返回错误: {error_msg}")
+            raise RuntimeError(f"Gemini API 错误: {error_msg}")
+
+        return data
+
+    @staticmethod
+    def _extract_images(data: dict) -> list[bytes]:
+        all_images: list[bytes] = []
+        for candidate in data.get("candidates", []):
+            content = candidate.get("content", {})
+            for part in content.get("parts", []):
+                if "inlineData" in part:
+                    b64_data = part["inlineData"]["data"]
+                    all_images.append(base64.b64decode(b64_data))
+        return all_images
+
+    async def generate(
+        self, prompt: str, *, resolution: str | None = None, **_
+    ) -> Path:
+        t_start = time.perf_counter()
+        parts = [
+            {
+                "text": (
+                    f"Generate a high quality {resolution or self.resolution} resolution image. "
+                    f"Follow this instruction: {prompt}. "
+                    "Output the image directly."
+                )
+            }
+        ]
+        data = await self._request(parts, resolution=resolution)
+        all_images = self._extract_images(data)
+        if not all_images:
+            raise RuntimeError("Gemini 未返回图片")
+
+        result_bytes = all_images[-1]
+        result_path = await self.imgr.save_image(result_bytes)
+        t_end = time.perf_counter()
+        logger.info(f"[Gemini] 生图完成: 耗时={t_end - t_start:.2f}s")
+        return result_path
 
     async def close(self) -> None:
         """清理资源"""
@@ -93,7 +200,9 @@ class GeminiEditBackend:
             self._key_index = (self._key_index + 1) % len(self.api_keys)
             return key
 
-    async def edit(self, prompt: str, images: list[bytes]) -> Path:
+    async def edit(
+        self, prompt: str, images: list[bytes], *, resolution: str | None = None
+    ) -> Path:
         """
         执行改图
 
@@ -106,25 +215,17 @@ class GeminiEditBackend:
         """
         if not images:
             raise ValueError("至少需要一张图片")
-
-        api_key = await self._next_key()
         t_start = time.perf_counter()
 
+        final_resolution = str(resolution or self.resolution or "4K").strip() or "4K"
         logger.info(
             f"[Gemini] 开始改图: model={self.model}, "
-            f"resolution={self.resolution}, images={len(images)}"
+            f"resolution={final_resolution}, images={len(images)}"
         )
 
-        # 构建请求 URL
-        base = self.api_url.rstrip("/")
-        if not base.endswith("v1beta"):
-            base = f"{base}/v1beta"
-        url = f"{base}/models/{self.model}:generateContent"
-
-        # 构建请求体
         final_prompt = (
             f"Re-imagine the attached image based on this instruction: {prompt}. "
-            f"Generate a high quality {self.resolution} resolution image. "
+            f"Generate a high quality {final_resolution} resolution image. "
             f"Output the transformed image directly."
         )
 
@@ -140,96 +241,14 @@ class GeminiEditBackend:
                 }
             )
 
-        payload = {
-            "contents": [{"parts": parts}],
-            "generationConfig": {
-                "maxOutputTokens": 8192,
-                "responseModalities": ["image", "text"],
-                "imageConfig": {"imageSize": self.resolution},
-            },
-            "safetySettings": [
-                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                {
-                    "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                    "threshold": "BLOCK_NONE",
-                },
-                {
-                    "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                    "threshold": "BLOCK_NONE",
-                },
-            ],
-        }
-
-        headers = {
-            "Content-Type": "application/json",
-            "x-goog-api-key": api_key,
-        }
-
-        # 代理设置
-        proxy = self.proxy_url if self.use_proxy and self.proxy_url else None
-        if proxy:
-            logger.debug(f"[Gemini] 使用代理: {proxy}")
-
-        # 发送请求
-        session = await self._get_session()
+        data = await self._request(parts, resolution=final_resolution)
         try:
-            async with session.post(
-                url,
-                json=payload,
-                headers=headers,
-                proxy=proxy,
-            ) as resp:
-                t_api = time.perf_counter()
-                logger.debug(
-                    f"[Gemini] API 响应状态: {resp.status}, 耗时: {t_api - t_start:.2f}s"
-                )
-
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    logger.error(
-                        f"[Gemini] API 错误 ({resp.status}): {error_text[:500]}"
-                    )
-                    raise RuntimeError(
-                        f"Gemini API 错误 ({resp.status}): {error_text[:200]}"
-                    )
-
-                data = await resp.json()
-
-        except asyncio.TimeoutError:
-            logger.error(f"[Gemini] 请求超时 (>{self.timeout}s)")
-            raise RuntimeError(f"Gemini 请求超时 (>{self.timeout}s)")
-        except aiohttp.ClientError as e:
-            logger.error(f"[Gemini] 网络错误: {e}")
-            raise RuntimeError(f"Gemini 网络错误: {e}")
-
-        # 检查错误响应
-        if "error" in data:
-            error_msg = data["error"]
-            logger.error(f"[Gemini] API 返回错误: {error_msg}")
-            raise RuntimeError(f"Gemini API 错误: {error_msg}")
-
-        # 提取图片 - 取最后一张（高分辨率版本）
-        all_images: list[bytes] = []
-        try:
-            for candidate in data.get("candidates", []):
-                content = candidate.get("content", {})
-                for part in content.get("parts", []):
-                    if "inlineData" in part:
-                        b64_data = part["inlineData"]["data"]
-                        all_images.append(base64.b64decode(b64_data))
+            all_images = self._extract_images(data)
         except Exception as e:
             logger.error(f"[Gemini] 解析响应失败: {e}")
             raise RuntimeError(f"Gemini 响应解析失败: {e}")
 
         if not all_images:
-            # 尝试获取文本响应用于调试
-            text_parts = []
-            for candidate in data.get("candidates", []):
-                for part in candidate.get("content", {}).get("parts", []):
-                    if "text" in part:
-                        text_parts.append(part["text"][:200])
-            logger.error(f"[Gemini] 未返回图片, 文本响应: {text_parts}")
             raise RuntimeError("Gemini 未返回图片")
 
         # 取最后一张图（第一张可能是低分辨率预览）
@@ -245,8 +264,7 @@ class GeminiEditBackend:
         t_end = time.perf_counter()
 
         logger.info(
-            f"[Gemini] 改图完成: 总耗时={t_end - t_start:.2f}s, "
-            f"API={t_api - t_start:.2f}s, 保存={t_end - t_save:.2f}s"
+            f"[Gemini] 改图完成: 总耗时={t_end - t_start:.2f}s, 保存={t_end - t_save:.2f}s"
         )
 
         return result_path
