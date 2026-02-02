@@ -28,23 +28,18 @@ class GiteeEditBackend:
 
     name = "Gitee"
 
-    def __init__(self, config: dict, imgr: "ImageManager"):
-        self.config = config
+    def __init__(self, *, imgr: "ImageManager", settings: dict):
         self.imgr = imgr
 
-        # Gitee 配置
-        gitee_conf = config.get("edit", {}).get("gitee", {})
-        self.base_url = gitee_conf.get("base_url", "https://ai.gitee.com/v1")
-        self.model = gitee_conf.get("model", "Qwen-Image-Edit-2511")
-        self.num_inference_steps = gitee_conf.get("num_inference_steps", 4)
-        self.guidance_scale = gitee_conf.get("guidance_scale", 1.0)
-        self.poll_interval = gitee_conf.get("poll_interval", 5)
-        self.poll_timeout = gitee_conf.get("poll_timeout", 300)
+        conf = settings if isinstance(settings, dict) else {}
+        self.base_url = conf.get("base_url", "https://ai.gitee.com/v1")
+        self.model = conf.get("model", "Qwen-Image-Edit-2511")
+        self.num_inference_steps = conf.get("num_inference_steps", 4)
+        self.guidance_scale = conf.get("guidance_scale", 1.0)
+        self.poll_interval = conf.get("poll_interval", 5)
+        self.poll_timeout = conf.get("poll_timeout", 300)
 
-        # API Key 池 - 优先用 gitee 配置，否则用 draw 配置
-        gitee_keys = gitee_conf.get("api_keys", [])
-        draw_keys = config.get("draw", {}).get("api_keys", [])
-        raw_keys = gitee_keys or draw_keys
+        raw_keys = conf.get("api_keys", [])
         self.api_keys = [str(k).strip() for k in raw_keys if str(k).strip()]
         self._key_index = 0
         self._key_lock = asyncio.Lock()

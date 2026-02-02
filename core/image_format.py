@@ -13,7 +13,7 @@ def guess_image_mime_and_ext(image_bytes: bytes) -> tuple[str, str]:
     b = image_bytes
 
     # JPEG
-    if len(b) >= 3 and b[0:3] == b"\xFF\xD8\xFF":
+    if len(b) >= 3 and b[0:3] == b"\xff\xd8\xff":
         return "image/jpeg", "jpg"
 
     # PNG
@@ -29,4 +29,3 @@ def guess_image_mime_and_ext(image_bytes: bytes) -> tuple[str, str]:
         return "image/webp", "webp"
 
     return "image/jpeg", "jpg"
-

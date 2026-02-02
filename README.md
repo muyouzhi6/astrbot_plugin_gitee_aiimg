@@ -1,302 +1,146 @@
-# AstrBot Gitee AI 图像生成插件 （有免费额度）
+# astrbot_plugin_gitee_aiimg
 
-> **当前版本**: v2.7.0
+> 当前版本：v3.0.0（配置界面已重构，不再兼容旧版 providers/旧字段）
 
-本插件为 AstrBot 接入 Gitee AI 的图像生成能力，支持**文生图**和**图生图**两种模式，支持通过自然语言或指令调用，支持多 Key 轮询。
+多服务商图像插件：统一支持文生图（Text-to-Image）、改图/图生图（Image-to-Image/Edit）、Bot 自拍参考照（上传参考人像后再“自拍”）、以及 Grok imagine 视频生成。
 
-## 功能特性
+## 你只需要记住两件事
 
-### 文生图 (Text-to-Image)
+1) 生图看 `draw`：先选 `draw.provider`，再把对应的 `draw.<provider>` 配完整。
+2) 改图看 `edit`：先选 `edit.provider`，再把对应的 `edit.<provider>` 配完整。
 
-- 支持通过 LLM 自然语言调用生成图片
-- 支持通过指令 `/aiimg` 生成图片
-- 支持多种图片比例和分辨率
-- 支持自定义模型和负面提示词
+配置面板会只显示你选中的那一套服务商参数，避免“看一堆字段不知道填哪个”。
 
-### 图生图 (Image-to-Image) 🆕
+## 降级服务商怎么用（fallback）
 
-- 支持通过 LLM 自然语言调用编辑图片
-- 支持通过指令 `/aiedit` 编辑图片
-- 支持多种编辑任务类型：身份保持、风格迁移、背景替换等
-- 支持多图输入（如人脸+风格图）
+用途：当“主服务商”请求失败时，按顺序自动切换到备用服务商继续尝试。
 
-### Bot 自拍（参考照）📸
+配置位置：
 
-- 先上传一张（或多张）Bot 人像参考照，让 Bot “知道自己长什么样”
-- 使用改图模型生成自拍（本质：参考照 + 提示词 → 新自拍）
-- 支持附带额外参考图（衣服/姿势/场景）作为风格参考
-- 支持指令 `/自拍` 与自然语言触发（LLM 工具 `aiimg_generate` 自动判断）
+- 生图：`draw.fallback_1 / draw.fallback_2 / draw.fallback_3`
+- 改图：`edit.fallback_1 / edit.fallback_2 / edit.fallback_3`
 
-### 视频生成 (Image-to-Video) 🎬
+填写规则：
 
-- 支持通过指令 `/视频` 生成视频（参考图 + 提示词）
-- 支持视频预设：`/视频 预设名 额外提示词`（与改图预设逻辑一致，但用前缀避免冲突）
-- 支持失败自动重试与超时配置（最大 3600 秒）
-- 支持 URL/本地文件发送模式（可自动降级）
+- 直接从下拉框选择服务商别名（例如 `gemini_native`、`grok`、`gitee_async`）
+- 留空表示不启用该级降级
+- 会按 `1 → 2 → 3` 的顺序尝试
 
-### 通用特性
+例子 1（生图）：主用 Grok，失败就降级到 Gemini 原生，再不行降级到 Gitee
 
-- 支持多 API Key 轮询调用
-- 自动清理旧图片，节省存储空间
-- 100% 异步 I/O，不阻塞事件循环
+- `draw.provider = grok`
+- `draw.fallback_1 = gemini_native`
+- `draw.fallback_2 = gitee`
 
-## 配置
+例子 2（改图）：主用 Gemini OpenAI 网关（有些网关不支持 images.edit），失败就降级到 Gemini 原生，再不行到千问异步
 
-在 AstrBot 的管理面板中配置以下参数：
+- `edit.provider = gemini_openai`
+- `edit.fallback_1 = gemini_native`
+- `edit.fallback_2 = gitee_async`
 
-### 文生图配置
+## 你的日志里“聊天可用但改图 404”的原因
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `base_url` | Gitee AI API 地址 | `https://ai.gitee.com/v1` |
-| `api_key` | Gitee AI API Key（支持多 Key 轮询） | `[]` |
-| `model` | 使用的模型名称 | `z-image-turbo` |
-| `size` | 默认图片大小 | `1024x1024` |
-| `num_inference_steps` | 推理步数 | `9` |
-| `negative_prompt` | 负面提示词 | `""` |
+你贴的这段 “Provider is available” 检测的是 `chat_completion`（也就是 `/v1/chat/completions` 能不能通），
+但我们改图用的是 `images.edit`（也就是 `/v1/images/edits` 这一类接口）。
 
-### 图生图配置 🆕
+很多第三方网关（例如只转发聊天的网关）会出现：
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `base_url` | 图生图 API 地址（留空使用文生图地址） | `""` |
-| `api_key` | 图生图 API Key（留空使用文生图 Key） | `[]` |
-| `model` | 图生图模型名称 | `Qwen-Image-Edit-2511` |
-| `num_inference_steps` | 图生图推理步数 | `4` |
-| `guidance_scale` | 引导系数 | `1.0` |
-| `poll_interval` | 轮询间隔（秒） | `5` |
-| `poll_timeout` | 轮询超时（秒） | `300` |
+- 聊天能用（PONG 成功）
+- 图片接口 404（因为根本没实现 `/v1/images/*`）
 
-### 自拍配置 📸
+解决方式：
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `enabled` | 启用自拍参考照 | `true` |
-| `reference_images` | 自拍参考人像（WebUI 上传，可多张） | `[]` |
-| `prefer_backend` | 自拍优先后端（auto/gemini/gitee） | `auto` |
-| `gitee_task_types` | 千问任务类型（仅千问后端生效） | `["id","background","style"]` |
-| `prompt_prefix` | 自拍提示词前缀（留空用内置默认） | `""` |
+- 自拍/改图：优先用 `edit.provider = gemini_native`（Gemini 原生改图稳定）
+- 如果你用的是“聊天出图”的网关：把对应服务商的 `api_mode` 改成 `chat`（走 `/v1/chat/completions` 解析图片），不要用 `images`
+- 如果你的网关/模型不支持“图文输入改图”：把 `supports_edit` 关掉，并设置 `edit.fallback_1 = gemini_native`
 
-### 视频生成配置 🎬
+## Base URL 怎么填（最重要）
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `enabled` | 启用视频生成 | `true` |
-| `server_url` | Grok API 地址（自动补全 `/v1/chat/completions`） | `https://api.x.ai` |
-| `api_key` | Grok API Key | `""` |
-| `model` | 模型 ID | `grok-imagine-0.9` |
-| `timeout_seconds` | 请求超时（秒，最大 3600） | `180` |
-| `max_retries` | 失败自动重试次数 | `2` |
-| `empty_response_retry` | 返回 200 但没解析到视频URL 时的额外重试次数 | `2` |
-| `retry_delay` | 重试基础间隔（秒，指数退避） | `2` |
-| `send_mode` | 发送方式（auto/url/file） | `auto` |
-| `send_timeout_seconds` | 发送超时（秒） | `90` |
-| `download_timeout_seconds` | 下载视频超时（秒） | `300` |
-| `max_cached_videos` | 本地缓存视频上限（0=不清理） | `20` |
-| `presets` | 视频预设提示词列表 | `[]` |
+插件会自动把 OpenAI 兼容的 `base_url` 规范化成“包含 `/v1`”的形式，所以你可以：
 
-### 配置说明
+- 填基础域名：`https://api.x.ai`、`https://ai.gitee.com`
+- 或者填带版本：`https://api.x.ai/v1`、`https://ai.gitee.com/v1`
 
-- **api_key**: 支持配置多个 Key 以实现轮询调用，可有效分摊 API 额度消耗
-- **negative_prompt**: 可自定义负面提示词，留空则使用内置默认值
-- **edit_api_key**: 图生图可单独配置 Key，也可留空复用文生图的 Key
+不要填这种“具体接口地址”：
 
-## Gitee AI API Key获取方法
+- `.../chat/completions`（这是聊天接口，不是图片）
+- `.../v1/chat/completions`
 
-1.访问<https://ai.gitee.com/serverless-api?model=z-image-turbo>
+如果你填错了，通常会看到 `404`（base_url/路径不对）或 `不支持 images.edit`（服务商本身不支持改图）。
 
-2.<img width="2241" height="1280" alt="PixPin_2025-12-05_16-56-27" src="https://github.com/user-attachments/assets/77f9a713-e7ac-4b02-8603-4afc25991841" />
+## “我网关只有 /v1/chat/completions，但我确实能出图”怎么配？
 
-3.免费额度<img width="240" height="63" alt="PixPin_2025-12-05_16-56-49" src="https://github.com/user-attachments/assets/6efde7c4-24c6-456a-8108-e78d7613f4fb" />
+这类网关经常是“聊天出图”（模型把图片塞在 chat content 里），但没有 `/v1/images/*`。
 
-4.可以涩涩，警惕违规被举报
+现在插件支持两种模式（在 `grok/gemini_openai/openai_compat` 里都有 `api_mode`）：
 
-5.好用可以给个🌟
+- `api_mode=chat`：走 `/v1/chat/completions`，从回复里解析 `![](data:image/...base64,...)` 或图片 URL（适配你这种网关）
+- `api_mode=images`：走 `/v1/images/*`（只有当你的服务商真的实现了 Images API 才能用）
 
-## 支持的图像尺寸
+如果你“第一次能出图、第二次 404”，基本是网关后端节点不一致导致：有的节点实现了图片能力，有的没有。建议用 `api_mode=chat` 更稳。
 
-> ⚠️ **注意**: 仅支持以下尺寸，使用其他尺寸会报错
+## 支持的服务商（生图 / 改图）
 
-| 比例 | 可用尺寸 |
-|------|----------|
-| 1:1 | 256×256, 512×512, 1024×1024, 2048×2048 |
-| 4:3 | 1152×896, 2048×1536 |
-| 3:4 | 768×1024, 1536×2048 |
-| 3:2 | 2048×1360 |
-| 2:3 | 1360×2048 |
-| 16:9 | 1024×576, 2048×1152 |
-| 9:16 | 576×1024, 1152×2048 |
+- `grok`：Grok 图片（OpenAI 兼容 Images API）
+- `gemini_native`：Gemini 原生 generateContent（支持 1K/2K/4K）
+- `gemini_openai`：Gemini 的 OpenAI 兼容图片接口/网关（按你的网关文档填写 base_url/model）
+- `openai_compat`：通用 OpenAI 兼容 Images API（任意兼容服务商）
+- `jimeng`：即梦/豆包聚合接口（接口形态参考 `data/plugins/doubao`）
+- `gitee`：Gitee 生图（仅生图）
+- `gitee_async`：Gitee 千问异步改图（仅改图）
 
-## 使用方法
+## 分辨率/尺寸（默认 4K）
+
+- `gemini_native`：用 `resolution`（默认 `4K`）
+- `grok/gemini_openai/openai_compat`：用 `size`（默认 `4096x4096`）；若服务商不支持会自动降级到 `2048x2048`
+- LLM 工具也支持 `output` 参数传 `4K` / `2K` / `1K` 或 `4096x4096` 这种尺寸
+- 注意：有些服务商/网关会无视你请求的 4K，实际只返回 2K（或更低）。这通常是服务商侧限制，不是插件能强制突破的。
+
+## 使用
 
 ### 文生图
 
-#### 指令调用
-
 ```
-/aiimg <提示词> [比例]
+/生图 一张电影感的街拍写真
 ```
 
-示例：
+（也兼容 `/aiimg`）
 
-- `/aiimg 一个可爱的女孩` (使用默认比例 1:1)
-- `/aiimg 一个可爱的女孩 16:9`
-- `/aiimg 赛博朋克风格的城市 9:16`
+### 改图/图生图
 
-#### 自然语言调用
-
-直接与 bot 对话，例如：
-
-- "帮我画一张小猫的图片"
-- "生成一个二次元风格的少女"
-
-### 图生图 🆕
-
-#### 指令调用
+发送（或引用）图片，然后：
 
 ```
-/aiedit <提示词> [任务类型]
+/改图 把衣服换成黑色风衣，背景换成雨夜街头
 ```
 
-**任务类型说明：**
+（也兼容 `/aiedit`）
 
-| 类型 | 说明 |
-|------|------|
-| `id` | 保持身份特征（默认） |
-| `style` | 风格迁移 |
-| `subject` | 主体替换 |
-| `background` | 背景替换 |
-| `element` | 元素编辑 |
+### 自拍参考照（上传人像后再自拍）
 
-示例：
+1) 设置参考照（二选一）：
 
-- 发送图片 + `/aiedit 把背景换成海边 background`
-- 发送图片 + `/aiedit 转换成油画风格 style`
-- 发送两张图片 + `/aiedit 根据图1的人物和图2的风格生成结婚照 id,style`
+- WebUI 上传：`selfie.reference_images`
+- 聊天设置：发送图片 + `/自拍参考 设置`
 
-#### 自然语言调用
-
-发送图片并对话，例如：
-
-- 发送图片 + "帮我把这张图的背景换成星空"
-- 发送图片 + "把这张照片转成动漫风格"
-
-### Bot 自拍（参考照）📸
-
-#### 设置参考照
-
-- 方式 A（推荐）：在 WebUI 配置 `selfie.reference_images` 上传
-- 方式 B：发送图片 + `/自拍参考 设置`
-
-#### 生成自拍
+2) 生成自拍：
 
 ```
-/自拍 <提示词>
+/自拍 跟图1同款写真，穿上同款衣服，姿势也模仿
 ```
 
-示例：
+提示：支持“图片 + 文本同一条消息”一起发送（图片在前或在后都可以）。
 
-- `/自拍 海边日落，电影感，手持相机自拍`
-- 发送衣服/姿势参考图 + `/自拍 穿上参考图的衣服，做相同姿势，在街头拍一张`
+### 视频生成
 
-### 视频生成 🎬
-
-#### 指令调用
+发送（或引用）图片，然后：
 
 ```
-/视频 <提示词>
-/视频 <预设名> [额外提示词]
+/视频 让人物微笑并轻微点头，镜头缓慢推近
 ```
 
-示例：
+## LLM 工具：aiimg_generate
 
-- 发送/引用图片 + `/视频 让人物微笑并轻微点头，镜头缓慢推进`
-- 发送/引用图片 + `/视频 日常 加一点风吹头发的效果`
-- 查看预设：`/视频预设列表`
-
-#### 自然语言调用
-
-发送/引用图片并对话，例如：
-
-- 发送图片 + "把这张图变成短视频，镜头轻微摇移"
-- 发送图片 + "让人物眨眼并微笑，背景有轻微光影变化"
-
-## 注意事项
-
-- 请确保您的 Gitee AI 账号有足够的额度。
- - 视频生成功能需要配置 `video.api_key`（Grok）。
-
-- 生成的图片会临时保存在 `data/plugin_data/astrbot_plugin_gitee_aiimg/images` 目录下
-- 插件会自动清理旧图片，无需手动管理
-- 当 `video.send_mode=file/auto` 且触发下载时，视频会缓存在插件数据目录的 `videos/` 下，并按 `video.max_cached_videos` 自动清理
-- `/aiimg` 命令和 LLM 调用均有 10 秒防抖机制，避免重复请求
-
-## 更新日志
-
-### v2.7.0 (2026-02)
-
-**📸 新功能：Bot 自拍参考照**
-
-- 新增 `/自拍参考`（设置/查看/删除）与 `/自拍`（参考照自拍）
-- 新增统一 LLM 工具 `aiimg_generate`：自动在文生图/改图/参考照自拍间做选择
-
-### v2.6.0 (2026-01)
-
-**🎬 新功能：视频生成**
-
-- 新增 `/视频` 指令：参考图 + 提示词生成视频（Grok imagine）
-- 新增视频预设：`/视频 预设名 额外提示词`（避免与改图预设命令冲突）
-- 新增 `grok_generate_video` LLM 工具：支持自然语言触发生成视频
-- 支持失败自动重试、超时（最大 3600 秒）、发送模式自动降级
-
-### v2.0.0 (2025-01)
-
-**🆕 新功能：图生图**
-
-- 新增 `/aiedit` 指令支持图像编辑
-- 新增 `edit_image` LLM 工具，支持自然语言调用图生图
-- 支持多种任务类型：身份保持、风格迁移、背景替换等
-- 支持多图输入（如人脸+风格参考图）
-- 默认使用 `Qwen-Image-Edit-2511` 模型
-
-**⚙️ 配置项扩展**
-
-- 新增 `edit_base_url`、`edit_api_key`、`edit_model` 等图生图专用配置
-- 图生图配置可独立配置，也可复用文生图配置
-
-### v1.2 (2024-12)
-
-**🚀 性能优化**
-
-- 100% 异步 I/O，不再阻塞事件循环
-- HTTP 客户端复用，减少连接开销
-- 自动清理旧图片，保留最近 50 张
-
-**🐛 Bug 修复**
-
-- 修复内存泄漏问题
-- 统一防抖机制，`/aiimg` 命令现也有 10 秒防抖
-
-**✨ 新功能**
-
-- 新增 `negative_prompt` 配置项，可自定义负面提示词
-
-### v1.1
-
-- 初始版本
-- 支持 LLM 工具调用和 `/aiimg` 命令
-- 支持多种图片比例
-- 支持多 Key 轮询
-
-## 出图展示区
-
-<img width="1152" height="2048" alt="29889b7b184984fac81c33574233a3a9_720" src="https://github.com/user-attachments/assets/c2390320-6d55-4db4-b3ad-0dde7b447c87" />
-
-<img width="1152" height="2048" alt="60393b1ea20d432822c21a61ba48d946" src="https://github.com/user-attachments/assets/3d8195e5-5d89-4a12-806e-8a81e348a96c" />
-
-<img width="1152" height="2048" alt="3e5ee8d438fa797730127e57b9720454_720" src="https://github.com/user-attachments/assets/c270ae7f-25f6-4d96-bbed-0299c9e61877" />
-
-
-本插件开发QQ群：215532038
-
-<img width="1284" height="2289" alt="qrcode_1767584668806" src="https://github.com/user-attachments/assets/113ccf60-044a-47f3-ac8f-432ae05f89ee" />
+- `mode`: `auto` / `text` / `edit` / `selfie_ref`
+- `backend`: `auto` 或指定服务商别名（`grok`/`gemini`/`gitee_async`/`jimeng`/`openai_compat` 等）
+- `output`: `4K` / `2K` / `1K` / `1024x1024` / `4096x4096` 等

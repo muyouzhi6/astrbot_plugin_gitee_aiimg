@@ -1,14 +1,15 @@
+from __future__ import annotations
+
 import time
 from pathlib import Path
 
-from openai import AsyncOpenAI
-from openai.types.images_response import ImagesResponse
-
 from astrbot.api import logger
 
-from .image_manager import ImageManager
+from .gemini_edit import GeminiEditBackend
+from .jimeng_api_backend import JimengApiBackend
+from .openai_chat_image_backend import OpenAIChatImageBackend
+from .openai_compat_backend import OpenAICompatBackend
 
-# 不支持 negative_prompt 的模型（会把负向提示词当正向处理，导致出图畸形）
 MODELS_WITHOUT_NEGATIVE_PROMPT = frozenset(
     {
         "z-image-turbo",
@@ -20,101 +21,249 @@ MODELS_WITHOUT_NEGATIVE_PROMPT = frozenset(
 
 
 class ImageDrawService:
-    def __init__(self, config: dict, imgr: ImageManager):
+    """生图服务（基于新的配置界面）。"""
+
+    def __init__(self, config: dict, imgr, data_dir: Path):
+        self.config = config or {}
         self.imgr = imgr
-        self.dconf = config["draw"]
+        self.data_dir = Path(data_dir)
 
-        self.api_keys = [
-            str(k).strip() for k in self.dconf["api_keys"] if str(k).strip()
-        ]
-        self._key_index = 0
+        self.draw_conf: dict = (
+            (self.config.get("draw") or {}) if isinstance(self.config, dict) else {}
+        )
+        self._backends: dict[str, object] = {}
 
-        self._clients: dict[str, AsyncOpenAI] = {}
+    def _default_provider(self) -> str:
+        return str(self.draw_conf.get("provider") or "grok").strip() or "grok"
 
-    async def close(self) -> None:
-        """清理资源"""
-        for client in self._clients.values():
-            await client.close()
-        self._clients.clear()
-
-    def _next_key(self) -> str:
-        if not self.api_keys:
-            raise Exception("没有可用的 API Key")
-        key = self.api_keys[self._key_index]
-        self._key_index = (self._key_index + 1) % len(self.api_keys)
-        return key
-
-    def get_openai_client(self) -> AsyncOpenAI:
-        key = self._next_key()
-
-        client = self._clients.get(key)
-        if client is None:
-            client = AsyncOpenAI(
-                base_url=self.dconf["base_url"],
-                api_key=key,
-                timeout=self.dconf["timeout"],
-                max_retries=self.dconf["max_retries"],
-            )
-            self._clients[key] = client
-
-        return client
-
-    async def generate(self, prompt: str, size: str | None = None) -> Path:
-        client = self.get_openai_client()
-
-        kwargs = {
-            "prompt": prompt,
-            "model": self.dconf["model"],
-            "extra_body": {
-                "num_inference_steps": self.dconf["num_inference_steps"],
-            },
+    def _fallback_provider_ids(self) -> list[str]:
+        allowed = {
+            "grok",
+            "gemini_native",
+            "gemini_openai",
+            "openai_compat",
+            "jimeng",
+            "gitee",
         }
 
-        if self.dconf.get("negative_prompt"):
-            # 部分模型不支持 negative_prompt，会把它当正向提示词处理导致出图畸形
-            model_name = self.dconf["model"].lower()
-            if model_name not in MODELS_WITHOUT_NEGATIVE_PROMPT:
-                kwargs["extra_body"]["negative_prompt"] = self.dconf["negative_prompt"]
+        out: list[str] = []
 
-        kwargs["size"] = size or self.dconf["size"]
+        # New UI: explicit dropdown fields.
+        for key in ("fallback_1", "fallback_2", "fallback_3"):
+            v = str(self.draw_conf.get(key) or "").strip()
+            if v and v in allowed and v not in out:
+                out.append(v)
 
-        t0 = time.time()
-        try:
-            resp: ImagesResponse = await client.images.generate(**kwargs)
-        except Exception as e:
-            logger.error(f"[生图] API 调用失败，耗时: {time.time() - t0:.2f}s")
-            self._raise_api_error(e)
-            raise  # never reached, but makes type checker happy
+        # Backward: accept legacy list configs.
+        raw = self.draw_conf.get("fallback_providers")
+        if isinstance(raw, list):
+            for x in raw:
+                v = str(x).strip()
+                if v and v in allowed and v not in out:
+                    out.append(v)
 
-        api_time = time.time() - t0
-        logger.info(f"[生图] API 响应耗时: {api_time:.2f}s")
+        return out
 
-        if not resp.data:
-            raise RuntimeError("未返回图片数据")
+    def _normalize_alias(self, provider: str | None) -> str | None:
+        if provider is None:
+            return None
+        p = str(provider).strip()
+        if not p or p.lower() == "auto":
+            return None
+        aliases = {"gemini": "gemini_native", "gitee": "gitee"}
+        return aliases.get(p, p)
 
-        img = resp.data[0]
+    def _get_backend(self, provider: str) -> object:
+        if provider in self._backends:
+            return self._backends[provider]
+        obj = self._build_backend(provider)
+        self._backends[provider] = obj
+        return obj
 
-        t1 = time.time()
-        if img.url:
-            result = await self.imgr.download_image(img.url)
-            logger.info(
-                f"[生图] 下载图片耗时: {time.time() - t1:.2f}s, URL: {img.url[:60]}..."
+    def _build_openai_compat(
+        self, settings: dict, *, supports_edit: bool
+    ) -> OpenAICompatBackend:
+        return OpenAICompatBackend(
+            imgr=self.imgr,
+            base_url=str(settings.get("base_url") or "").strip(),
+            api_keys=[
+                str(x).strip()
+                for x in (settings.get("api_keys") or [])
+                if str(x).strip()
+            ],
+            timeout=int(settings.get("timeout") or 120),
+            max_retries=int(settings.get("max_retries") or 2),
+            default_model=str(settings.get("model") or "").strip(),
+            default_size=str(settings.get("size") or "4096x4096").strip(),
+            supports_edit=supports_edit,
+            extra_body=settings.get("extra_body")
+            if isinstance(settings.get("extra_body"), dict)
+            else None,
+        )
+
+    def _build_backend(self, provider: str) -> object:
+        p = str(provider).strip()
+        if p == "grok":
+            settings = dict(self.draw_conf.get("grok") or {})
+            settings.setdefault("base_url", "https://api.x.ai/v1")
+            api_mode = str(settings.get("api_mode") or "chat").strip().lower()
+            if api_mode == "chat":
+                return OpenAIChatImageBackend(
+                    imgr=self.imgr,
+                    base_url=str(settings.get("base_url") or "").strip(),
+                    api_keys=[
+                        str(x).strip()
+                        for x in (settings.get("api_keys") or [])
+                        if str(x).strip()
+                    ],
+                    timeout=int(settings.get("timeout") or 120),
+                    max_retries=int(settings.get("max_retries") or 2),
+                    default_model=str(settings.get("model") or "").strip(),
+                    supports_edit=False,
+                    extra_body=settings.get("extra_body")
+                    if isinstance(settings.get("extra_body"), dict)
+                    else None,
+                )
+            return self._build_openai_compat(settings, supports_edit=False)
+
+        if p == "gemini_openai":
+            settings = dict(self.draw_conf.get("gemini_openai") or {})
+            api_mode = str(settings.get("api_mode") or "images").strip().lower()
+            if api_mode == "chat":
+                return OpenAIChatImageBackend(
+                    imgr=self.imgr,
+                    base_url=str(settings.get("base_url") or "").strip(),
+                    api_keys=[
+                        str(x).strip()
+                        for x in (settings.get("api_keys") or [])
+                        if str(x).strip()
+                    ],
+                    timeout=int(settings.get("timeout") or 120),
+                    max_retries=int(settings.get("max_retries") or 2),
+                    default_model=str(settings.get("model") or "").strip(),
+                    supports_edit=False,
+                    extra_body=settings.get("extra_body")
+                    if isinstance(settings.get("extra_body"), dict)
+                    else None,
+                )
+            return self._build_openai_compat(settings, supports_edit=False)
+
+        if p == "openai_compat":
+            settings = dict(self.draw_conf.get("openai_compat") or {})
+            api_mode = str(settings.get("api_mode") or "images").strip().lower()
+            if api_mode == "chat":
+                return OpenAIChatImageBackend(
+                    imgr=self.imgr,
+                    base_url=str(settings.get("base_url") or "").strip(),
+                    api_keys=[
+                        str(x).strip()
+                        for x in (settings.get("api_keys") or [])
+                        if str(x).strip()
+                    ],
+                    timeout=int(settings.get("timeout") or 120),
+                    max_retries=int(settings.get("max_retries") or 2),
+                    default_model=str(settings.get("model") or "").strip(),
+                    supports_edit=False,
+                    extra_body=settings.get("extra_body")
+                    if isinstance(settings.get("extra_body"), dict)
+                    else None,
+                )
+            return self._build_openai_compat(settings, supports_edit=False)
+
+        if p == "gemini_native":
+            return GeminiEditBackend(
+                imgr=self.imgr, settings=dict(self.draw_conf.get("gemini_native") or {})
             )
-            return result
-        if img.b64_json:
-            result = await self.imgr.save_base64_image(img.b64_json)
-            logger.info(f"[生图] 保存 base64 图片耗时: {time.time() - t1:.2f}s")
-            return result
 
-        raise RuntimeError("返回数据不包含图片")
+        if p == "jimeng":
+            conf = dict(self.draw_conf.get("jimeng") or {})
+            return JimengApiBackend(
+                imgr=self.imgr,
+                data_dir=self.data_dir,
+                api_url=str(conf.get("api_url") or "").strip(),
+                apikey=str(conf.get("apikey") or "").strip(),
+                cookie_list=conf.get("cookie_list")
+                if isinstance(conf.get("cookie_list"), list)
+                else [],
+                default_style=str(conf.get("default_style") or "真实").strip(),
+                default_ratio=str(conf.get("default_ratio") or "1:1").strip(),
+                default_model=str(conf.get("default_model") or "Seedream 4.0").strip(),
+                timeout=int(conf.get("timeout") or 120),
+            )
 
-    @staticmethod
-    def _raise_api_error(e: Exception):
-        msg = str(e)
-        if "401" in msg:
-            raise RuntimeError("API Key 无效")
-        if "429" in msg:
-            raise RuntimeError("请求过快或额度不足")
-        if "500" in msg:
-            raise RuntimeError("服务端错误")
-        raise RuntimeError(msg)
+        if p == "gitee":
+            conf = dict(self.draw_conf.get("gitee") or {})
+            model = str(conf.get("model") or "z-image-turbo").strip()
+            extra_body: dict = {}
+            if conf.get("num_inference_steps") is not None:
+                extra_body["num_inference_steps"] = conf.get("num_inference_steps")
+            if conf.get("negative_prompt"):
+                if model.lower() not in MODELS_WITHOUT_NEGATIVE_PROMPT:
+                    extra_body["negative_prompt"] = conf.get("negative_prompt")
+
+            return OpenAICompatBackend(
+                imgr=self.imgr,
+                base_url=str(conf.get("base_url") or "https://ai.gitee.com/v1").strip(),
+                api_keys=[
+                    str(x).strip()
+                    for x in (conf.get("api_keys") or [])
+                    if str(x).strip()
+                ],
+                timeout=int(conf.get("timeout") or 300),
+                max_retries=int(conf.get("max_retries") or 2),
+                default_model=model,
+                default_size=str(conf.get("size") or "1024x1024").strip(),
+                supports_edit=False,
+                extra_body=extra_body,
+            )
+
+        raise RuntimeError(f"未知生图服务商: {provider}")
+
+    async def close(self) -> None:
+        for backend in self._backends.values():
+            close = getattr(backend, "close", None)
+            if callable(close):
+                try:
+                    await close()
+                except Exception:
+                    pass
+        self._backends.clear()
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        size: str | None = None,
+        resolution: str | None = None,
+        provider_id: str | None = None,
+    ) -> Path:
+        provider = self._normalize_alias(provider_id) or self._default_provider()
+        candidates = [provider, *self._fallback_provider_ids()]
+
+        last_error: Exception | None = None
+        for p in candidates:
+            try:
+                backend = self._get_backend(p)
+            except Exception as e:
+                last_error = e
+                logger.warning("[生图] 服务商=%s 构建失败: %s", p, e)
+                continue
+
+            t0 = time.perf_counter()
+            try:
+                if hasattr(backend, "generate"):
+                    result = await backend.generate(  # type: ignore[attr-defined]
+                        prompt,
+                        size=size,
+                        resolution=resolution,
+                    )
+                    logger.info(
+                        "[生图] 服务商=%s 成功, 耗时=%.2fs", p, time.perf_counter() - t0
+                    )
+                    return result
+                raise RuntimeError(f"服务商 {p} 不支持生图")
+            except Exception as e:
+                last_error = e
+                logger.warning("[生图] 服务商=%s 失败: %s", p, e)
+
+        raise RuntimeError(f"生图失败: {last_error}") from last_error
