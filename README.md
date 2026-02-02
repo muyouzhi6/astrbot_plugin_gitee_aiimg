@@ -144,3 +144,45 @@
 - `mode`: `auto` / `text` / `edit` / `selfie_ref`
 - `backend`: `auto` 或指定服务商别名（`grok`/`gemini`/`gitee_async`/`jimeng`/`openai_compat` 等）
 - `output`: `4K` / `2K` / `1K` / `1024x1024` / `4096x4096` 等
+
+
+## Gitee AI API Key获取方法
+
+1.访问<https://ai.gitee.com/serverless-api?model=z-image-turbo>
+
+2.<img width="2241" height="1280" alt="PixPin_2025-12-05_16-56-27" src="https://github.com/user-attachments/assets/77f9a713-e7ac-4b02-8603-4afc25991841" />
+
+3.免费额度<img width="240" height="63" alt="PixPin_2025-12-05_16-56-49" src="https://github.com/user-attachments/assets/6efde7c4-24c6-456a-8108-e78d7613f4fb" />
+
+4.可以涩涩，警惕违规被举报
+
+5.好用可以给个🌟
+
+## 支持的图像尺寸
+
+> ⚠️ **注意**: 仅支持以下尺寸，使用其他尺寸会报错
+
+| 比例 | 可用尺寸 |
+|------|----------|
+| 1:1 | 256×256, 512×512, 1024×1024, 2048×2048 |
+| 4:3 | 1152×896, 2048×1536 |
+| 3:4 | 768×1024, 1536×2048 |
+| 3:2 | 2048×1360 |
+| 2:3 | 1360×2048 |
+| 16:9 | 1024×576, 2048×1152 |
+| 9:16 | 576×1024, 1152×2048 |
+
+
+## 出图展示区
+
+<img width="1152" height="2048" alt="29889b7b184984fac81c33574233a3a9_720" src="https://github.com/user-attachments/assets/c2390320-6d55-4db4-b3ad-0dde7b447c87" />
+
+<img width="1152" height="2048" alt="60393b1ea20d432822c21a61ba48d946" src="https://github.com/user-attachments/assets/3d8195e5-5d89-4a12-806e-8a81e348a96c" />
+
+<img width="1152" height="2048" alt="3e5ee8d438fa797730127e57b9720454_720" src="https://github.com/user-attachments/assets/c270ae7f-25f6-4d96-bbed-0299c9e61877" />
+
+
+本插件开发QQ群：215532038
+
+<img width="1284" height="2289" alt="qrcode_1767584668806" src="https://github.com/user-attachments/assets/113ccf60-044a-47f3-ac8f-432ae05f89ee" />
+
