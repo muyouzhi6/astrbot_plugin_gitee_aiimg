@@ -248,40 +248,38 @@ def _extract_video_url_from_response(
 
 
 class GrokVideoService:
-    def __init__(self, config: dict):
-        self.config = config
-        self.vconf = config.get("video", {})
+    def __init__(self, *, settings: dict):
+        self.settings = settings if isinstance(settings, dict) else {}
 
-        self.enabled: bool = bool(self.vconf.get("enabled", True))
         self.server_url: str = str(
-            self.vconf.get("server_url", "https://api.x.ai")
+            self.settings.get("server_url", "https://api.x.ai")
         ).rstrip("/")
-        self.api_key: str = str(self.vconf.get("api_key", "")).strip()
+        self.api_key: str = str(self.settings.get("api_key", "")).strip()
         self.model: str = (
-            str(self.vconf.get("model", "grok-imagine-0.9")).strip()
+            str(self.settings.get("model", "grok-imagine-0.9")).strip()
             or "grok-imagine-0.9"
         )
 
         self.timeout_seconds: int = _clamp_int(
-            self.vconf.get("timeout_seconds", 180),
+            self.settings.get("timeout_seconds", 180),
             default=180,
             min_value=1,
             max_value=3600,
         )
         self.max_retries: int = _clamp_int(
-            self.vconf.get("max_retries", 2),
+            self.settings.get("max_retries", 2),
             default=2,
             min_value=0,
             max_value=10,
         )
         self.empty_response_retry: int = _clamp_int(
-            self.vconf.get("empty_response_retry", 2),
+            self.settings.get("empty_response_retry", 2),
             default=2,
             min_value=0,
             max_value=10,
         )
         self.retry_delay: int = _clamp_int(
-            self.vconf.get("retry_delay", 2),
+            self.settings.get("retry_delay", 2),
             default=2,
             min_value=0,
             max_value=60,
@@ -292,14 +290,17 @@ class GrokVideoService:
         self.api_url = urljoin(self.server_url + "/", "v1/chat/completions")
 
         logger.info(
-            f"[GrokVideo] 初始化完成: enabled={self.enabled}, model={self.model}, "
-            f"timeout={self.timeout_seconds}s, retries={self.max_retries}, "
-            f"empty_retry={self.empty_response_retry}, presets={len(self.presets)}"
+            "[GrokVideo] Initialized: model=%s, timeout=%ss, retries=%s, empty_retry=%s, presets=%s",
+            self.model,
+            self.timeout_seconds,
+            self.max_retries,
+            self.empty_response_retry,
+            len(self.presets),
         )
 
     def _load_presets(self) -> dict[str, str]:
         presets: dict[str, str] = {}
-        items = self.vconf.get("presets", [])
+        items = self.settings.get("presets", [])
         for item in items:
             if isinstance(item, str) and ":" in item:
                 key, val = item.split(":", 1)
@@ -328,10 +329,8 @@ class GrokVideoService:
         *,
         preset: str | None = None,
     ) -> str:
-        if not self.enabled:
-            raise RuntimeError("视频功能已禁用")
         if not self.api_key:
-            raise RuntimeError("未配置 Grok API Key（video.api_key）")
+            raise RuntimeError("Missing API key for video provider (api_key)")
         if not image_bytes:
             raise ValueError("缺少参考图")
 

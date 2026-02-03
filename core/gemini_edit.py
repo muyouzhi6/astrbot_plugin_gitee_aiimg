@@ -50,14 +50,65 @@ class GeminiEditBackend:
         self._session: aiohttp.ClientSession | None = None
         self._session_lock = asyncio.Lock()
 
+    @staticmethod
+    def _normalize_models_base_url(raw: str) -> str:
+        """
+        Normalize Gemini native api_url into ".../v1beta/models".
+
+        Accepts:
+        - https://generativelanguage.googleapis.com
+        - https://generativelanguage.googleapis.com/v1beta
+        - https://generativelanguage.googleapis.com/v1beta/models
+        - https://proxy.example.com/v1/chat/completions (will be rewritten to v1beta/models)
+        """
+        s = str(raw or "").strip().rstrip("/")
+        if not s:
+            return ""
+
+        lower = s.lower()
+        for suffix in (
+            "/v1/chat/completions",
+            "/chat/completions",
+            "/v1/images/generations",
+            "/images/generations",
+            "/v1/completions",
+            "/completions",
+        ):
+            if lower.endswith(suffix):
+                s = s[: -len(suffix)].rstrip("/")
+                lower = s.lower()
+                break
+
+        if lower.endswith("/v1"):
+            s = s[:-3].rstrip("/")
+            lower = s.lower()
+
+        if lower.endswith("/v1beta/models"):
+            return s
+        if lower.endswith("/v1beta"):
+            return f"{s}/models"
+
+        return f"{s}/v1beta/models"
+
     def _build_url(self) -> str:
-        base = str(self.api_url or "").rstrip("/")
-        if not base.endswith("v1beta"):
-            base = f"{base}/v1beta"
-        return f"{base}/models/{self.model}:generateContent"
+        base = self._normalize_models_base_url(self.api_url)
+        return f"{base}/{self.model}:generateContent"
 
     def _proxy(self) -> str | None:
         return self.proxy_url if self.use_proxy and self.proxy_url else None
+
+    @staticmethod
+    def _size_to_resolution(size: str | None) -> str | None:
+        s = str(size or "").strip().lower().replace("×", "x")
+        if not s:
+            return None
+        if s == "1024x1024":
+            return "1K"
+        if s == "2048x2048":
+            return "2K"
+        if s == "4096x4096":
+            return "4K"
+        return None
 
     async def _request(
         self, parts: list[dict], *, resolution: str | None = None
@@ -67,10 +118,10 @@ class GeminiEditBackend:
         image_size = str(resolution or self.resolution or "4K").strip() or "4K"
 
         payload = {
-            "contents": [{"parts": parts}],
+            "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {
                 "maxOutputTokens": 8192,
-                "responseModalities": ["image", "text"],
+                "responseModalities": ["IMAGE"],
                 "imageConfig": {"imageSize": image_size},
             },
             "safetySettings": [
@@ -90,6 +141,7 @@ class GeminiEditBackend:
         headers = {
             "Content-Type": "application/json",
             "x-goog-api-key": api_key,
+            "Authorization": f"Bearer {api_key}",
         }
 
         proxy = self._proxy()
@@ -201,7 +253,13 @@ class GeminiEditBackend:
             return key
 
     async def edit(
-        self, prompt: str, images: list[bytes], *, resolution: str | None = None
+        self,
+        prompt: str,
+        images: list[bytes],
+        *,
+        size: str | None = None,
+        resolution: str | None = None,
+        **_,
     ) -> Path:
         """
         执行改图
@@ -217,7 +275,12 @@ class GeminiEditBackend:
             raise ValueError("至少需要一张图片")
         t_start = time.perf_counter()
 
-        final_resolution = str(resolution or self.resolution or "4K").strip() or "4K"
+        final_resolution = (
+            str(
+                resolution or self._size_to_resolution(size) or self.resolution or "4K"
+            ).strip()
+            or "4K"
+        )
         logger.info(
             f"[Gemini] 开始改图: model={self.model}, "
             f"resolution={final_resolution}, images={len(images)}"

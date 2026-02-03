@@ -30,13 +30,14 @@ def _clamp_int(value: Any, *, default: int, min_value: int, max_value: int) -> i
 class VideoManager:
     def __init__(self, config: dict, data_dir: Path):
         self.config = config
-        self.vconf = config.get("video", {})
+        storage = config.get("storage", {}) if isinstance(config, dict) else {}
 
         self.video_dir = data_dir / "videos"
         self.video_dir.mkdir(parents=True, exist_ok=True)
 
         self.max_cached_videos: int = _clamp_int(
-            self.vconf.get("max_cached_videos", 20),
+            (storage.get("max_cached_videos") if isinstance(storage, dict) else None)
+            or config.get("max_cached_videos", 20),
             default=20,
             min_value=0,
             max_value=500,

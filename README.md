@@ -1,152 +1,119 @@
-# astrbot_plugin_gitee_aiimg
+# AstrBot Gitee AI 图像生成插件（多服务商 / 多网关）
 
-> 当前版本：v3.0.0（配置界面已重构，不再兼容旧版 providers/旧字段）
+> **当前版本**：v4.0.0（全新配置结构，和 v3/v2 不兼容，需要重新在 WebUI 配置）
 
-多服务商图像插件：统一支持文生图（Text-to-Image）、改图/图生图（Image-to-Image/Edit）、Bot 自拍参考照（上传参考人像后再“自拍”）、以及 Grok imagine 视频生成。
+本插件支持：
+- 文生图（Text-to-Image）
+- 图生图/改图（Image-to-Image/Edit）
+- 自拍参考照模式（参考人像 + 额外参考图）
+- 视频生成（Image-to-Video，Grok imagine）
 
-## 你只需要记住两件事
+核心设计：**服务商实例（providers）** 与 **功能链路（features.*.chain）** 分离。你可以配置同一模型的多家服务商，并按顺序兜底切换。
 
-1) 生图看 `draw`：先选 `draw.provider`，再把对应的 `draw.<provider>` 配完整。
-2) 改图看 `edit`：先选 `edit.provider`，再把对应的 `edit.<provider>` 配完整。
+---
 
-配置面板会只显示你选中的那一套服务商参数，避免“看一堆字段不知道填哪个”。
+## v4 配置（重点）
 
-## 降级服务商怎么用（fallback）
+### 1) 先配置 providers（在配置面板最底部）
 
-用途：当“主服务商”请求失败时，按顺序自动切换到备用服务商继续尝试。
+你可以添加多个服务商实例，每个实例都要填一个唯一的 `id`（用户自定义字符串，必须唯一）。
 
-配置位置：
+模板包含（按你的生态做了拆分）：
+- Gemini 原生（generateContent）
+- Gemini OpenAI 兼容（Images / Chat）
+- OpenAI 兼容通用（Images / Chat）
+- Flow2API（Chat SSE 出图）
+- Grok2API（/v1/images/generations）
+- Gitee（Images）
+- Gitee 异步改图（/async/images/edits）
+- 即梦/豆包聚合（jimeng）
+- Grok 视频（chat.completions）
+- 魔搭社区（OpenAI兼容，按实际网关能力决定是否可用）
 
-- 生图：`draw.fallback_1 / draw.fallback_2 / draw.fallback_3`
-- 改图：`edit.fallback_1 / edit.fallback_2 / edit.fallback_3`
+### 2) 再配置 features（在配置面板顶部）
 
-填写规则：
+- `features.draw.chain`：文生图链路
+- `features.edit.chain`：改图链路
+- `features.selfie.chain`：自拍链路（可选；留空可复用改图链路）
+- `features.video.chain`：视频链路
 
-- 直接从下拉框选择服务商别名（例如 `gemini_native`、`grok`、`gitee_async`）
-- 留空表示不启用该级降级
-- 会按 `1 → 2 → 3` 的顺序尝试
+链路按顺序兜底：第一个是主用，失败自动切到后面的 provider。
 
-例子 1（生图）：主用 Grok，失败就降级到 Gemini 原生，再不行降级到 Gitee
+### 3) 可选：关闭某个功能 / 关闭对应 LLM 调用
 
-- `draw.provider = grok`
-- `draw.fallback_1 = gemini_native`
-- `draw.fallback_2 = gitee`
+- `features.<mode>.enabled`：是否启用该功能（命令也会受影响）
+- `features.<mode>.llm_tool_enabled`：是否允许 LLM 调用该功能（命令不受影响）
 
-例子 2（改图）：主用 Gemini OpenAI 网关（有些网关不支持 images.edit），失败就降级到 Gemini 原生，再不行到千问异步
+---
 
-- `edit.provider = gemini_openai`
-- `edit.fallback_1 = gemini_native`
-- `edit.fallback_2 = gitee_async`
-
-## 你的日志里“聊天可用但改图 404”的原因
-
-你贴的这段 “Provider is available” 检测的是 `chat_completion`（也就是 `/v1/chat/completions` 能不能通），
-但我们改图用的是 `images.edit`（也就是 `/v1/images/edits` 这一类接口）。
-
-很多第三方网关（例如只转发聊天的网关）会出现：
-
-- 聊天能用（PONG 成功）
-- 图片接口 404（因为根本没实现 `/v1/images/*`）
-
-解决方式：
-
-- 自拍/改图：优先用 `edit.provider = gemini_native`（Gemini 原生改图稳定）
-- 如果你用的是“聊天出图”的网关：把对应服务商的 `api_mode` 改成 `chat`（走 `/v1/chat/completions` 解析图片），不要用 `images`
-- 如果你的网关/模型不支持“图文输入改图”：把 `supports_edit` 关掉，并设置 `edit.fallback_1 = gemini_native`
-
-## Base URL 怎么填（最重要）
-
-插件会自动把 OpenAI 兼容的 `base_url` 规范化成“包含 `/v1`”的形式，所以你可以：
-
-- 填基础域名：`https://api.x.ai`、`https://ai.gitee.com`
-- 或者填带版本：`https://api.x.ai/v1`、`https://ai.gitee.com/v1`
-
-不要填这种“具体接口地址”：
-
-- `.../chat/completions`（这是聊天接口，不是图片）
-- `.../v1/chat/completions`
-
-如果你填错了，通常会看到 `404`（base_url/路径不对）或 `不支持 images.edit`（服务商本身不支持改图）。
-
-## “我网关只有 /v1/chat/completions，但我确实能出图”怎么配？
-
-这类网关经常是“聊天出图”（模型把图片塞在 chat content 里），但没有 `/v1/images/*`。
-
-现在插件支持两种模式（在 `grok/gemini_openai/openai_compat` 里都有 `api_mode`）：
-
-- `api_mode=chat`：走 `/v1/chat/completions`，从回复里解析 `![](data:image/...base64,...)` 或图片 URL（适配你这种网关）
-- `api_mode=images`：走 `/v1/images/*`（只有当你的服务商真的实现了 Images API 才能用）
-
-如果你“第一次能出图、第二次 404”，基本是网关后端节点不一致导致：有的节点实现了图片能力，有的没有。建议用 `api_mode=chat` 更稳。
-
-## 支持的服务商（生图 / 改图）
-
-- `grok`：Grok 图片（OpenAI 兼容 Images API）
-- `gemini_native`：Gemini 原生 generateContent（支持 1K/2K/4K）
-- `gemini_openai`：Gemini 的 OpenAI 兼容图片接口/网关（按你的网关文档填写 base_url/model）
-- `openai_compat`：通用 OpenAI 兼容 Images API（任意兼容服务商）
-- `jimeng`：即梦/豆包聚合接口（接口形态参考 `data/plugins/doubao`）
-- `gitee`：Gitee 生图（仅生图）
-- `gitee_async`：Gitee 千问异步改图（仅改图）
-
-## 分辨率/尺寸（默认 4K）
-
-- `gemini_native`：用 `resolution`（默认 `4K`）
-- `grok/gemini_openai/openai_compat`：用 `size`（默认 `4096x4096`）；若服务商不支持会自动降级到 `2048x2048`
-- LLM 工具也支持 `output` 参数传 `4K` / `2K` / `1K` 或 `4096x4096` 这种尺寸
-- 注意：有些服务商/网关会无视你请求的 4K，实际只返回 2K（或更低）。这通常是服务商侧限制，不是插件能强制突破的。
-
-## 使用
+## 指令用法（v4）
 
 ### 文生图
 
 ```
-/生图 一张电影感的街拍写真
+/aiimg [@provider_id] <提示词> [比例]
 ```
 
-（也兼容 `/aiimg`）
+示例：
+- `/aiimg 一个可爱的女孩 9:16`
+- `/aiimg @gitee 一只猫 1:1`
+
+不填比例时：将使用 `features.draw.default_output`（以及链路里单个 provider 的 `output` 覆盖）来决定默认输出。
+
+如果平台临时异常导致“生成成功但图片没发出去”，可用：
+```
+/重发图片
+```
+重发最近一次生成/改图结果（不会重新生成，不消耗次数）。
 
 ### 改图/图生图
 
-发送（或引用）图片，然后：
-
+发送/引用图片后：
 ```
-/改图 把衣服换成黑色风衣，背景换成雨夜街头
+/aiedit [@provider_id] <提示词>
 ```
 
-（也兼容 `/aiedit`）
+示例：
+- 发送图片 + `/aiedit 把背景换成海边`
+- 发送图片 + `/aiedit @grok2api 把照片转成动漫风格`
 
-### 自拍参考照（上传人像后再自拍）
+预设命令（来自 `features.edit.presets`，会动态注册成 `/手办化` 这种命令）：
+```
+/预设列表
+/手办化 [@provider_id] [额外提示词]
+```
+
+### 自拍参考照
 
 1) 设置参考照（二选一）：
-
-- WebUI 上传：`selfie.reference_images`
 - 聊天设置：发送图片 + `/自拍参考 设置`
+- WebUI 上传：`features.selfie.reference_images`
 
 2) 生成自拍：
-
 ```
-/自拍 跟图1同款写真，穿上同款衣服，姿势也模仿
+/自拍 [@provider_id] <提示词>
 ```
-
-提示：支持“图片 + 文本同一条消息”一起发送（图片在前或在后都可以）。
 
 ### 视频生成
 
-发送（或引用）图片，然后：
-
+发送/引用图片后：
 ```
-/视频 让人物微笑并轻微点头，镜头缓慢推近
+/视频 [@provider_id] <提示词>
+/视频 [@provider_id] <预设名> [额外提示词]
+/视频预设列表
 ```
 
-## LLM 工具：aiimg_generate
+---
 
-- `mode`: `auto` / `text` / `edit` / `selfie_ref`
-- `backend`: `auto` 或指定服务商别名（`grok`/`gemini`/`gitee_async`/`jimeng`/`openai_compat` 等）
-- `output`: `4K` / `2K` / `1K` / `1024x1024` / `4096x4096` 等
+## 注意事项
 
+- 如果你没有配置 providers 或链路为空：插件会提示你去 WebUI 补配置。
+- 网关是否支持某个接口（尤其是 images.edit）取决于服务商实现本身；插件会自动兜底到后续 provider。
+- `@provider_id` 仅是“临时指定一次使用哪个 provider”，不会改变你的默认链路顺序。
 
-## Gitee AI API Key获取方法
+---
+
+## Gitee AI API Key 获取方法（保留原文）
 
 1.访问<https://ai.gitee.com/serverless-api?model=z-image-turbo>
 
@@ -158,7 +125,9 @@
 
 5.好用可以给个🌟
 
-## 支持的图像尺寸
+---
+
+## 支持的图像尺寸（Gitee，保留原文）
 
 > ⚠️ **注意**: 仅支持以下尺寸，使用其他尺寸会报错
 
@@ -172,8 +141,9 @@
 | 16:9 | 1024×576, 2048×1152 |
 | 9:16 | 576×1024, 1152×2048 |
 
+---
 
-## 出图展示区
+## 出图展示区（保留原文）
 
 <img width="1152" height="2048" alt="29889b7b184984fac81c33574233a3a9_720" src="https://github.com/user-attachments/assets/c2390320-6d55-4db4-b3ad-0dde7b447c87" />
 
@@ -181,8 +151,6 @@
 
 <img width="1152" height="2048" alt="3e5ee8d438fa797730127e57b9720454_720" src="https://github.com/user-attachments/assets/c270ae7f-25f6-4d96-bbed-0299c9e61877" />
 
-
 本插件开发QQ群：215532038
 
 <img width="1284" height="2289" alt="qrcode_1767584668806" src="https://github.com/user-attachments/assets/113ccf60-044a-47f3-ac8f-432ae05f89ee" />
-

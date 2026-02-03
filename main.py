@@ -24,9 +24,9 @@ from .core.debouncer import Debouncer
 from .core.draw_service import ImageDrawService
 from .core.edit_router import EditRouter
 from .core.emoji_feedback import mark_failed, mark_processing, mark_success
-from .core.grok_video_service import GrokVideoService
 from .core.image_manager import ImageManager
 from .core.nanobanana import NanoBananaService
+from .core.provider_registry import ProviderRegistry
 from .core.ref_store import ReferenceStore
 from .core.utils import close_session, get_images_from_event
 from .core.video_manager import VideoManager
@@ -50,16 +50,26 @@ class GiteeAIImage(Star):
         super().__init__(context)
         self.config = config
         self.data_dir = StarTools.get_data_dir()
+        self._last_image_by_user: dict[str, Path] = {}
 
     async def initialize(self):
         self.debouncer = Debouncer(self.config)
         self.imgr = ImageManager(self.config, self.data_dir)
-        self.draw = ImageDrawService(self.config, self.imgr, self.data_dir)
-        self.edit = EditRouter(self.config, self.imgr, self.data_dir)
+        self.registry = ProviderRegistry(
+            self.config, imgr=self.imgr, data_dir=self.data_dir
+        )
+        for err in self.registry.validate():
+            logger.warning("[GiteeAIImage][config] %s", err)
+
+        self.draw = ImageDrawService(
+            self.config, self.imgr, self.data_dir, registry=self.registry
+        )
+        self.edit = EditRouter(
+            self.config, self.imgr, self.data_dir, registry=self.registry
+        )
         self.nb = NanoBananaService(self.config, self.imgr)
         self.refs = ReferenceStore(self.data_dir)
         self.videomgr = VideoManager(self.config, self.data_dir)
-        self.video = GrokVideoService(self.config)
 
         self._video_lock = asyncio.Lock()
         self._video_in_progress: set[str] = set()
@@ -72,15 +82,72 @@ class GiteeAIImage(Star):
             f"[GiteeAIImage] 插件初始化完成: "
             f"改图后端={self.edit.get_available_backends()}, "
             f"改图预设={len(self.edit.get_preset_names())}个, "
-            f"视频启用={self.video.enabled}, "
-            f"视频预设={len(self.video.get_preset_names())}个"
+            f"视频启用={bool(self._get_feature('video').get('enabled', False))}, "
+            f"视频预设={len(self._get_video_presets())}个"
         )
+
+    def _remember_last_image(self, event: AstrMessageEvent, image_path: Path) -> None:
+        try:
+            user_id = str(event.get_sender_id() or "")
+        except Exception:
+            user_id = ""
+        if not user_id:
+            return
+        self._last_image_by_user[user_id] = Path(image_path)
+
+    async def _send_image_with_fallback(
+        self, event: AstrMessageEvent, image_path: Path, *, max_attempts: int = 5
+    ) -> bool:
+        """Send image with retries and fallback to base64 bytes.
+
+        Avoids wasting generation credits when platform send fails transiently.
+        """
+        p = Path(image_path)
+        if not p.exists():
+            logger.warning("[send_image] file not found: %s", p)
+            return False
+
+        delay = 1.5
+        last_exc: Exception | None = None
+        attempts = max(1, int(max_attempts))
+        for attempt in range(1, attempts + 1):
+            try:
+                await event.send(event.chain_result([Image.fromFileSystem(str(p))]))
+                return True
+            except Exception as e:
+                last_exc = e
+                logger.warning(
+                    "[send_image] fromFileSystem failed (attempt=%s/%s): %s",
+                    attempt,
+                    attempts,
+                    e,
+                )
+
+            try:
+                data = await asyncio.to_thread(p.read_bytes)
+                await event.send(event.chain_result([Image.fromBytes(data)]))
+                return True
+            except Exception as e:
+                last_exc = e
+                logger.warning(
+                    "[send_image] fromBytes failed (attempt=%s/%s): %s",
+                    attempt,
+                    attempts,
+                    e,
+                )
+
+            if attempt < attempts:
+                await asyncio.sleep(delay)
+                delay = min(delay * 1.8, 8.0)
+
+        if last_exc is not None:
+            logger.error("[send_image] failed after retries: %s", last_exc)
+        return False
 
     def _register_preset_commands(self):
         """动态注册预设命令
 
         为每个预设创建对应的命令，如 /手办化, /Q版化 等
-        同时支持 /g手办化 (强制Gemini) 和 /q手办化 (强制千问)
         """
         preset_names = self.edit.get_preset_names()
         if not preset_names:
@@ -109,47 +176,11 @@ class GiteeAIImage(Star):
         preset_handler.__doc__ = f"预设改图: {preset_name} [额外提示词]"
 
         self.context.register_commands(
-            star_name="astrbot_plugin_gitee",
+            star_name="astrbot_plugin_gitee_aiimg",
             command_name=preset_name,
             desc=f"预设改图: {preset_name}",
             priority=5,
             awaitable=preset_handler,
-        )
-
-        # Gemini 强制命令: /g手办化
-        async def preset_gemini_handler(event: AstrMessageEvent):
-            extra_prompt = self._extract_extra_prompt(event, f"g{preset_name}")
-            await self._do_edit_direct(
-                event, extra_prompt, backend="gemini", preset=preset_name
-            )
-
-        preset_gemini_handler.__name__ = f"preset_g_{preset_name}"
-        preset_gemini_handler.__doc__ = f"预设改图(Gemini): {preset_name} [额外提示词]"
-
-        self.context.register_commands(
-            star_name="astrbot_plugin_gitee",
-            command_name=f"g{preset_name}",
-            desc=f"预设改图(Gemini): {preset_name}",
-            priority=5,
-            awaitable=preset_gemini_handler,
-        )
-
-        # 千问强制命令: /q手办化
-        async def preset_qwen_handler(event: AstrMessageEvent):
-            extra_prompt = self._extract_extra_prompt(event, f"q{preset_name}")
-            await self._do_edit_direct(
-                event, extra_prompt, backend="gitee", preset=preset_name
-            )
-
-        preset_qwen_handler.__name__ = f"preset_q_{preset_name}"
-        preset_qwen_handler.__doc__ = f"预设改图(千问): {preset_name} [额外提示词]"
-
-        self.context.register_commands(
-            star_name="astrbot_plugin_gitee",
-            command_name=f"q{preset_name}",
-            desc=f"预设改图(千问): {preset_name}",
-            priority=5,
-            awaitable=preset_qwen_handler,
         )
 
     def _extract_extra_prompt(self, event: AstrMessageEvent, command_name: str) -> str:
@@ -208,7 +239,7 @@ class GiteeAIImage(Star):
     async def generate_image_command(self, event: AstrMessageEvent, prompt: str):
         """生成图片指令
 
-        用法: /aiimg <提示词> [比例]
+        用法: /aiimg [@provider_id] <提示词> [比例]
         示例: /aiimg 一个女孩 9:16
         支持比例: 1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16
         """
@@ -216,14 +247,34 @@ class GiteeAIImage(Star):
         # 解析参数
         arg = event.message_str.partition(" ")[2]
         if not arg:
-            yield event.plain_result("请提供提示词！使用方法：/aiimg <提示词> [比例]")
+            yield event.plain_result(
+                "请提供提示词！用法：/aiimg [@provider_id] <提示词> [比例]"
+            )
             return
-        prompt, ratio = arg, "1:1"
-        *parts, last = arg.rsplit(maxsplit=1)
-        if last in self.SUPPORTED_RATIOS:
-            prompt, ratio = " ".join(parts), last
+        provider_override: str | None = None
+        if arg.lstrip().startswith("@"):
+            first, _, rest = arg.strip().partition(" ")
+            provider_override = first.lstrip("@").strip() or None
+            arg = rest.strip()
+        if not arg:
+            yield event.plain_result(
+                "请提供提示词！用法：/aiimg [@provider_id] <提示词> [比例]"
+            )
+            return
 
-        size = self.SUPPORTED_RATIOS[ratio][0]
+        prompt = arg.strip()
+        size: str | None = None
+        parts = arg.split()
+        if parts and parts[-1] in self.SUPPORTED_RATIOS:
+            ratio = parts[-1]
+            prompt = " ".join(parts[:-1]).strip()
+            size = self.SUPPORTED_RATIOS[ratio][0]
+
+        if not prompt:
+            yield event.plain_result(
+                "请提供提示词！用法：/aiimg [@provider_id] <提示词> [比例]"
+            )
+            return
 
         user_id = event.get_sender_id()
         request_id = f"generate_{user_id}"
@@ -238,15 +289,19 @@ class GiteeAIImage(Star):
 
         try:
             t_start = time.perf_counter()
-            image_path = await self.draw.generate(prompt, size=size)
+            image_path = await self.draw.generate(
+                prompt, size=size, provider_id=provider_override
+            )
             t_end = time.perf_counter()
 
-            # 发送结果图片
-            yield event.chain_result(
-                [
-                    Image.fromFileSystem(str(image_path)),
-                ]
-            )
+            self._remember_last_image(event, image_path)
+            sent = await self._send_image_with_fallback(event, image_path)
+            if not sent:
+                await mark_failed(event)
+                yield event.plain_result(
+                    "图片已生成，但发送失败（可能是平台临时异常）。可稍后使用：/重发图片"
+                )
+                return
 
             # 标记成功
             await mark_success(event)
@@ -272,25 +327,49 @@ class GiteeAIImage(Star):
         async for result in self._do_edit(event, prompt, backend=None):
             yield result
 
-    @filter.command("gedit", alias={"g改图"})
-    async def edit_image_gemini(self, event: AstrMessageEvent, prompt: str):
-        """使用 Gemini 改图
+    @filter.command("重发图片")
+    async def resend_last_image(self, event: AstrMessageEvent):
+        """重发最近一次生成/改图的图片（不重新生成，不消耗次数）。"""
+        user_id = str(event.get_sender_id() or "")
+        p = self._last_image_by_user.get(user_id)
+        if not p:
+            yield event.plain_result("当前没有可重发的图片。")
+            return
+        if not Path(p).exists():
+            yield event.plain_result("上次图片缓存已过期/被清理，无法重发。")
+            return
+        ok = await self._send_image_with_fallback(event, p)
+        if ok:
+            yield event.plain_result("已重发图片。")
+        else:
+            yield event.plain_result("重发失败（平台可能异常），请稍后再试。")
 
-        用法: /gedit <提示词>
-        """
-        event.should_call_llm(True)
-        async for result in self._do_edit(event, prompt, backend="gemini"):
-            yield result
-
-    @filter.command("qedit", alias={"q改图"})
-    async def edit_image_qwen(self, event: AstrMessageEvent, prompt: str):
-        """使用 Gitee 千问改图
-
-        用法: /qedit <提示词>
-        """
-        event.should_call_llm(True)
-        async for result in self._do_edit(event, prompt, backend="gitee"):
-            yield result
+    @filter.regex(r"[/!！.。．](改图|图生图|修图|aiedit)(\s|$)", priority=-10)
+    async def edit_image_regex_fallback(self, event: AstrMessageEvent):
+        """兼容“图片在前、文字在后”的消息：确保 /改图 能触发。"""
+        msg = (event.message_str or "").strip()
+        if (
+            msg
+            and msg[0] in "/!！.。．"
+            and msg[1:].startswith(("改图", "图生图", "修图", "aiedit"))
+        ):
+            return
+        prompt = ""
+        for name in ("改图", "图生图", "修图", "aiedit"):
+            prompt = self._extract_command_arg_anywhere(msg, name)
+            if prompt:
+                break
+        if (
+            prompt
+            or "/改图" in msg
+            or "/图生图" in msg
+            or "/修图" in msg
+            or "/aiedit" in msg
+        ):
+            event.should_call_llm(True)
+            async for result in self._do_edit(event, prompt, backend=None):
+                yield result
+            event.stop_event()
 
     # ==================== Bot 自拍（参考照） ====================
 
@@ -319,22 +398,6 @@ class GiteeAIImage(Star):
             async for result in self._do_selfie(event, prompt, backend=None):
                 yield result
             event.stop_event()
-
-    @filter.command("g自拍")
-    async def selfie_command_gemini(self, event: AstrMessageEvent):
-        """强制使用 Gemini 生成自拍：/g自拍 <提示词>"""
-        event.should_call_llm(True)
-        prompt = self._extract_extra_prompt(event, "g自拍")
-        async for result in self._do_selfie(event, prompt, backend="gemini"):
-            yield result
-
-    @filter.command("q自拍")
-    async def selfie_command_gitee(self, event: AstrMessageEvent):
-        """强制使用千问生成自拍：/q自拍 <提示词>"""
-        event.should_call_llm(True)
-        prompt = self._extract_extra_prompt(event, "q自拍")
-        async for result in self._do_selfie(event, prompt, backend="gitee"):
-            yield result
 
     @filter.command("自拍参考")
     async def selfie_reference_command(self, event: AstrMessageEvent):
@@ -433,18 +496,36 @@ class GiteeAIImage(Star):
         """生成视频
 
         用法:
-        - /视频 <提示词>
-        - /视频 <预设名> [额外提示词]
+        - /视频 [@provider_id] <提示词>
+        - /视频 [@provider_id] <预设名> [额外提示词]
         """
         event.should_call_llm(True)
+        if not bool(self._get_feature("video").get("enabled", False)):
+            yield event.plain_result("视频功能已关闭（features.video.enabled=false）")
+            return
         arg = self._extract_extra_prompt(event, "视频")
         if not arg:
             yield event.plain_result(
-                "用法: /视频 <提示词> 或 /视频 <预设名> [额外提示词]"
+                "用法: /视频 [@provider_id] <提示词> 或 /视频 [@provider_id] <预设名> [额外提示词]"
+            )
+            return
+
+        provider_override: str | None = None
+        if arg.lstrip().startswith("@"):
+            first, _, rest = arg.strip().partition(" ")
+            provider_override = first.lstrip("@").strip() or None
+            arg = rest.strip()
+        if not arg:
+            yield event.plain_result(
+                "用法: /视频 [@provider_id] <提示词> 或 /视频 [@provider_id] <预设名> [额外提示词]"
             )
             return
 
         preset, prompt = self._parse_video_args(arg)
+        presets = self._get_video_presets()
+        if preset and preset in presets:
+            preset_prompt = presets[preset]
+            prompt = f"{preset_prompt}, {prompt}" if prompt else preset_prompt
 
         user_id = str(event.get_sender_id() or "")
         request_id = f"video_{user_id}"
@@ -461,7 +542,9 @@ class GiteeAIImage(Star):
 
         try:
             task = asyncio.create_task(
-                self._async_generate_video(event, prompt, preset, user_id)
+                self._async_generate_video(
+                    event, prompt, user_id, provider_id=provider_override
+                )
             )
         except Exception:
             await self._video_end(user_id)
@@ -472,21 +555,95 @@ class GiteeAIImage(Star):
         task.add_done_callback(lambda t: self._video_tasks.discard(t))
         return
 
+    @filter.regex(r"[/!！.。．]视频(\s|$)", priority=-10)
+    async def generate_video_regex_fallback(self, event: AstrMessageEvent):
+        """兼容“图片在前、文字在后”的消息：确保 /视频 能触发。"""
+        msg = (event.message_str or "").strip()
+        if msg and msg[0] in "/!！.。．" and msg[1:].startswith("视频"):
+            return
+
+        arg = self._extract_command_arg_anywhere(msg, "视频")
+        if not arg and "/视频" not in msg:
+            return
+
+        event.should_call_llm(True)
+        if not bool(self._get_feature("video").get("enabled", False)):
+            yield event.plain_result("视频功能已关闭（features.video.enabled=false）")
+            event.stop_event()
+            return
+        if not arg:
+            yield event.plain_result(
+                "用法: /视频 [@provider_id] <提示词> 或 /视频 [@provider_id] <预设名> [额外提示词]"
+            )
+            event.stop_event()
+            return
+
+        provider_override: str | None = None
+        if arg.lstrip().startswith("@"):
+            first, _, rest = arg.strip().partition(" ")
+            provider_override = first.lstrip("@").strip() or None
+            arg = rest.strip()
+        if not arg:
+            yield event.plain_result(
+                "用法: /视频 [@provider_id] <提示词> 或 /视频 [@provider_id] <预设名> [额外提示词]"
+            )
+            event.stop_event()
+            return
+
+        preset, prompt = self._parse_video_args(arg)
+        presets = self._get_video_presets()
+        if preset and preset in presets:
+            preset_prompt = presets[preset]
+            prompt = f"{preset_prompt}, {prompt}" if prompt else preset_prompt
+
+        user_id = str(event.get_sender_id() or "")
+        request_id = f"video_{user_id}"
+
+        if self.debouncer.hit(request_id):
+            yield event.plain_result("操作太快了，请稍后再试")
+            event.stop_event()
+            return
+
+        if not await self._video_begin(user_id):
+            yield event.plain_result("你已有一个视频任务正在进行中，请等待完成后再试")
+            event.stop_event()
+            return
+
+        await mark_processing(event)
+
+        try:
+            task = asyncio.create_task(
+                self._async_generate_video(
+                    event, prompt, user_id, provider_id=provider_override
+                )
+            )
+        except Exception:
+            await self._video_end(user_id)
+            await mark_failed(event)
+            event.stop_event()
+            return
+
+        self._video_tasks.add(task)
+        task.add_done_callback(lambda t: self._video_tasks.discard(t))
+        event.stop_event()
+        return
+
     @filter.command("视频预设列表")
     async def list_video_presets(self, event: AstrMessageEvent):
         """列出所有可用视频预设"""
         event.should_call_llm(True)
-        presets = self.video.get_preset_names()
-        if not presets:
+        presets = self._get_video_presets()
+        names = list(presets.keys())
+        if not names:
             yield event.plain_result(
-                "📋 视频预设列表\n暂无预设（请在配置 video.presets 中添加）"
+                "📋 视频预设列表\n暂无预设（请在配置 features.video.presets 中添加）"
             )
             return
 
         msg = "📋 视频预设列表\n"
-        for name in presets:
+        for name in names:
             msg += f"- {name}\n"
-        msg += "\n用法: /视频 <预设名> [额外提示词]"
+        msg += "\n用法: /视频 [@provider_id] <预设名> [额外提示词]"
         yield event.plain_result(msg)
 
     # ==================== 管理命令 ====================
@@ -497,29 +654,39 @@ class GiteeAIImage(Star):
         event.should_call_llm(True)
         presets = self.edit.get_preset_names()
         backends = self.edit.get_available_backends()
-        default = self.config.get("edit", {}).get("default_backend", "gemini")
+        edit_conf = self._get_feature("edit")
+        chain = []
+        for it in (
+            edit_conf.get("chain", [])
+            if isinstance(edit_conf.get("chain", []), list)
+            else []
+        ):
+            if isinstance(it, dict) and str(it.get("provider_id") or "").strip():
+                chain.append(str(it.get("provider_id") or "").strip())
 
         if not presets:
             msg = "📋 改图预设列表\n"
             msg += "━━━━━━━━━━━━━━\n"
             msg += f"🔧 可用后端: {', '.join(backends)}\n"
-            msg += f"⭐ 默认后端: {default}\n"
+            if chain:
+                msg += f"⭐ 当前链路: {', '.join(chain)}\n"
             msg += "━━━━━━━━━━━━━━\n"
             msg += "📌 暂无预设\n"
             msg += "━━━━━━━━━━━━━━\n"
-            msg += "💡 在配置文件 edit.presets 中添加:\n"
+            msg += "💡 在配置 features.edit.presets 中添加:\n"
             msg += '  格式: "触发词:英文提示词"'
         else:
             msg = "📋 改图预设列表\n"
             msg += "━━━━━━━━━━━━━━\n"
             msg += f"🔧 可用后端: {', '.join(backends)}\n"
-            msg += f"⭐ 默认后端: {default}\n"
+            if chain:
+                msg += f"⭐ 当前链路: {', '.join(chain)}\n"
             msg += "━━━━━━━━━━━━━━\n"
             msg += "📌 预设:\n"
             for name in presets:
                 msg += f"  • {name}\n"
         msg += "━━━━━━━━━━━━━━\n"
-        msg += "💡 用法: /aiedit <提示词> [图片]"
+        msg += "💡 用法: /aiedit [@provider_id] <提示词> [图片]"
 
         yield event.plain_result(msg)
 
@@ -530,22 +697,23 @@ class GiteeAIImage(Star):
         msg = """🎨 改图功能帮助
 
 ━━ 基础命令 ━━
-/aiedit <提示词>  使用默认后端
-/gedit <提示词>   强制 Gemini (4K)
-/qedit <提示词>   强制千问
+/aiedit [@provider_id] <提示词>
 
 ━━ 使用方式 ━━
 1. 发送图片 + 命令
 2. 引用图片消息 + 命令
 
-━━ 后端说明 ━━
-Gemini: 4K高清，效果好，需代理
-千问: 国内直连，速度快，效果稳定
+━━ 服务商链路 ━━
+在 WebUI 配置：
+- providers：添加服务商（id/url/key/model/超时/重试等）
+- features.edit.chain：按顺序填写 provider_id（第一个=主用，其余=兜底）
 
 ━━ 自定义预设 ━━
-在配置 edit.presets 中添加:
-格式: "触发词:英文提示词"
-示例: "手办化:Transform into figurine style" """
+查看预设：/预设列表
+在 WebUI 配置 features.edit.presets 添加：
+格式: 预设名:英文提示词
+示例: 手办化:Transform into figurine style
+"""
 
         yield event.plain_result(msg)
 
@@ -583,7 +751,7 @@ Gemini: 4K高清，效果好，需代理
         Args:
             prompt(string): 图片编辑提示词
             use_message_images(boolean): 是否自动获取用户消息中的图片（目前仅支持 true）
-            backend(string): auto=自动选择, gemini=Gemini, gitee=千问
+            backend(string): auto=自动选择；也可填 provider_id（你在 WebUI providers 里配置的 id）
         """
         if not use_message_images:
             return "当前仅支持 use_message_images=true（请附带/引用图片后再调用）"
@@ -618,7 +786,7 @@ Gemini: 4K高清，效果好，需代理
         Args:
             prompt(string): 提示词
             mode(string): auto=自动判断, text=文生图, edit=改图, selfie_ref=参考照自拍
-            backend(string): auto=自动选择；也可填服务商别名（grok/gemini/gitee/jimeng/openai_compat 等）
+            backend(string): auto=自动选择；也可填 provider_id（你在 WebUI providers 里配置的 id）
             output(string): 输出尺寸/分辨率。例: 2048x2048 或 4K（不同后端支持能力不同，留空用默认）
         """
         prompt = (prompt or "").strip()
@@ -640,31 +808,64 @@ Gemini: 4K高清，效果好，需代理
             await mark_processing(event)
 
             if m in {"selfie_ref", "selfie", "ref"}:
-                await self._do_selfie_llm(
+                selfie_conf = self._get_feature("selfie")
+                if not bool(selfie_conf.get("enabled", True)):
+                    await mark_failed(event)
+                    return "自拍功能已关闭（features.selfie.enabled=false）"
+                if not bool(selfie_conf.get("llm_tool_enabled", True)):
+                    await mark_failed(event)
+                    return "自拍的 LLM 调用已关闭（features.selfie.llm_tool_enabled=false）"
+                image_path = await self._generate_selfie_image(
                     event,
-                    prompt=prompt,
-                    backend=target_backend,
+                    prompt,
+                    target_backend,
                     size=size,
                     resolution=resolution,
                 )
+                self._remember_last_image(event, image_path)
+                sent = await self._send_image_with_fallback(event, image_path)
+                if not sent:
+                    await mark_failed(event)
+                    return "自拍已生成，但发送异常（无需重新生成）。可让主人输入：/重发图片"
                 await mark_success(event)
                 return "自拍已生成并发送。"
 
             # 自动模式：优先识别“自拍”语义 + 已配置参考照
             if m == "auto" and await self._should_use_selfie_ref(event, prompt):
-                await self._do_selfie_llm(
+                selfie_conf = self._get_feature("selfie")
+                if not bool(selfie_conf.get("enabled", True)):
+                    await mark_failed(event)
+                    return "自拍功能已关闭（features.selfie.enabled=false）"
+                if not bool(selfie_conf.get("llm_tool_enabled", True)):
+                    await mark_failed(event)
+                    return "自拍的 LLM 调用已关闭（features.selfie.llm_tool_enabled=false）"
+                image_path = await self._generate_selfie_image(
                     event,
-                    prompt=prompt,
-                    backend=target_backend,
+                    prompt,
+                    target_backend,
                     size=size,
                     resolution=resolution,
                 )
+                self._remember_last_image(event, image_path)
+                sent = await self._send_image_with_fallback(event, image_path)
+                if not sent:
+                    await mark_failed(event)
+                    return "自拍已生成，但发送异常（无需重新生成）。可让主人输入：/重发图片"
                 await mark_success(event)
                 return "自拍已生成并发送。"
 
             # 改图：用户消息中有图片（不含头像兜底）或显式指定
             has_msg_images = await self._has_message_images(event)
             if m in {"edit", "img2img", "aiedit"} or (m == "auto" and has_msg_images):
+                edit_conf = self._get_feature("edit")
+                if not bool(edit_conf.get("enabled", True)):
+                    await mark_failed(event)
+                    return "改图功能已关闭（features.edit.enabled=false）"
+                if not bool(edit_conf.get("llm_tool_enabled", True)):
+                    await mark_failed(event)
+                    return (
+                        "改图的 LLM 调用已关闭（features.edit.llm_tool_enabled=false）"
+                    )
                 image_segs = await get_images_from_event(event, include_avatar=True)
                 bytes_images = await self._image_segs_to_bytes(image_segs)
                 if not bytes_images:
@@ -678,13 +879,22 @@ Gemini: 4K高清，效果好，需代理
                     size=size,
                     resolution=resolution,
                 )
-                await event.send(
-                    event.chain_result([Image.fromFileSystem(str(image_path))])
-                )
+                self._remember_last_image(event, image_path)
+                sent = await self._send_image_with_fallback(event, image_path)
+                if not sent:
+                    await mark_failed(event)
+                    return "图片已编辑，但发送异常（无需重新生成）。可让主人输入：/重发图片"
                 await mark_success(event)
                 return "图片已编辑并发送。"
 
             # 默认：文生图
+            draw_conf = self._get_feature("draw")
+            if not bool(draw_conf.get("enabled", True)):
+                await mark_failed(event)
+                return "文生图功能已关闭（features.draw.enabled=false）"
+            if not bool(draw_conf.get("llm_tool_enabled", True)):
+                await mark_failed(event)
+                return "文生图的 LLM 调用已关闭（features.draw.llm_tool_enabled=false）"
             if not prompt:
                 prompt = "a selfie photo"
 
@@ -694,9 +904,11 @@ Gemini: 4K高清，效果好，需代理
                 size=size,
                 resolution=resolution,
             )
-            await event.send(
-                event.chain_result([Image.fromFileSystem(str(image_path))])
-            )
+            self._remember_last_image(event, image_path)
+            sent = await self._send_image_with_fallback(event, image_path)
+            if not sent:
+                await mark_failed(event)
+                return "图片已生成，但发送异常（无需重新生成）。可让主人输入：/重发图片"
             await mark_success(event)
             return "图片已生成并发送。"
 
@@ -712,11 +924,31 @@ Gemini: 4K高清，效果好，需代理
         Args:
             prompt(string): 视频提示词。支持 "预设名 额外提示词"（与 `/视频 预设名 额外提示词` 一致）
         """
+        vconf = self._get_feature("video")
+        if not bool(vconf.get("enabled", False)):
+            return "视频功能已关闭（features.video.enabled=false）"
+        if not bool(vconf.get("llm_tool_enabled", True)):
+            return "视频的 LLM 调用已关闭（features.video.llm_tool_enabled=false）"
+
         arg = (prompt or "").strip()
         if not arg:
             return "需要提供视频提示词"
 
+        provider_override: str | None = None
+        if arg.lstrip().startswith("@"):
+            first, _, rest = arg.strip().partition(" ")
+            provider_override = first.lstrip("@").strip() or None
+            arg = rest.strip()
+        if not arg:
+            return "需要提供视频提示词"
+
         preset, extra_prompt = self._parse_video_args(arg)
+        presets = self._get_video_presets()
+        if preset and preset in presets:
+            preset_prompt = presets[preset]
+            extra_prompt = (
+                f"{preset_prompt}, {extra_prompt}" if extra_prompt else preset_prompt
+            )
 
         user_id = str(event.get_sender_id() or "")
         request_id = f"video_{user_id}"
@@ -731,7 +963,9 @@ Gemini: 4K高清，效果好，需代理
 
         try:
             task = asyncio.create_task(
-                self._async_generate_video(event, extra_prompt, preset, user_id)
+                self._async_generate_video(
+                    event, extra_prompt, user_id, provider_id=provider_override
+                )
             )
         except Exception:
             await self._video_end(user_id)
@@ -745,6 +979,41 @@ Gemini: 4K高清，效果好，需代理
 
     # ==================== 内部方法 ====================
 
+    def _get_feature(self, name: str) -> dict:
+        feats = self.config.get("features", {}) if isinstance(self.config, dict) else {}
+        feats = feats if isinstance(feats, dict) else {}
+        conf = feats.get(name, {})
+        return conf if isinstance(conf, dict) else {}
+
+    def _get_video_presets(self) -> dict[str, str]:
+        presets: dict[str, str] = {}
+        conf = self._get_feature("video")
+        items = conf.get("presets", [])
+        if not isinstance(items, list):
+            return presets
+        for item in items:
+            if isinstance(item, str) and ":" in item:
+                key, val = item.split(":", 1)
+                key = key.strip()
+                val = val.strip()
+                if key and val:
+                    presets[key] = val
+        return presets
+
+    def _get_video_chain(self) -> list[str]:
+        conf = self._get_feature("video")
+        chain = conf.get("chain", [])
+        if not isinstance(chain, list):
+            return []
+        out: list[str] = []
+        for item in chain:
+            if not isinstance(item, dict):
+                continue
+            pid = str(item.get("provider_id") or "").strip()
+            if pid and pid not in out:
+                out.append(pid)
+        return out
+
     def _parse_video_args(self, text: str) -> tuple[str | None, str]:
         """解析 /视频 参数，返回 (preset, prompt)
 
@@ -756,7 +1025,7 @@ Gemini: 4K高清，效果好，需代理
             return None, ""
 
         first, _, rest = text.partition(" ")
-        if first and first in getattr(self.video, "presets", {}):
+        if first and first in self._get_video_presets():
             return first, rest.strip()
         return None, text
 
@@ -775,15 +1044,12 @@ Gemini: 4K高清，效果好，需代理
             self._video_in_progress.discard(user_id)
 
     async def _send_video_result(self, event: AstrMessageEvent, video_url: str) -> None:
-        mode = (
-            str(self.config.get("video", {}).get("send_mode", "auto")).strip().lower()
-        )
+        vconf = self._get_feature("video")
+        mode = str(vconf.get("send_mode", "auto")).strip().lower()
         if mode not in {"auto", "url", "file"}:
             mode = "auto"
 
-        send_timeout = int(
-            self.config.get("video", {}).get("send_timeout_seconds", 90) or 90
-        )
+        send_timeout = int(vconf.get("send_timeout_seconds", 90) or 90)
         send_timeout = max(10, min(send_timeout, 300))
 
         # 1) URL 发送（优先）
@@ -800,12 +1066,7 @@ Gemini: 4K高清，效果好，需代理
                 logger.warning(f"[视频] URL 发送失败，尝试本地文件降级: {e}")
 
         # 2) 下载 + 本地文件发送
-        download_timeout = int(
-            self.config.get("video", {}).get(
-                "download_timeout_seconds", self.video.timeout_seconds
-            )
-            or self.video.timeout_seconds
-        )
+        download_timeout = int(vconf.get("download_timeout_seconds", 300) or 300)
         download_timeout = max(1, min(download_timeout, 3600))
 
         if mode in {"auto", "file"}:
@@ -832,8 +1093,9 @@ Gemini: 4K高清，效果好，需代理
         self,
         event: AstrMessageEvent,
         prompt: str,
-        preset: str | None,
         user_id: str,
+        *,
+        provider_id: str | None = None,
     ) -> None:
         try:
             image_segs = await get_images_from_event(event)
@@ -855,18 +1117,39 @@ Gemini: 4K高清，效果好，需代理
                 return
 
             t_start = time.perf_counter()
-            video_url = await self.video.generate_video_url(
-                prompt=prompt,
-                image_bytes=image_bytes,
-                preset=preset,
+            candidates = (
+                [str(provider_id).strip()] if provider_id else self._get_video_chain()
             )
-            t_end = time.perf_counter()
+            candidates = [c for c in candidates if c]
+            if not candidates:
+                raise RuntimeError(
+                    "No video providers configured. Please set features.video.chain."
+                )
+
+            last_error: Exception | None = None
+            video_url: str | None = None
+            used_pid: str | None = None
+            for pid in candidates:
+                try:
+                    backend = self.registry.get_video_backend(pid)
+                    video_url = await backend.generate_video_url(
+                        prompt=prompt, image_bytes=image_bytes
+                    )
+                    used_pid = pid
+                    break
+                except Exception as e:
+                    last_error = e
+                    logger.warning("[视频] Provider=%s 失败: %s", pid, e)
+
+            if not video_url:
+                raise RuntimeError(f"视频生成失败: {last_error}") from last_error
 
             await self._send_video_result(event, video_url)
             await mark_success(event)
 
-            display_name = preset or (prompt[:20] if prompt else "视频")
-            logger.info(f"[视频] 完成: {display_name}..., 耗时={t_end - t_start:.2f}s")
+            t_end = time.perf_counter()
+            name = used_pid or "video"
+            logger.info(f"[视频] 完成: provider={name}, 耗时={t_end - t_start:.2f}s")
 
         except Exception as e:
             logger.error(f"[视频] 失败: {e}", exc_info=True)
@@ -892,6 +1175,12 @@ Gemini: 4K高清，效果好，需代理
         if self.debouncer.hit(request_id):
             await event.send(event.plain_result("操作太快了，请稍后再试"))
             return
+
+        p = (prompt or "").strip()
+        if p.startswith("@"):
+            first, _, rest = p.partition(" ")
+            backend = first.lstrip("@").strip() or backend
+            prompt = rest.strip()
 
         # 获取图片
         image_segs = await get_images_from_event(event)
@@ -933,14 +1222,16 @@ Gemini: 4K高清，效果好，需代理
             )
             t_end = time.perf_counter()
 
-            # 发送结果图片
-            await event.send(
-                event.chain_result(
-                    [
-                        Image.fromFileSystem(str(image_path)),
-                    ]
+            self._remember_last_image(event, image_path)
+            sent = await self._send_image_with_fallback(event, image_path)
+            if not sent:
+                await mark_failed(event)
+                await event.send(
+                    event.plain_result(
+                        "图片已生成，但发送失败（可能是平台临时异常）。可稍后使用：/重发图片"
+                    )
                 )
-            )
+                return
 
             # 标记成功
             await mark_success(event)
@@ -973,6 +1264,13 @@ Gemini: 4K高清，效果好，需代理
         if self.debouncer.hit(request_id):
             yield event.plain_result("操作太快了，请稍后再试")
             return
+
+        # Optional provider override: "/aiedit @provider_id <prompt>"
+        p = (prompt or "").strip()
+        if p.startswith("@"):
+            first, _, rest = p.partition(" ")
+            backend = first.lstrip("@").strip() or backend
+            prompt = rest.strip()
 
         # 预设自动检测: prompt 完全匹配预设名时，自动转为预设
         if not preset and prompt:
@@ -1018,12 +1316,14 @@ Gemini: 4K高清，效果好，需代理
             )
             t_end = time.perf_counter()
 
-            # 发送结果图片
-            yield event.chain_result(
-                [
-                    Image.fromFileSystem(str(image_path)),
-                ]
-            )
+            self._remember_last_image(event, image_path)
+            sent = await self._send_image_with_fallback(event, image_path)
+            if not sent:
+                await mark_failed(event)
+                yield event.plain_result(
+                    "图片已生成，但发送失败（可能是平台临时异常）。可稍后使用：/重发图片"
+                )
+                return
 
             # 标记成功
             await mark_success(event)
@@ -1038,8 +1338,7 @@ Gemini: 4K高清，效果好，需代理
     # ==================== 自拍参考照：内部实现 ====================
 
     def _get_selfie_conf(self) -> dict:
-        conf = self.config.get("selfie", {}) if isinstance(self.config, dict) else {}
-        return conf if isinstance(conf, dict) else {}
+        return self._get_feature("selfie")
 
     def _get_selfie_ref_store_key(self, event: AstrMessageEvent) -> str:
         """用于 ReferenceStore 的固定 key（按 bot self_id 隔离）。"""
@@ -1175,14 +1474,14 @@ Gemini: 4K高清，效果好，需代理
     ) -> Path:
         conf = self._get_selfie_conf()
         if conf.get("enabled", True) is False:
-            raise RuntimeError("自拍功能已关闭（selfie.enabled=false）")
+            raise RuntimeError("自拍功能已关闭（features.selfie.enabled=false）")
 
         # 1) 读取参考照（WebUI 优先，其次命令设置的 store）
         ref_paths, _ = await self._get_selfie_reference_paths(event)
         ref_images = await self._read_paths_bytes(ref_paths)
         if not ref_images:
             raise RuntimeError(
-                "未设置自拍参考照。请先：发送图片 + /自拍参考 设置，或在 WebUI 配置 selfie.reference_images 上传。"
+                "未设置自拍参考照。请先：发送图片 + /自拍参考 设置，或在 WebUI 配置 features.selfie.reference_images 上传。"
             )
 
         # 2) 读取额外参考图（衣服/姿势/场景）
@@ -1194,9 +1493,18 @@ Gemini: 4K高清，效果好，需代理
 
         final_prompt = self._build_selfie_prompt(prompt, extra_refs=len(extra_bytes))
 
-        prefer_provider = str(conf.get("prefer_provider", "auto") or "auto").strip()
-        if backend is None and prefer_provider and prefer_provider.lower() != "auto":
-            backend = prefer_provider
+        chain_override: list[dict] | None = None
+        raw_chain = conf.get("chain", [])
+        if isinstance(raw_chain, list):
+            chain_items = [x for x in raw_chain if isinstance(x, dict)]
+            if any(str(x.get("provider_id") or "").strip() for x in chain_items):
+                chain_override = chain_items
+
+        if backend is None and chain_override is None:
+            if not bool(conf.get("use_edit_chain_when_empty", True)):
+                raise RuntimeError(
+                    "No selfie provider chain configured. Please set features.selfie.chain or enable features.selfie.use_edit_chain_when_empty."
+                )
 
         # 4) 千问后端可选 task_types（仅对 gitee 生效）
         task_types = conf.get("gitee_task_types")
@@ -1205,6 +1513,8 @@ Gemini: 4K高清，效果好，需代理
         else:
             gitee_task_types = ["id", "background", "style"]
 
+        default_output = str(conf.get("default_output") or "").strip() or None
+
         return await self.edit.edit(
             prompt=final_prompt,
             images=images,
@@ -1212,25 +1522,9 @@ Gemini: 4K高清，效果好，需代理
             task_types=gitee_task_types,
             size=size,
             resolution=resolution,
+            default_output=default_output,
+            chain_override=chain_override,
         )
-
-    async def _do_selfie_llm(
-        self,
-        event: AstrMessageEvent,
-        prompt: str,
-        backend: str | None,
-        *,
-        size: str | None = None,
-        resolution: str | None = None,
-    ) -> None:
-        image_path = await self._generate_selfie_image(
-            event,
-            prompt,
-            backend,
-            size=size,
-            resolution=resolution,
-        )
-        await event.send(event.chain_result([Image.fromFileSystem(str(image_path))]))
 
     async def _do_selfie(
         self,
@@ -1245,6 +1539,12 @@ Gemini: 4K高清，效果好，需代理
         if self.debouncer.hit(request_id):
             yield event.plain_result("操作太快了，请稍后再试")
             return
+
+        p = (prompt or "").strip()
+        if p.startswith("@"):
+            first, _, rest = p.partition(" ")
+            backend = first.lstrip("@").strip() or backend
+            prompt = rest.strip()
 
         await mark_processing(event)
 
@@ -1284,7 +1584,7 @@ Gemini: 4K高清，效果好，需代理
         webui_paths = self._get_config_selfie_reference_paths()
         note = ""
         if webui_paths:
-            note = "\n⚠️ 检测到 WebUI 已配置 selfie.reference_images，运行时会优先使用 WebUI 的参考照。"
+            note = "\n⚠️ 检测到 WebUI 已配置 features.selfie.reference_images，运行时会优先使用 WebUI 的参考照。"
 
         yield event.plain_result(
             f"✅ 已保存 {count} 张自拍参考照。\n"
@@ -1297,7 +1597,7 @@ Gemini: 4K高清，效果好，需代理
             yield event.plain_result(
                 "当前没有自拍参考照。\n"
                 "请先：发送图片 + /自拍参考 设置\n"
-                "或在 WebUI 配置 selfie.reference_images 上传。"
+                "或在 WebUI 配置 features.selfie.reference_images 上传。"
             )
             return
 
@@ -1317,7 +1617,7 @@ Gemini: 4K高清，效果好，需代理
         if webui_paths:
             yield event.plain_result(
                 "已删除命令保存的自拍参考照。\n"
-                "⚠️ 但你仍配置了 WebUI 的 selfie.reference_images（运行时优先使用它）。如需彻底删除，请在 WebUI 中清空该配置。"
+                "⚠️ 但你仍配置了 WebUI 的 features.selfie.reference_images（运行时优先使用它）。如需彻底删除，请在 WebUI 中清空该配置。"
             )
             return
 
