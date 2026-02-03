@@ -1,12 +1,3 @@
-"""
-改图路由器（基于新的配置界面）
-
-配置要点：
-- edit.provider 选择默认服务商
-- edit.<provider> 填该服务商的参数
-- edit.fallback_providers 可选降级链路
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -16,247 +7,113 @@ from pathlib import Path
 
 from astrbot.api import logger
 
-from .gemini_edit import GeminiEditBackend
 from .gitee_edit import GiteeEditBackend
-from .jimeng_api_backend import JimengApiBackend
-from .openai_chat_image_backend import OpenAIChatImageBackend
-from .openai_compat_backend import OpenAICompatBackend
+from .output_spec import parse_output
+from .provider_registry import ProviderRegistry
 
-BUILTIN_PRESETS: dict[str, str] = {}
+
+def _as_dict(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: object) -> list:
+    return value if isinstance(value, list) else []
 
 
 class EditRouter:
-    def __init__(self, config: dict, imgr, data_dir: Path):
-        self.config = config or {}
+    """Image-to-Image router for v4 config (provider chain + presets)."""
+
+    def __init__(
+        self,
+        config: dict,
+        imgr,
+        data_dir: Path,
+        *,
+        registry: ProviderRegistry | None = None,
+    ):
+        self.config = config if isinstance(config, dict) else {}
         self.imgr = imgr
         self.data_dir = Path(data_dir)
-
-        self.edit_conf: dict = (
-            (self.config.get("edit") or {}) if isinstance(self.config, dict) else {}
+        self.registry = registry or ProviderRegistry(
+            self.config, imgr=self.imgr, data_dir=self.data_dir
         )
 
         self.presets = self._load_presets()
-        self._backends: dict[str, object] = {}
 
         logger.info(
-            "[EditRouter] 初始化完成: provider=%s, presets=%s",
-            self._default_provider(),
+            "[EditRouter] Initialized: presets=%s, providers=%s",
             len(self.presets),
+            len(self.registry.provider_ids()),
         )
 
+    def _feature_conf(self) -> dict:
+        feats = _as_dict(self.config.get("features"))
+        return _as_dict(feats.get("edit"))
+
+    def _default_output(self) -> str:
+        return str(self._feature_conf().get("default_output") or "").strip()
+
+    def _chain(self) -> list[dict]:
+        return [
+            x
+            for x in _as_list(self._feature_conf().get("chain"))
+            if isinstance(x, dict)
+        ]
+
     def _load_presets(self) -> dict[str, str]:
-        presets = dict(BUILTIN_PRESETS)
-        for item in self.edit_conf.get("presets") or []:
+        presets: dict[str, str] = {}
+        for item in _as_list(self._feature_conf().get("presets")):
             if isinstance(item, str) and ":" in item:
                 key, val = item.split(":", 1)
-                if key.strip() and val.strip():
-                    presets[key.strip()] = val.strip()
+                key = key.strip()
+                val = val.strip()
+                if key and val:
+                    presets[key] = val
         return presets
 
     def get_preset_names(self) -> list[str]:
         return list(self.presets.keys())
 
     def get_available_backends(self) -> list[str]:
-        return [
-            k
-            for k in (
-                "grok",
-                "gemini_native",
-                "gemini_openai",
-                "openai_compat",
-                "jimeng",
-                "gitee_async",
-            )
-            if self._can_build_backend(k)
-        ]
-
-    def _default_provider(self) -> str:
-        return (
-            str(self.edit_conf.get("provider") or "gemini_native").strip()
-            or "gemini_native"
-        )
-
-    def _fallback_provider_ids(self) -> list[str]:
-        allowed = {
-            "grok",
-            "gemini_native",
-            "gemini_openai",
-            "openai_compat",
-            "jimeng",
-            "gitee_async",
-        }
-
         out: list[str] = []
-
-        # New UI: explicit dropdown fields.
-        for key in ("fallback_1", "fallback_2", "fallback_3"):
-            v = str(self.edit_conf.get(key) or "").strip()
-            if v and v in allowed and v not in out:
-                out.append(v)
-
-        # Backward: accept legacy list configs.
-        raw = self.edit_conf.get("fallback_providers")
-        if isinstance(raw, list):
-            for x in raw:
-                v = str(x).strip()
-                if v and v in allowed and v not in out:
-                    out.append(v)
-
+        for pid in self.registry.provider_ids():
+            try:
+                backend = self.registry.get_backend(pid)
+                edit_fn = getattr(backend, "edit", None)
+                if callable(edit_fn):
+                    out.append(pid)
+            except Exception:
+                continue
         return out
 
-    def _normalize_alias(self, backend: str | None) -> str | None:
-        if backend is None:
-            return None
-        b = str(backend).strip()
-        if not b or b.lower() == "auto":
-            return None
-        aliases = {"gemini": "gemini_native", "gitee": "gitee_async"}
-        return aliases.get(b, b)
-
-    def _can_build_backend(self, backend: str) -> bool:
-        try:
-            self._build_backend(backend)
-            return True
-        except Exception:
-            return False
-
-    def _get_backend(self, backend: str) -> object:
-        if backend in self._backends:
-            return self._backends[backend]
-        obj = self._build_backend(backend)
-        self._backends[backend] = obj
-        return obj
-
-    def _build_openai_compat(
-        self, settings: dict, *, supports_edit: bool = True
-    ) -> OpenAICompatBackend:
-        return OpenAICompatBackend(
-            imgr=self.imgr,
-            base_url=str(settings.get("base_url") or "").strip(),
-            api_keys=[
-                str(x).strip()
-                for x in (settings.get("api_keys") or [])
-                if str(x).strip()
-            ],
-            timeout=int(settings.get("timeout") or 120),
-            max_retries=int(settings.get("max_retries") or 2),
-            default_model=str(settings.get("model") or "").strip(),
-            default_size=str(settings.get("size") or "4096x4096").strip(),
-            supports_edit=supports_edit,
-            extra_body=settings.get("extra_body")
-            if isinstance(settings.get("extra_body"), dict)
-            else None,
-        )
-
-    def _build_backend(self, backend: str) -> object:
-        b = str(backend).strip()
-        if b == "grok":
-            settings = dict(self.edit_conf.get("grok") or {})
-            settings.setdefault("base_url", "https://api.x.ai/v1")
-            api_mode = str(settings.get("api_mode") or "chat").strip().lower()
-            if api_mode == "chat":
-                return OpenAIChatImageBackend(
-                    imgr=self.imgr,
-                    base_url=str(settings.get("base_url") or "").strip(),
-                    api_keys=[
-                        str(x).strip()
-                        for x in (settings.get("api_keys") or [])
-                        if str(x).strip()
-                    ],
-                    timeout=int(settings.get("timeout") or 120),
-                    max_retries=int(settings.get("max_retries") or 2),
-                    default_model=str(settings.get("model") or "").strip(),
-                    supports_edit=bool(settings.get("supports_edit", True)),
-                    extra_body=settings.get("extra_body")
-                    if isinstance(settings.get("extra_body"), dict)
-                    else None,
-                )
-            return self._build_openai_compat(
-                settings,
-                supports_edit=bool(settings.get("supports_edit", True)),
-            )
-        if b == "gemini_openai":
-            settings = dict(self.edit_conf.get("gemini_openai") or {})
-            api_mode = str(settings.get("api_mode") or "images").strip().lower()
-            if api_mode == "chat":
-                return OpenAIChatImageBackend(
-                    imgr=self.imgr,
-                    base_url=str(settings.get("base_url") or "").strip(),
-                    api_keys=[
-                        str(x).strip()
-                        for x in (settings.get("api_keys") or [])
-                        if str(x).strip()
-                    ],
-                    timeout=int(settings.get("timeout") or 120),
-                    max_retries=int(settings.get("max_retries") or 2),
-                    default_model=str(settings.get("model") or "").strip(),
-                    supports_edit=bool(settings.get("supports_edit", True)),
-                    extra_body=settings.get("extra_body")
-                    if isinstance(settings.get("extra_body"), dict)
-                    else None,
-                )
-            return self._build_openai_compat(
-                settings,
-                supports_edit=bool(settings.get("supports_edit", True)),
-            )
-        if b == "openai_compat":
-            settings = dict(self.edit_conf.get("openai_compat") or {})
-            api_mode = str(settings.get("api_mode") or "images").strip().lower()
-            if api_mode == "chat":
-                return OpenAIChatImageBackend(
-                    imgr=self.imgr,
-                    base_url=str(settings.get("base_url") or "").strip(),
-                    api_keys=[
-                        str(x).strip()
-                        for x in (settings.get("api_keys") or [])
-                        if str(x).strip()
-                    ],
-                    timeout=int(settings.get("timeout") or 120),
-                    max_retries=int(settings.get("max_retries") or 2),
-                    default_model=str(settings.get("model") or "").strip(),
-                    supports_edit=bool(settings.get("supports_edit", True)),
-                    extra_body=settings.get("extra_body")
-                    if isinstance(settings.get("extra_body"), dict)
-                    else None,
-                )
-            return self._build_openai_compat(
-                settings,
-                supports_edit=bool(settings.get("supports_edit", True)),
-            )
-        if b == "gemini_native":
-            return GeminiEditBackend(
-                imgr=self.imgr, settings=dict(self.edit_conf.get("gemini_native") or {})
-            )
-        if b == "gitee_async":
-            return GiteeEditBackend(
-                imgr=self.imgr, settings=dict(self.edit_conf.get("gitee_async") or {})
-            )
-        if b == "jimeng":
-            conf = dict(self.edit_conf.get("jimeng") or {})
-            return JimengApiBackend(
-                imgr=self.imgr,
-                data_dir=self.data_dir,
-                api_url=str(conf.get("api_url") or "").strip(),
-                apikey=str(conf.get("apikey") or "").strip(),
-                cookie_list=conf.get("cookie_list")
-                if isinstance(conf.get("cookie_list"), list)
-                else [],
-                default_style=str(conf.get("default_style") or "真实").strip(),
-                default_ratio=str(conf.get("default_ratio") or "1:1").strip(),
-                default_model=str(conf.get("default_model") or "Seedream 4.0").strip(),
-                timeout=int(conf.get("timeout") or 120),
-            )
-        raise RuntimeError(f"未知后端: {backend}")
-
     async def close(self) -> None:
-        for backend in self._backends.values():
-            close = getattr(backend, "close", None)
-            if callable(close):
-                try:
-                    await close()
-                except Exception:
-                    pass
-        self._backends.clear()
+        await self.registry.close()
+
+    @staticmethod
+    def _candidates_from_chain(raw_chain: list[dict]) -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
+        for item in raw_chain:
+            if not isinstance(item, dict):
+                continue
+            pid = str(item.get("provider_id") or "").strip()
+            out_override = str(item.get("output") or "").strip()
+            if pid:
+                out.append((pid, out_override))
+        return out
+
+    def _candidate_chain(
+        self, backend: str | None, chain_override: list[dict] | None
+    ) -> list[tuple[str, str]]:
+        if backend:
+            return [(str(backend).strip(), "")]
+        if chain_override is not None:
+            return self._candidates_from_chain(chain_override)
+        return self._candidates_from_chain(self._chain())
+
+    def _default_gitee_task_types(self) -> list[str]:
+        raw = _as_list(self._feature_conf().get("gitee_task_types"))
+        out = [str(x).strip() for x in raw if str(x).strip()]
+        return out or ["id", "background", "style"]
 
     async def edit(
         self,
@@ -268,9 +125,14 @@ class EditRouter:
         *,
         size: str | None = None,
         resolution: str | None = None,
+        default_output: str | None = None,
+        chain_override: list[dict] | None = None,
     ) -> Path:
+        feature = self._feature_conf()
+        if not bool(feature.get("enabled", True)):
+            raise RuntimeError("Image edit is disabled (features.edit.enabled=false)")
         if not images:
-            raise ValueError("至少需要一张图片")
+            raise ValueError("At least one image is required")
 
         if preset and preset in self.presets:
             p = self.presets[preset]
@@ -278,73 +140,76 @@ class EditRouter:
         if not prompt:
             prompt = "Transform this image with artistic style"
 
-        target = self._normalize_alias(backend) or self._default_provider()
+        candidates = self._candidate_chain(backend, chain_override)
+        if not candidates:
+            raise RuntimeError(
+                "No edit providers configured. Please add providers and set features.edit.chain."
+            )
 
-        fallback_cfg = self.edit_conf.get("fallback") or {}
-        max_retries = int(fallback_cfg.get("max_retries", 2) or 2)
-        retry_delay = int(fallback_cfg.get("retry_delay", 2) or 2)
-        fallback_enabled = bool(fallback_cfg.get("enabled", True))
+        effective_default_output = (
+            str(default_output).strip()
+            if default_output is not None and str(default_output).strip()
+            else self._default_output()
+        )
+        gitee_default_task_types = self._default_gitee_task_types()
+        final_task_types = (
+            list(task_types) if list(task_types) else gitee_default_task_types
+        )
 
-        candidates = [target]
-        if fallback_enabled:
-            candidates.extend(self._fallback_provider_ids())
+        max_attempts = 1
 
         last_error: Exception | None = None
         t_start = time.perf_counter()
 
-        for backend_id in candidates:
+        for pid, out_override in candidates:
             try:
-                backend_obj = self._get_backend(backend_id)
+                backend_obj = self.registry.get_backend(pid)
             except Exception as e:
                 last_error = e
-                logger.warning("[EditRouter] 后端=%s 构建失败: %s", backend_id, e)
+                logger.warning("[edit] Provider build failed: %s: %s", pid, e)
                 continue
 
-            for attempt in range(max_retries + 1):
+            if size or resolution:
+                final_size = size
+                final_res = resolution
+            else:
+                output = out_override or effective_default_output
+                out_size, out_res = parse_output(output)
+                final_size = out_size
+                final_res = out_res
+
+            for attempt in range(max_attempts):
                 try:
                     logger.info(
-                        "[EditRouter] 后端=%s 尝试=%s prompt=%s",
-                        backend_id,
+                        "[edit] Provider=%s attempt=%s/%s",
+                        pid,
                         attempt + 1,
-                        prompt[:80],
+                        max_attempts,
                     )
+                    edit_fn = getattr(backend_obj, "edit", None)
+                    if not callable(edit_fn):
+                        raise RuntimeError("Provider does not support edit()")
                     if isinstance(backend_obj, GiteeEditBackend):
                         result = await backend_obj.edit(
-                            prompt, images, task_types=task_types
+                            prompt, images, task_types=final_task_types
                         )
-                    elif isinstance(backend_obj, OpenAICompatBackend):
-                        result = await backend_obj.edit(
-                            prompt, images, size=size, resolution=resolution
-                        )
-                    elif isinstance(backend_obj, GeminiEditBackend):
-                        result = await backend_obj.edit(
-                            prompt, images, resolution=resolution
-                        )
-                    elif isinstance(backend_obj, JimengApiBackend):
-                        result = await backend_obj.edit(prompt, images)
                     else:
-                        edit_fn = getattr(backend_obj, "edit", None)
-                        if not callable(edit_fn):
-                            raise RuntimeError(f"后端 {backend_id} 不支持改图")
-                        result = await edit_fn(prompt, images)
-
+                        result = await edit_fn(
+                            prompt,
+                            images,
+                            size=final_size,
+                            resolution=final_res,
+                        )
                     logger.info(
-                        "[EditRouter] 后端=%s 成功, 总耗时=%.2fs",
-                        backend_id,
+                        "[edit] Provider=%s success in %.2fs",
+                        pid,
                         time.perf_counter() - t_start,
                     )
                     return result
                 except Exception as e:
                     last_error = e
-                    logger.warning(
-                        "[EditRouter] 后端=%s 尝试=%s 失败: %s",
-                        backend_id,
-                        attempt + 1,
-                        e,
-                    )
-                    if "404" in str(e):
-                        break
-                    if attempt < max_retries:
-                        await asyncio.sleep(retry_delay * (2**attempt))
+                    logger.warning("[edit] Provider=%s failed: %s", pid, e)
+                    if attempt + 1 < max_attempts:
+                        await asyncio.sleep(0.5 * (2**attempt))
 
-        raise RuntimeError(f"改图失败: {last_error}") from last_error
+        raise RuntimeError(f"Edit failed: {last_error}") from last_error

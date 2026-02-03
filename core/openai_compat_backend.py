@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import io
 import re
 import time
@@ -39,6 +40,21 @@ def _bytes_to_upload_file(image_bytes: bytes, filename: str) -> io.BytesIO:
     return bio
 
 
+def _is_client_closed_error(exc: Exception) -> bool:
+    msg = f"{exc!r} {exc}".lower()
+    if "client has been closed" in msg:
+        return True
+    cur: Exception | None = exc
+    for _ in range(3):
+        nxt = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
+        if not isinstance(nxt, Exception):
+            break
+        cur = nxt
+        if "client has been closed" in f"{cur!r} {cur}".lower():
+            return True
+    return False
+
+
 def normalize_openai_compat_base_url(raw: str) -> str:
     """Normalize OpenAI-compatible base_url.
 
@@ -60,6 +76,12 @@ def normalize_openai_compat_base_url(raw: str) -> str:
     for suffix in (
         "/v1/chat/completions",
         "/chat/completions",
+        "/v1/images/generations",
+        "/images/generations",
+        "/v1/images/edits",
+        "/images/edits",
+        "/v1/images/edit",
+        "/images/edit",
         "/v1/images",
         "/images",
     ):
@@ -146,6 +168,7 @@ class OpenAICompatBackend:
         default_size: str = "4096x4096",
         supports_edit: bool = True,
         extra_body: dict | None = None,
+        proxy_url: str | None = None,
     ):
         self.imgr = imgr
         self.base_url = normalize_openai_compat_base_url(base_url)
@@ -156,11 +179,40 @@ class OpenAICompatBackend:
         self.default_size = str(default_size or "4096x4096").strip()
         self.supports_edit = bool(supports_edit)
         self.extra_body = extra_body or {}
+        self.proxy_url = str(proxy_url or "").strip() or None
 
         self._key_index = 0
         self._clients: dict[str, AsyncOpenAI] = {}
+        self._http_client = None
         self._images_generate_disabled_until = 0.0
         self._images_edit_disabled_until = 0.0
+
+    @staticmethod
+    def _supports_http_client_param() -> bool:
+        try:
+            sig = inspect.signature(AsyncOpenAI)
+        except Exception:
+            try:
+                sig = inspect.signature(AsyncOpenAI.__init__)  # type: ignore[misc]
+            except Exception:
+                return False
+        return "http_client" in sig.parameters
+
+    def _get_http_client(self):
+        if not self.proxy_url:
+            return None
+        if self._http_client is not None:
+            return self._http_client
+        try:
+            import httpx
+        except Exception:
+            return None
+        try:
+            self._http_client = httpx.AsyncClient(proxies=self.proxy_url)
+        except TypeError:
+            # httpx signature may differ; skip proxy support gracefully.
+            self._http_client = None
+        return self._http_client
 
     @staticmethod
     def _image_support_cooldown_seconds() -> int:
@@ -220,6 +272,12 @@ class OpenAICompatBackend:
             except Exception:
                 pass
         self._clients.clear()
+        if self._http_client is not None:
+            try:
+                await self._http_client.aclose()
+            except Exception:
+                pass
+            self._http_client = None
 
     def _next_key(self) -> str:
         if not self.api_keys:
@@ -231,12 +289,17 @@ class OpenAICompatBackend:
     def _get_client(self, key: str) -> AsyncOpenAI:
         client = self._clients.get(key)
         if client is None:
-            client = AsyncOpenAI(
-                base_url=self.base_url,
-                api_key=key,
-                timeout=self.timeout,
-                max_retries=self.max_retries,
-            )
+            kwargs: dict = {
+                "base_url": self.base_url,
+                "api_key": key,
+                "timeout": self.timeout,
+                "max_retries": self.max_retries,
+            }
+            if self.proxy_url and self._supports_http_client_param():
+                http_client = self._get_http_client()
+                if http_client is not None:
+                    kwargs["http_client"] = http_client
+            client = AsyncOpenAI(**kwargs)
             self._clients[key] = client
         return client
 
@@ -308,7 +371,7 @@ class OpenAICompatBackend:
                 )
             resp: ImagesResponse = await client.images.generate(**kwargs)
         except Exception as e:
-            if "client has been closed" in str(e).lower():
+            if _is_client_closed_error(e):
                 logger.warning(
                     "[OpenAICompat][generate] client 已关闭，重建 client 后重试一次"
                 )
@@ -400,7 +463,7 @@ class OpenAICompatBackend:
                 )
             resp: ImagesResponse = await client.images.edit(**kwargs)
         except Exception as e:
-            if "client has been closed" in str(e).lower():
+            if _is_client_closed_error(e):
                 logger.warning(
                     "[OpenAICompat][edit] client 已关闭，重建 client 后重试一次"
                 )

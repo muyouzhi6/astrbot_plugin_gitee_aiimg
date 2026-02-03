@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import inspect
 import re
 import time
 from pathlib import Path
@@ -14,6 +15,28 @@ from .openai_compat_backend import normalize_openai_compat_base_url
 
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[.*?\]\((.*?)\)")
 _DATA_IMAGE_RE = re.compile(r"(data:image/[^\\s)]+)")
+_HTML_IMG_RE = re.compile(r'<img[^>]*src=["\']([^"\'>]+)["\']', re.IGNORECASE)
+_IMAGE_URL_RE = re.compile(
+    r"(https?://[^\s<>\"')\]]+?\.(?:png|jpg|jpeg|webp|gif)(?:\?[^\s<>\"')\]]*)?)",
+    re.IGNORECASE,
+)
+
+_HTML_VIDEO_RE = re.compile(r'<video[^>]*src=["\']([^"\'>]+)["\']', re.IGNORECASE)
+_VIDEO_URL_RE = re.compile(
+    r"(https?://[^\s<>\"')\]]+?\.(?:mp4|webm|mov)(?:\?[^\s<>\"')\]]*)?)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_video_url(url: str) -> bool:
+    u = (url or "").strip().lower()
+    if not u.startswith(("http://", "https://")):
+        return False
+    if any(ext in u for ext in (".mp4", ".webm", ".mov")):
+        return True
+    if "generated_video" in u:
+        return True
+    return False
 
 
 def _extract_first_image_ref(text: str) -> str | None:
@@ -26,9 +49,53 @@ def _extract_first_image_ref(text: str) -> str | None:
     m = _DATA_IMAGE_RE.search(s)
     if m:
         return m.group(1).strip()
+    m = _HTML_IMG_RE.search(s)
+    if m:
+        url = m.group(1).strip()
+        if url and not _looks_like_video_url(url):
+            return url
+    m = _IMAGE_URL_RE.search(s)
+    if m:
+        url = m.group(1).strip()
+        if url and not _looks_like_video_url(url):
+            return url
     if s.startswith("http://") or s.startswith("https://"):
+        if _looks_like_video_url(s):
+            return None
         return s
     return None
+
+
+def _extract_first_video_url(text: str) -> str | None:
+    s = (text or "").strip()
+    if not s:
+        return None
+    m = _HTML_VIDEO_RE.search(s)
+    if m:
+        url = m.group(1).strip()
+        return url if _looks_like_video_url(url) else None
+    m = _VIDEO_URL_RE.search(s)
+    if m:
+        url = m.group(1).strip()
+        return url if _looks_like_video_url(url) else None
+    if _looks_like_video_url(s):
+        return s
+    return None
+
+
+def _is_client_closed_error(exc: Exception) -> bool:
+    msg = f"{exc!r} {exc}".lower()
+    if "client has been closed" in msg:
+        return True
+    cur: Exception | None = exc
+    for _ in range(3):
+        nxt = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
+        if not isinstance(nxt, Exception):
+            break
+        cur = nxt
+        if "client has been closed" in f"{cur!r} {cur}".lower():
+            return True
+    return False
 
 
 def _iter_strings(obj: object) -> list[str]:
@@ -114,6 +181,18 @@ def _extract_image_ref_from_content(content: object) -> str | None:
     return None
 
 
+def _extract_video_ref_from_content(content: object) -> str | None:
+    if content is None:
+        return None
+    if isinstance(content, str):
+        return _extract_first_video_url(content)
+    for s in _iter_strings(content):
+        url = _extract_first_video_url(s)
+        if url:
+            return url
+    return None
+
+
 class OpenAIChatImageBackend:
     """Image generation/edit via chat.completions (gateway-style).
 
@@ -132,6 +211,7 @@ class OpenAIChatImageBackend:
         default_model: str = "",
         supports_edit: bool = True,
         extra_body: dict | None = None,
+        proxy_url: str | None = None,
     ):
         self.imgr = imgr
         self.base_url = normalize_openai_compat_base_url(base_url)
@@ -141,9 +221,37 @@ class OpenAIChatImageBackend:
         self.default_model = str(default_model or "").strip()
         self.supports_edit = bool(supports_edit)
         self.extra_body = extra_body or {}
+        self.proxy_url = str(proxy_url or "").strip() or None
 
         self._key_index = 0
         self._clients: dict[str, AsyncOpenAI] = {}
+        self._http_client = None
+
+    @staticmethod
+    def _supports_http_client_param() -> bool:
+        try:
+            sig = inspect.signature(AsyncOpenAI)
+        except Exception:
+            try:
+                sig = inspect.signature(AsyncOpenAI.__init__)  # type: ignore[misc]
+            except Exception:
+                return False
+        return "http_client" in sig.parameters
+
+    def _get_http_client(self):
+        if not self.proxy_url:
+            return None
+        if self._http_client is not None:
+            return self._http_client
+        try:
+            import httpx
+        except Exception:
+            return None
+        try:
+            self._http_client = httpx.AsyncClient(proxies=self.proxy_url)
+        except TypeError:
+            self._http_client = None
+        return self._http_client
 
     async def close(self) -> None:
         for client in self._clients.values():
@@ -152,6 +260,12 @@ class OpenAIChatImageBackend:
             except Exception:
                 pass
         self._clients.clear()
+        if self._http_client is not None:
+            try:
+                await self._http_client.aclose()
+            except Exception:
+                pass
+            self._http_client = None
 
     def _next_key(self) -> str:
         if not self.api_keys:
@@ -163,12 +277,17 @@ class OpenAIChatImageBackend:
     def _get_client(self, key: str) -> AsyncOpenAI:
         client = self._clients.get(key)
         if client is None:
-            client = AsyncOpenAI(
-                base_url=self.base_url,
-                api_key=key,
-                timeout=self.timeout,
-                max_retries=self.max_retries,
-            )
+            kwargs: dict = {
+                "base_url": self.base_url,
+                "api_key": key,
+                "timeout": self.timeout,
+                "max_retries": self.max_retries,
+            }
+            if self.proxy_url and self._supports_http_client_param():
+                http_client = self._get_http_client()
+                if http_client is not None:
+                    kwargs["http_client"] = http_client
+            client = AsyncOpenAI(**kwargs)
             self._clients[key] = client
         return client
 
@@ -179,12 +298,17 @@ class OpenAIChatImageBackend:
                 await old.close()
             except Exception:
                 pass
-        client = AsyncOpenAI(
-            base_url=self.base_url,
-            api_key=key,
-            timeout=self.timeout,
-            max_retries=self.max_retries,
-        )
+        kwargs: dict = {
+            "base_url": self.base_url,
+            "api_key": key,
+            "timeout": self.timeout,
+            "max_retries": self.max_retries,
+        }
+        if self.proxy_url and self._supports_http_client_param():
+            http_client = self._get_http_client()
+            if http_client is not None:
+                kwargs["http_client"] = http_client
+        client = AsyncOpenAI(**kwargs)
         self._clients[key] = client
         return client
 
@@ -217,6 +341,25 @@ class OpenAIChatImageBackend:
 
         return None
 
+    def _extract_video_ref_from_response(self, resp: object) -> str | None:
+        try:
+            choice0 = resp.choices[0]  # type: ignore[attr-defined]
+            msg = getattr(choice0, "message", None)
+            if msg is not None:
+                url = _extract_video_ref_from_content(getattr(msg, "content", None))
+                if url:
+                    return url
+        except Exception:
+            pass
+
+        try:
+            dumped = resp.model_dump()  # type: ignore[attr-defined]
+        except Exception:
+            dumped = None
+        if dumped is not None:
+            return _extract_video_ref_from_content(dumped)
+        return None
+
     async def _save_from_ref(self, ref: str, *, debug_snippet: str = "") -> Path:
         if not ref:
             raise RuntimeError(
@@ -232,6 +375,10 @@ class OpenAIChatImageBackend:
             return await self.imgr.save_image(image_bytes)
 
         if ref.startswith("http://") or ref.startswith("https://"):
+            if _looks_like_video_url(ref):
+                raise RuntimeError(
+                    f"chat 返回了视频而不是图片：{ref}（如果想要视频请用 /视频；如果想要图片请换模型或改用 images 接口）"
+                )
             return await self.imgr.download_image(ref)
 
         raise RuntimeError("chat 返回的图片引用格式不支持")
@@ -260,7 +407,8 @@ class OpenAIChatImageBackend:
 
         user_text = (
             f"{prompt}\n\n"
-            "Return ONLY one markdown image in the format:\n"
+            "Return ONLY one image. Do NOT return video/mp4, HTML, or explanations.\n"
+            "Output format MUST be exactly one markdown image:\n"
             "![](data:image/png;base64,...)"
             f"{size_hint}"
         )
@@ -277,7 +425,7 @@ class OpenAIChatImageBackend:
                 extra_body=eb or None,
             )
         except Exception as e:
-            if "client has been closed" in str(e).lower():
+            if _is_client_closed_error(e):
                 logger.warning(
                     "[OpenAIChatImage][generate] client 已关闭，重建后重试一次"
                 )
@@ -300,12 +448,20 @@ class OpenAIChatImageBackend:
         debug_snippet = ""
         try:
             debug_snippet = (
-                str(getattr(resp.choices[0].message, "content", "")).strip().replace("\n", " ")[:200]  # type: ignore[attr-defined]
+                str(getattr(resp.choices[0].message, "content", ""))
+                .strip()
+                .replace("\n", " ")[:200]  # type: ignore[attr-defined]
             )
         except Exception:
             pass
 
         logger.info("[OpenAIChatImage][generate] API 响应耗时: %.2fs", time.time() - t0)
+        if not ref:
+            video_url = self._extract_video_ref_from_response(resp)
+            if video_url:
+                raise RuntimeError(
+                    f"chat 返回了视频而不是图片：{video_url}（如果想要视频请用 /视频；如果想要图片请换模型或改用 images 接口）"
+                )
         return await self._save_from_ref(ref or "", debug_snippet=debug_snippet)
 
     async def edit(
@@ -338,7 +494,9 @@ class OpenAIChatImageBackend:
 
         text = (
             f"{prompt}\n\n"
-            "Edit the attached image(s). Return ONLY one markdown image in the format:\n"
+            "Edit the attached image(s). Return ONLY one image.\n"
+            "Do NOT return video/mp4, HTML, or explanations.\n"
+            "Output format MUST be exactly one markdown image:\n"
             "![](data:image/png;base64,...)"
             f"{size_hint}"
         )
@@ -367,7 +525,7 @@ class OpenAIChatImageBackend:
                 extra_body=eb or None,
             )
         except Exception as e:
-            if "client has been closed" in str(e).lower():
+            if _is_client_closed_error(e):
                 logger.warning("[OpenAIChatImage][edit] client 已关闭，重建后重试一次")
                 client = await self._recreate_client(key)
                 resp = await client.chat.completions.create(
@@ -388,10 +546,18 @@ class OpenAIChatImageBackend:
         debug_snippet = ""
         try:
             debug_snippet = (
-                str(getattr(resp.choices[0].message, "content", "")).strip().replace("\n", " ")[:200]  # type: ignore[attr-defined]
+                str(getattr(resp.choices[0].message, "content", ""))
+                .strip()
+                .replace("\n", " ")[:200]  # type: ignore[attr-defined]
             )
         except Exception:
             pass
 
         logger.info("[OpenAIChatImage][edit] API 响应耗时: %.2fs", time.time() - t0)
+        if not ref:
+            video_url = self._extract_video_ref_from_response(resp)
+            if video_url:
+                raise RuntimeError(
+                    f"chat 返回了视频而不是图片：{video_url}（如果想要视频请用 /视频；如果想要图片请换模型或改用 images 接口）"
+                )
         return await self._save_from_ref(ref or "", debug_snippet=debug_snippet)

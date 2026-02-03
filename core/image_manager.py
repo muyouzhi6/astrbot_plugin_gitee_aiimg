@@ -9,6 +9,8 @@ import aiohttp
 
 from astrbot.api import logger
 
+from .image_format import guess_image_mime_and_ext
+
 
 class ImageManager:
     """
@@ -49,7 +51,8 @@ class ImageManager:
     async def save_image(self, data: bytes) -> Path:
         """保存 bytes 图片到本地"""
         t0 = time.time()
-        filename = f"{int(time.time())}_{id(data)}.jpg"
+        _, ext = guess_image_mime_and_ext(data)
+        filename = f"{int(time.time())}_{id(data)}.{ext}"
         path = self.image_dir / filename
 
         async with aiofiles.open(path, "wb") as f:
@@ -71,7 +74,17 @@ class ImageManager:
     async def cleanup_old_images(self) -> None:
         """清理旧图片（按比例清理，默认清一半）"""
         try:
-            max_keep: int = self.config.get("max_cached_images", 50)
+            storage = (
+                self.config.get("storage", {}) if isinstance(self.config, dict) else {}
+            )
+            max_keep: int = int(
+                (
+                    storage.get("max_cached_images")
+                    if isinstance(storage, dict)
+                    else None
+                )
+                or self.config.get("max_cached_images", 50)
+            )
 
             images: list[Path] = list(self.image_dir.iterdir())
             total = len(images)
