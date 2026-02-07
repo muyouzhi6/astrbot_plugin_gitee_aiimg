@@ -11,6 +11,7 @@ Gemini 原生 API 改图后端
 
 import asyncio
 import base64
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -110,6 +111,203 @@ class GeminiEditBackend:
             return "4K"
         return None
 
+    @staticmethod
+    def _collect_text_parts(data: dict) -> list[str]:
+        texts: list[str] = []
+        for candidate in data.get("candidates", []):
+            if not isinstance(candidate, dict):
+                continue
+            content = candidate.get("content")
+            if not isinstance(content, dict):
+                continue
+            for part in content.get("parts", []):
+                if not isinstance(part, dict):
+                    continue
+                txt = part.get("text")
+                if isinstance(txt, str) and txt.strip():
+                    texts.append(txt.strip())
+
+        for key in ("text", "output_text", "response", "message"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                texts.append(value.strip())
+
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for t in texts:
+            if t not in seen:
+                seen.add(t)
+                ordered.append(t)
+        return ordered
+
+    @staticmethod
+    def _extract_data_uri_images_from_texts(texts: list[str]) -> list[bytes]:
+        pattern = re.compile(
+            r"data\s*:\s*image/([a-zA-Z0-9.+-]+)\s*;\s*base64\s*,\s*([-A-Za-z0-9+/=_\s]+)",
+            flags=re.IGNORECASE,
+        )
+        images: list[bytes] = []
+        for text in texts:
+            for _img_fmt, b64_data in pattern.findall(text):
+                cleaned = re.sub(r"[^A-Za-z0-9+/=_-]", "", b64_data)
+                if not cleaned:
+                    continue
+                try:
+                    images.append(base64.b64decode(cleaned, validate=False))
+                except Exception:
+                    continue
+        return images
+
+    @staticmethod
+    def _extract_image_urls_from_texts(texts: list[str]) -> list[str]:
+        markdown_pattern = re.compile(
+            r"!\[[^\]]*\]\((https?://[^)]+)\)", flags=re.IGNORECASE
+        )
+        raw_pattern = re.compile(r"https?://[^\s)>\"]+", flags=re.IGNORECASE)
+
+        urls: list[str] = []
+        seen: set[str] = set()
+
+        def push(url: str):
+            u = (
+                str(url)
+                .strip()
+                .replace("&amp;", "&")
+                .strip("'\"")
+                .rstrip(").,;")
+            )
+            if not u:
+                return
+            if u in seen:
+                return
+            seen.add(u)
+            urls.append(u)
+
+        for text in texts:
+            for match in markdown_pattern.findall(text):
+                push(match)
+            for match in raw_pattern.findall(text):
+                push(match)
+        return urls
+
+    @staticmethod
+    def _extract_image_urls_from_payload(data: dict) -> list[str]:
+        urls: list[str] = []
+        seen: set[str] = set()
+        likely_keys = {
+            "url",
+            "uri",
+            "image",
+            "image_url",
+            "imageurl",
+            "fileuri",
+            "file_url",
+            "output_url",
+        }
+        likely_tokens = (
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".gif",
+            "image",
+            "download?",
+        )
+
+        def push(url: str):
+            u = (
+                str(url)
+                .strip()
+                .replace("&amp;", "&")
+                .strip("'\"")
+                .rstrip(").,;")
+            )
+            if not (u.startswith("http://") or u.startswith("https://")):
+                return
+            if u in seen:
+                return
+            seen.add(u)
+            urls.append(u)
+
+        def walk(node, key_hint: str = ""):
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    walk(v, str(k))
+                return
+            if isinstance(node, list):
+                for item in node:
+                    walk(item, key_hint)
+                return
+            if not isinstance(node, str):
+                return
+
+            s = node.strip()
+            if not (s.startswith("http://") or s.startswith("https://")):
+                return
+
+            lk = key_hint.lower()
+            sl = s.lower()
+            if lk in likely_keys or any(tok in sl for tok in likely_tokens):
+                push(s)
+
+        walk(data)
+        return urls
+
+    async def _download_image_bytes(self, url: str) -> bytes:
+        session = await self._get_session()
+        proxy = self._proxy()
+        req_timeout = aiohttp.ClientTimeout(total=max(5, min(int(self.timeout), 20)))
+        async with session.get(url, proxy=proxy, timeout=req_timeout) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"HTTP {resp.status}")
+            content_type = str(resp.headers.get("Content-Type") or "").lower()
+            if content_type and (
+                "image" not in content_type and "octet-stream" not in content_type
+            ):
+                raise RuntimeError(f"unexpected content-type: {content_type}")
+            data = await resp.read()
+            if not data:
+                raise RuntimeError("empty body")
+            return data
+
+    async def _extract_images_with_fallback(self, data: dict) -> list[bytes]:
+        images = self._extract_images(data)
+        if images:
+            return images
+
+        texts = self._collect_text_parts(data)
+        text_b64_images = self._extract_data_uri_images_from_texts(texts)
+        if text_b64_images:
+            logger.info(
+                "[Gemini] inlineData missing, recovered %s image(s) from text data-uri",
+                len(text_b64_images),
+            )
+            return text_b64_images
+
+        url_candidates = self._extract_image_urls_from_texts(texts)
+        payload_urls = self._extract_image_urls_from_payload(data)
+        if payload_urls:
+            url_candidates.extend([u for u in payload_urls if u not in url_candidates])
+
+        downloaded: list[bytes] = []
+        for idx, url in enumerate(url_candidates[:3], start=1):
+            try:
+                img_bytes = await self._download_image_bytes(url)
+                downloaded.append(img_bytes)
+                logger.info(
+                    "[Gemini] inlineData missing, recovered image from url #%s: %s",
+                    idx,
+                    url[:120],
+                )
+            except Exception as e:
+                logger.warning(
+                    "[Gemini] fallback url image download failed #%s: %s (%s)",
+                    idx,
+                    url[:120],
+                    e,
+                )
+        return downloaded
+
     async def _request(
         self, parts: list[dict], *, resolution: str | None = None
     ) -> dict:
@@ -121,7 +319,7 @@ class GeminiEditBackend:
             "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {
                 "maxOutputTokens": 8192,
-                "responseModalities": ["IMAGE"],
+                "responseModalities": ["TEXT", "IMAGE"],
                 "imageConfig": {"imageSize": image_size},
             },
             "safetySettings": [
@@ -245,7 +443,7 @@ class GeminiEditBackend:
             snippet = text_parts[0].replace("\n", " ")[:120]
             parts.append(f"text={snippet}")
 
-        return "；".join(parts)
+        return "; ".join(parts)
 
     async def generate(
         self, prompt: str, *, resolution: str | None = None, **_
@@ -261,9 +459,11 @@ class GeminiEditBackend:
             }
         ]
         data = await self._request(parts, resolution=resolution)
-        all_images = self._extract_images(data)
+        all_images = await self._extract_images_with_fallback(data)
         if not all_images:
             reason = self._build_no_image_reason(data)
+            preview = str(data).replace("\n", " ")[:500]
+            logger.warning("[Gemini] no image in response: %s", preview)
             if reason:
                 raise RuntimeError(f"Gemini 未返回图片（{reason}）")
             raise RuntimeError("Gemini 未返回图片")
@@ -366,13 +566,15 @@ class GeminiEditBackend:
 
         data = await self._request(parts, resolution=final_resolution)
         try:
-            all_images = self._extract_images(data)
+            all_images = await self._extract_images_with_fallback(data)
         except Exception as e:
             logger.error(f"[Gemini] 解析响应失败: {e}")
             raise RuntimeError(f"Gemini 响应解析失败: {e}")
 
         if not all_images:
             reason = self._build_no_image_reason(data)
+            preview = str(data).replace("\n", " ")[:500]
+            logger.warning("[Gemini] no image in response: %s", preview)
             if reason:
                 raise RuntimeError(f"Gemini 未返回图片（{reason}）")
             raise RuntimeError("Gemini 未返回图片")
