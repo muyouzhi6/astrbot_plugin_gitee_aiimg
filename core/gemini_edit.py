@@ -405,13 +405,28 @@ class GeminiEditBackend:
         """提取 Gemini 未返回图片时的诊断信息。"""
         parts: list[str] = []
 
+        model_version = str(
+            data.get("modelVersion") or data.get("model_version") or ""
+        ).strip()
+        if model_version:
+            parts.append(f"modelVersion={model_version}")
+
         prompt_feedback = data.get("promptFeedback") or data.get("prompt_feedback")
         if isinstance(prompt_feedback, dict):
             block_reason = str(prompt_feedback.get("blockReason") or "").strip()
             if block_reason:
                 parts.append(f"blockReason={block_reason}")
 
+            block_msg = str(
+                prompt_feedback.get("blockReasonMessage")
+                or prompt_feedback.get("block_reason_message")
+                or ""
+            ).strip()
+            if block_msg:
+                parts.append(f"blockReasonMessage={block_msg.replace('\\n', ' ')[:160]}")
+
         finish_reasons: list[str] = []
+        finish_messages: list[str] = []
         text_parts: list[str] = []
         for candidate in data.get("candidates", []):
             if not isinstance(candidate, dict):
@@ -421,6 +436,12 @@ class GeminiEditBackend:
             ).strip()
             if finish_reason:
                 finish_reasons.append(finish_reason)
+
+            finish_message = str(
+                candidate.get("finishMessage") or candidate.get("finish_message") or ""
+            ).strip()
+            if finish_message:
+                finish_messages.append(finish_message.replace("\n", " ")[:200])
 
             content = candidate.get("content")
             if not isinstance(content, dict):
@@ -438,6 +459,13 @@ class GeminiEditBackend:
                 if x not in dedup:
                     dedup.append(x)
             parts.append(f"finishReason={','.join(dedup)}")
+
+        if finish_messages:
+            dedup = []
+            for x in finish_messages:
+                if x not in dedup:
+                    dedup.append(x)
+            parts.append(f"finishMessage={dedup[0]}")
 
         if text_parts:
             snippet = text_parts[0].replace("\n", " ")[:120]
