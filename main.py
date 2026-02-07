@@ -1,4 +1,4 @@
-"""
+﻿"""
 Gitee AI 图像生成插件
 
 功能:
@@ -877,7 +877,6 @@ class GiteeAIImage(Star):
                     event.set_result(event.plain_result("自拍已生成，但发送异常（无需重新生成）。可让主人输入：/重发图片"))
                     return None
                 await mark_success(event)
-                event.set_result(event.plain_result("自拍已生成并发送。"))
                 return None
 
             # 自动模式：优先识别"自拍"语义 + 已配置参考照
@@ -905,7 +904,6 @@ class GiteeAIImage(Star):
                     event.set_result(event.plain_result("自拍已生成，但发送异常（无需重新生成）。可让主人输入：/重发图片"))
                     return None
                 await mark_success(event)
-                event.set_result(event.plain_result("自拍已生成并发送。"))
                 return None
 
             # 改图：用户消息中有图片（不含头像兜底）或显式指定
@@ -1748,3 +1746,4 @@ class GiteeAIImage(Star):
             yield event.plain_result("✅ 已删除自拍参考照。")
         else:
             yield event.plain_result("当前没有已保存的自拍参考照。")
+
