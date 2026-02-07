@@ -122,7 +122,8 @@
           },
           "use_edit_chain_when_empty": {
             "type": "bool",
-            "description": "链路为空时复用改图链路",
+            "description": "复用改图链路作为自拍兜底",
+            "hint": "开启后：自拍链为空时直接用改图链；自拍链非空时也会在其后补充改图链中未出现的 provider。",
             "default": true
           },
           "default_output": {
@@ -134,7 +135,7 @@
           "chain": {
             "type": "template_list",
             "description": "自拍服务商链路（可选）",
-            "hint": "留空可复用改图链路；填写后按顺序兜底。",
+            "hint": "填写后按顺序兜底；若上方“复用改图链路作为自拍兜底”开启，会继续尝试改图链里的其余 provider。",
             "templates": {
               "provider": {
                 "name": "Provider",

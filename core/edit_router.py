@@ -145,6 +145,14 @@ class EditRouter:
             raise RuntimeError(
                 "No edit providers configured. Please add providers and set features.edit.chain."
             )
+        logger.debug(
+            "[edit] candidates=%s backend_override=%s chain_override=%s",
+            [pid for pid, _ in candidates],
+            str(backend or ""),
+            chain_override is not None,
+        )
+        if backend:
+            logger.debug("[edit] backend override active, chain fallback disabled")
 
         effective_default_output = (
             str(default_output).strip()
