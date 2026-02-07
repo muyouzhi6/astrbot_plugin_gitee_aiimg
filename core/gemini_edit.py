@@ -184,11 +184,68 @@ class GeminiEditBackend:
         all_images: list[bytes] = []
         for candidate in data.get("candidates", []):
             content = candidate.get("content", {})
+            if not isinstance(content, dict):
+                continue
             for part in content.get("parts", []):
-                if "inlineData" in part:
-                    b64_data = part["inlineData"]["data"]
+                if not isinstance(part, dict):
+                    continue
+                # 兼容不同网关返回风格：inlineData / inline_data
+                inline_data = part.get("inlineData") or part.get("inline_data")
+                if not isinstance(inline_data, dict):
+                    continue
+                b64_data = inline_data.get("data")
+                if not isinstance(b64_data, str) or not b64_data.strip():
+                    continue
+                try:
                     all_images.append(base64.b64decode(b64_data))
+                except Exception as e:
+                    logger.warning(f"[Gemini] inlineData 解码失败，已跳过: {e}")
         return all_images
+
+    @staticmethod
+    def _build_no_image_reason(data: dict) -> str:
+        """提取 Gemini 未返回图片时的诊断信息。"""
+        parts: list[str] = []
+
+        prompt_feedback = data.get("promptFeedback") or data.get("prompt_feedback")
+        if isinstance(prompt_feedback, dict):
+            block_reason = str(prompt_feedback.get("blockReason") or "").strip()
+            if block_reason:
+                parts.append(f"blockReason={block_reason}")
+
+        finish_reasons: list[str] = []
+        text_parts: list[str] = []
+        for candidate in data.get("candidates", []):
+            if not isinstance(candidate, dict):
+                continue
+            finish_reason = str(
+                candidate.get("finishReason") or candidate.get("finish_reason") or ""
+            ).strip()
+            if finish_reason:
+                finish_reasons.append(finish_reason)
+
+            content = candidate.get("content")
+            if not isinstance(content, dict):
+                continue
+            for part in content.get("parts", []):
+                if not isinstance(part, dict):
+                    continue
+                txt = part.get("text")
+                if isinstance(txt, str) and txt.strip():
+                    text_parts.append(txt.strip())
+
+        if finish_reasons:
+            dedup = []
+            for x in finish_reasons:
+                if x not in dedup:
+                    dedup.append(x)
+            parts.append(f"finishReason={','.join(dedup)}")
+
+        if text_parts:
+            snippet = text_parts[0].replace("\n", " ")[:120]
+            parts.append(f"text={snippet}")
+
+        return "；".join(parts)
 
     async def generate(
         self, prompt: str, *, resolution: str | None = None, **_
@@ -206,6 +263,9 @@ class GeminiEditBackend:
         data = await self._request(parts, resolution=resolution)
         all_images = self._extract_images(data)
         if not all_images:
+            reason = self._build_no_image_reason(data)
+            if reason:
+                raise RuntimeError(f"Gemini 未返回图片（{reason}）")
             raise RuntimeError("Gemini 未返回图片")
 
         result_bytes = all_images[-1]
@@ -312,6 +372,9 @@ class GeminiEditBackend:
             raise RuntimeError(f"Gemini 响应解析失败: {e}")
 
         if not all_images:
+            reason = self._build_no_image_reason(data)
+            if reason:
+                raise RuntimeError(f"Gemini 未返回图片（{reason}）")
             raise RuntimeError("Gemini 未返回图片")
 
         # 取最后一张图（第一张可能是低分辨率预览）

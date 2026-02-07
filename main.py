@@ -17,7 +17,7 @@ from pathlib import Path
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import Image, Video
+from astrbot.api.message_components import At, AtAll, Image, Plain, Reply, Video
 from astrbot.api.star import Context, Star, StarTools
 
 from .core.debouncer import Debouncer
@@ -217,6 +217,46 @@ class GiteeAIImage(Star):
                 return msg[idx + len(token) :].strip()
         return ""
 
+    @staticmethod
+    def _plain_starts_with_command(text: str, command_name: str) -> bool:
+        plain = (text or "").lstrip()
+        if not plain:
+            return False
+        for prefix in "/!！.。．":
+            if plain.startswith(f"{prefix}{command_name}"):
+                return True
+        return False
+
+    def _is_direct_command_message(
+        self, event: AstrMessageEvent, command_names: tuple[str, ...]
+    ) -> bool:
+        """仅当“首个有效文本段”直接是命令时返回 True。
+
+        用于 regex 兜底去重：避免正常 /命令 被重复处理；
+        同时允许“图片在前、命令在后”的消息继续走兜底逻辑。
+        """
+        try:
+            chain = event.get_messages()
+        except Exception:
+            return False
+        if not chain:
+            return False
+
+        first_plain = ""
+        for seg in chain:
+            if isinstance(seg, (At, AtAll, Reply)):
+                continue
+            if isinstance(seg, Plain):
+                first_plain = str(getattr(seg, "text", "") or "")
+            break
+
+        if not first_plain:
+            return False
+        return any(
+            self._plain_starts_with_command(first_plain, name)
+            for name in command_names
+        )
+
     async def terminate(self):
         self.debouncer.clear_all()
         try:
@@ -348,11 +388,7 @@ class GiteeAIImage(Star):
     async def edit_image_regex_fallback(self, event: AstrMessageEvent):
         """兼容“图片在前、文字在后”的消息：确保 /改图 能触发。"""
         msg = (event.message_str or "").strip()
-        if (
-            msg
-            and msg[0] in "/!！.。．"
-            and msg[1:].startswith(("改图", "图生图", "修图", "aiedit"))
-        ):
+        if self._is_direct_command_message(event, ("改图", "图生图", "修图", "aiedit")):
             return
         prompt = ""
         for name in ("改图", "图生图", "修图", "aiedit"):
@@ -390,8 +426,8 @@ class GiteeAIImage(Star):
     async def selfie_regex_fallback(self, event: AstrMessageEvent):
         """兼容“图片在前、文字在后”的消息：确保 /自拍 能触发。"""
         msg = (event.message_str or "").strip()
-        # 如果本来就是以 /自拍 开头，交给 command handler，避免重复回复
-        if msg and msg[0] in "/!！.。．" and msg[1:].startswith("自拍"):
+        # 如果本来就是“首段文本命令”，交给 command handler，避免重复回复
+        if self._is_direct_command_message(event, ("自拍",)):
             return
         prompt = self._extract_command_arg_anywhere(msg, "自拍")
         if prompt or "/自拍" in msg or "自拍" in msg:
@@ -448,7 +484,7 @@ class GiteeAIImage(Star):
     async def selfie_reference_regex_fallback(self, event: AstrMessageEvent):
         """兼容“图片在前、文字在后”的消息：确保 /自拍参考 能触发。"""
         msg = (event.message_str or "").strip()
-        if msg and msg[0] in "/!！.。．" and msg[1:].startswith("自拍参考"):
+        if self._is_direct_command_message(event, ("自拍参考",)):
             return
         arg = self._extract_command_arg_anywhere(msg, "自拍参考")
         action, _, _rest = (arg or "").strip().partition(" ")
@@ -559,7 +595,7 @@ class GiteeAIImage(Star):
     async def generate_video_regex_fallback(self, event: AstrMessageEvent):
         """兼容“图片在前、文字在后”的消息：确保 /视频 能触发。"""
         msg = (event.message_str or "").strip()
-        if msg and msg[0] in "/!！.。．" and msg[1:].startswith("视频"):
+        if self._is_direct_command_message(event, ("视频",)):
             return
 
         arg = self._extract_command_arg_anywhere(msg, "视频")
@@ -754,7 +790,7 @@ class GiteeAIImage(Star):
             backend(string): auto=自动选择；也可填 provider_id（你在 WebUI providers 里配置的 id）
         """
         if not use_message_images:
-            return "当前仅支持 use_message_images=true（请附带/引用图片后再调用）"
+            return event.plain_result("当前仅支持 use_message_images=true（请附带/引用图片后再调用）")
         # 兜底：如果模型误调用了旧工具，但用户其实在要“自拍参考照”，这里自动纠正到自拍逻辑。
         if await self._should_use_selfie_ref(event, prompt):
             return await self.aiimg_generate(
@@ -779,8 +815,8 @@ class GiteeAIImage(Star):
         """统一图片生成/改图/自拍（参考照）工具。
 
         使用建议（给 LLM 的决策规则）：
-        - 用户发送/引用了图片，并要求“改图/换背景/换风格/修图/换衣服”等：用 mode=edit（或 mode=auto）
-        - 用户要求“bot 自拍/来一张你自己的自拍”，且已设置自拍参考照：用 mode=selfie_ref（或 mode=auto）
+        - 用户发送/引用了图片，并要求"改图/换背景/换风格/修图/换衣服"等：用 mode=edit（或 mode=auto）
+        - 用户要求"bot 自拍/来一张你自己的自拍"，且已设置自拍参考照：用 mode=selfie_ref（或 mode=auto）
         - 纯文生图（用户没有给图片）：用 mode=text（或 mode=auto）
 
         Args:
@@ -792,10 +828,20 @@ class GiteeAIImage(Star):
         prompt = (prompt or "").strip()
         m = (mode or "auto").strip().lower()
 
+        # === TTL 去重检查（防止 ToolLoop 重复调用）===
+        message_id = getattr(getattr(event, "message_obj", None), "message_id", "") or ""
+        origin = getattr(event, "unified_msg_origin", "") or ""
+        if message_id and origin:
+            if self.debouncer.llm_tool_is_duplicate(message_id, origin):
+                logger.debug(f"[aiimg_generate] 重复调用已拦截: msg_id={message_id}")
+                event.set_result(event.plain_result("图片已生成，无需重复操作。"))
+                return None
+
         user_id = event.get_sender_id()
         request_id = f"aiimg_{user_id}"
         if self.debouncer.hit(request_id):
-            return "操作太快了，请稍后再试"
+            event.set_result(event.plain_result("操作太快了，请稍后再试"))
+            return None
 
         b_raw = (backend or "auto").strip()
         target_backend = None if b_raw.lower() == "auto" else b_raw
@@ -811,10 +857,12 @@ class GiteeAIImage(Star):
                 selfie_conf = self._get_feature("selfie")
                 if not bool(selfie_conf.get("enabled", True)):
                     await mark_failed(event)
-                    return "自拍功能已关闭（features.selfie.enabled=false）"
+                    event.set_result(event.plain_result("自拍功能已关闭（features.selfie.enabled=false）"))
+                    return None
                 if not bool(selfie_conf.get("llm_tool_enabled", True)):
                     await mark_failed(event)
-                    return "自拍的 LLM 调用已关闭（features.selfie.llm_tool_enabled=false）"
+                    event.set_result(event.plain_result("自拍的 LLM 调用已关闭（features.selfie.llm_tool_enabled=false）"))
+                    return None
                 image_path = await self._generate_selfie_image(
                     event,
                     prompt,
@@ -826,19 +874,23 @@ class GiteeAIImage(Star):
                 sent = await self._send_image_with_fallback(event, image_path)
                 if not sent:
                     await mark_failed(event)
-                    return "自拍已生成，但发送异常（无需重新生成）。可让主人输入：/重发图片"
+                    event.set_result(event.plain_result("自拍已生成，但发送异常（无需重新生成）。可让主人输入：/重发图片"))
+                    return None
                 await mark_success(event)
-                return "自拍已生成并发送。"
+                event.set_result(event.plain_result("自拍已生成并发送。"))
+                return None
 
-            # 自动模式：优先识别“自拍”语义 + 已配置参考照
+            # 自动模式：优先识别"自拍"语义 + 已配置参考照
             if m == "auto" and await self._should_use_selfie_ref(event, prompt):
                 selfie_conf = self._get_feature("selfie")
                 if not bool(selfie_conf.get("enabled", True)):
                     await mark_failed(event)
-                    return "自拍功能已关闭（features.selfie.enabled=false）"
+                    event.set_result(event.plain_result("自拍功能已关闭（features.selfie.enabled=false）"))
+                    return None
                 if not bool(selfie_conf.get("llm_tool_enabled", True)):
                     await mark_failed(event)
-                    return "自拍的 LLM 调用已关闭（features.selfie.llm_tool_enabled=false）"
+                    event.set_result(event.plain_result("自拍的 LLM 调用已关闭（features.selfie.llm_tool_enabled=false）"))
+                    return None
                 image_path = await self._generate_selfie_image(
                     event,
                     prompt,
@@ -850,9 +902,11 @@ class GiteeAIImage(Star):
                 sent = await self._send_image_with_fallback(event, image_path)
                 if not sent:
                     await mark_failed(event)
-                    return "自拍已生成，但发送异常（无需重新生成）。可让主人输入：/重发图片"
+                    event.set_result(event.plain_result("自拍已生成，但发送异常（无需重新生成）。可让主人输入：/重发图片"))
+                    return None
                 await mark_success(event)
-                return "自拍已生成并发送。"
+                event.set_result(event.plain_result("自拍已生成并发送。"))
+                return None
 
             # 改图：用户消息中有图片（不含头像兜底）或显式指定
             has_msg_images = await self._has_message_images(event)
@@ -860,17 +914,20 @@ class GiteeAIImage(Star):
                 edit_conf = self._get_feature("edit")
                 if not bool(edit_conf.get("enabled", True)):
                     await mark_failed(event)
-                    return "改图功能已关闭（features.edit.enabled=false）"
+                    event.set_result(event.plain_result("改图功能已关闭（features.edit.enabled=false）"))
+                    return None
                 if not bool(edit_conf.get("llm_tool_enabled", True)):
                     await mark_failed(event)
-                    return (
+                    event.set_result(event.plain_result(
                         "改图的 LLM 调用已关闭（features.edit.llm_tool_enabled=false）"
-                    )
-                image_segs = await get_images_from_event(event, include_avatar=True)
+                    ))
+                    return None
+                image_segs = await get_images_from_event(event, include_avatar=False)
                 bytes_images = await self._image_segs_to_bytes(image_segs)
                 if not bytes_images:
                     await mark_failed(event)
-                    return "请在消息中附带需要编辑的图片（可发送图片或引用图片）。"
+                    event.set_result(event.plain_result("请在消息中附带需要编辑的图片（可发送图片或引用图片）。"))
+                    return None
 
                 image_path = await self.edit.edit(
                     prompt=prompt,
@@ -883,18 +940,22 @@ class GiteeAIImage(Star):
                 sent = await self._send_image_with_fallback(event, image_path)
                 if not sent:
                     await mark_failed(event)
-                    return "图片已编辑，但发送异常（无需重新生成）。可让主人输入：/重发图片"
+                    event.set_result(event.plain_result("图片已编辑，但发送异常（无需重新生成）。可让主人输入：/重发图片"))
+                    return None
                 await mark_success(event)
-                return "图片已编辑并发送。"
+                event.set_result(event.plain_result("图片已编辑并发送。"))
+                return None
 
             # 默认：文生图
             draw_conf = self._get_feature("draw")
             if not bool(draw_conf.get("enabled", True)):
                 await mark_failed(event)
-                return "文生图功能已关闭（features.draw.enabled=false）"
+                event.set_result(event.plain_result("文生图功能已关闭（features.draw.enabled=false）"))
+                return None
             if not bool(draw_conf.get("llm_tool_enabled", True)):
                 await mark_failed(event)
-                return "文生图的 LLM 调用已关闭（features.draw.llm_tool_enabled=false）"
+                event.set_result(event.plain_result("文生图的 LLM 调用已关闭（features.draw.llm_tool_enabled=false）"))
+                return None
             if not prompt:
                 prompt = "a selfie photo"
 
@@ -908,14 +969,17 @@ class GiteeAIImage(Star):
             sent = await self._send_image_with_fallback(event, image_path)
             if not sent:
                 await mark_failed(event)
-                return "图片已生成，但发送异常（无需重新生成）。可让主人输入：/重发图片"
+                event.set_result(event.plain_result("图片已生成，但发送异常（无需重新生成）。可让主人输入：/重发图片"))
+                return None
             await mark_success(event)
-            return "图片已生成并发送。"
+            event.set_result(event.plain_result("图片已生成并发送。"))
+            return None
 
         except Exception as e:
             logger.error(f"[aiimg_generate] 失败: {e}", exc_info=True)
             await mark_failed(event)
-            return f"生成失败: {str(e) or type(e).__name__}"
+            event.set_result(event.plain_result(f"生成失败: {str(e) or type(e).__name__}（本次已停止，请稍后再试或换后端）"))
+            return None
 
     @filter.llm_tool()
     async def grok_generate_video(self, event: AstrMessageEvent, prompt: str):
@@ -926,13 +990,13 @@ class GiteeAIImage(Star):
         """
         vconf = self._get_feature("video")
         if not bool(vconf.get("enabled", False)):
-            return "视频功能已关闭（features.video.enabled=false）"
+            return event.plain_result("视频功能已关闭（features.video.enabled=false）")
         if not bool(vconf.get("llm_tool_enabled", True)):
-            return "视频的 LLM 调用已关闭（features.video.llm_tool_enabled=false）"
+            return event.plain_result("视频的 LLM 调用已关闭（features.video.llm_tool_enabled=false）")
 
         arg = (prompt or "").strip()
         if not arg:
-            return "需要提供视频提示词"
+            return event.plain_result("需要提供视频提示词")
 
         provider_override: str | None = None
         if arg.lstrip().startswith("@"):
@@ -940,7 +1004,7 @@ class GiteeAIImage(Star):
             provider_override = first.lstrip("@").strip() or None
             arg = rest.strip()
         if not arg:
-            return "需要提供视频提示词"
+            return event.plain_result("需要提供视频提示词")
 
         preset, extra_prompt = self._parse_video_args(arg)
         presets = self._get_video_presets()
@@ -954,10 +1018,10 @@ class GiteeAIImage(Star):
         request_id = f"video_{user_id}"
 
         if self.debouncer.hit(request_id):
-            return "操作太快了，请稍后再试"
+            return event.plain_result("操作太快了，请稍后再试")
 
         if not await self._video_begin(user_id):
-            return "你已有一个视频任务正在进行中，请等待完成后再试"
+            return event.plain_result("你已有一个视频任务正在进行中，请等待完成后再试")
 
         await mark_processing(event)
 
@@ -970,12 +1034,12 @@ class GiteeAIImage(Star):
         except Exception:
             await self._video_end(user_id)
             await mark_failed(event)
-            return ""
+            return event.plain_result("")
 
         self._video_tasks.add(task)
         task.add_done_callback(lambda t: self._video_tasks.discard(t))
 
-        return ""
+        return event.plain_result("视频正在生成中，请稍候...")
 
     # ==================== 内部方法 ====================
 
@@ -1098,8 +1162,11 @@ class GiteeAIImage(Star):
         provider_id: str | None = None,
     ) -> None:
         try:
-            image_segs = await get_images_from_event(event)
+            image_segs = await get_images_from_event(event, include_avatar=False)
             if not image_segs:
+                await event.send(
+                    event.plain_result("请发送或引用一张图片后再使用 /视频。")
+                )
                 await mark_failed(event)
                 return
 
@@ -1113,6 +1180,7 @@ class GiteeAIImage(Star):
                     logger.warning(f"[视频] 图片 {i + 1} 转换失败，跳过: {e}")
 
             if not image_bytes:
+                await event.send(event.plain_result("图片读取失败，请更换图片后重试。"))
                 await mark_failed(event)
                 return
 
@@ -1154,6 +1222,12 @@ class GiteeAIImage(Star):
         except Exception as e:
             logger.error(f"[视频] 失败: {e}", exc_info=True)
             await mark_failed(event)
+            try:
+                await event.send(
+                    event.plain_result(f"视频生成失败: {str(e) or type(e).__name__}")
+                )
+            except Exception:
+                pass
         finally:
             await self._video_end(user_id)
 
@@ -1183,7 +1257,7 @@ class GiteeAIImage(Star):
             prompt = rest.strip()
 
         # 获取图片
-        image_segs = await get_images_from_event(event)
+        image_segs = await get_images_from_event(event, include_avatar=False)
         logger.debug(f"[改图] 获取到 {len(image_segs)} 个图片段")
         if not image_segs:
             await event.send(
@@ -1282,7 +1356,7 @@ class GiteeAIImage(Star):
                 logger.debug(f"[改图] 自动匹配预设: {preset}")
 
         # 获取图片
-        image_segs = await get_images_from_event(event)
+        image_segs = await get_images_from_event(event, include_avatar=False)
         if not image_segs:
             yield event.plain_result(
                 "请发送或引用图片！\n"
@@ -1463,6 +1537,29 @@ class GiteeAIImage(Star):
             )
         return f"{prefix}\n\n用户要求：{user_prompt}"
 
+    def _merge_selfie_chain_with_edit_chain(self, selfie_chain: list[dict]) -> list[dict]:
+        """将自拍链路与改图链路合并（自拍优先，去重 provider_id）。"""
+        merged: list[dict] = []
+        seen: set[str] = set()
+
+        def append_unique(items: list[dict]) -> None:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                pid = str(item.get("provider_id") or "").strip()
+                if not pid or pid in seen:
+                    continue
+                merged.append(dict(item))
+                seen.add(pid)
+
+        append_unique(selfie_chain)
+
+        edit_chain_raw = self._get_feature("edit").get("chain", [])
+        if isinstance(edit_chain_raw, list):
+            append_unique([x for x in edit_chain_raw if isinstance(x, dict)])
+
+        return merged
+
     async def _generate_selfie_image(
         self,
         event: AstrMessageEvent,
@@ -1494,17 +1591,36 @@ class GiteeAIImage(Star):
         final_prompt = self._build_selfie_prompt(prompt, extra_refs=len(extra_bytes))
 
         chain_override: list[dict] | None = None
+        use_edit_chain = bool(conf.get("use_edit_chain_when_empty", True))
         raw_chain = conf.get("chain", [])
         if isinstance(raw_chain, list):
-            chain_items = [x for x in raw_chain if isinstance(x, dict)]
-            if any(str(x.get("provider_id") or "").strip() for x in chain_items):
+            chain_items = [
+                x
+                for x in raw_chain
+                if isinstance(x, dict) and str(x.get("provider_id") or "").strip()
+            ]
+            if chain_items:
                 chain_override = chain_items
 
-        if backend is None and chain_override is None:
-            if not bool(conf.get("use_edit_chain_when_empty", True)):
-                raise RuntimeError(
-                    "No selfie provider chain configured. Please set features.selfie.chain or enable features.selfie.use_edit_chain_when_empty."
-                )
+        if backend is None:
+            if chain_override is None:
+                if not use_edit_chain:
+                    raise RuntimeError(
+                        "No selfie provider chain configured. Please set features.selfie.chain or enable features.selfie.use_edit_chain_when_empty."
+                    )
+            elif use_edit_chain:
+                # 自拍链路可作为主链，改图链路作为补充兜底，避免“自拍链仅一项导致无兜底”。
+                chain_override = self._merge_selfie_chain_with_edit_chain(chain_override)
+
+        if chain_override:
+            logger.debug(
+                "[selfie] effective providers=%s",
+                [
+                    str(x.get("provider_id") or "").strip()
+                    for x in chain_override
+                    if isinstance(x, dict)
+                ],
+            )
 
         # 4) 千问后端可选 task_types（仅对 gitee 生效）
         task_types = conf.get("gitee_task_types")
@@ -1550,7 +1666,14 @@ class GiteeAIImage(Star):
 
         try:
             image_path = await self._generate_selfie_image(event, prompt, backend)
-            yield event.chain_result([Image.fromFileSystem(str(image_path))])
+            self._remember_last_image(event, image_path)
+            sent = await self._send_image_with_fallback(event, image_path)
+            if not sent:
+                await mark_failed(event)
+                yield event.plain_result(
+                    "自拍已生成，但发送失败（可能是平台临时异常）。可稍后使用：/重发图片"
+                )
+                return
             await mark_success(event)
         except Exception as e:
             logger.error(f"[自拍] 失败: {e}", exc_info=True)
