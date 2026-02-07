@@ -38,6 +38,7 @@
 - `features.video.chain`：视频链路
 
 链路按顺序兜底：第一个是主用，失败自动切到后面的 provider。
+若 `features.selfie.use_edit_chain_when_empty=true`：自拍链会自动把改图链补成后备兜底（去重后追加）。
 
 ### 3) 可选：关闭某个功能 / 关闭对应 LLM 调用
 
