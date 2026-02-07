@@ -423,7 +423,8 @@ class GeminiEditBackend:
                 or ""
             ).strip()
             if block_msg:
-                parts.append(f"blockReasonMessage={block_msg.replace('\\n', ' ')[:160]}")
+                block_msg_preview = block_msg.replace("\n", " ")[:160]
+                parts.append(f"blockReasonMessage={block_msg_preview}")
 
         finish_reasons: list[str] = []
         finish_messages: list[str] = []
