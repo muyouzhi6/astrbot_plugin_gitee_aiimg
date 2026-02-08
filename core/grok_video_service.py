@@ -17,7 +17,7 @@ import re
 import time
 from collections import deque
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -50,6 +50,36 @@ def _build_data_url(image_bytes: bytes) -> str:
     return f"data:{mime};base64,{b64}"
 
 
+def _looks_like_proxy_video_url(url: str) -> bool:
+    lowered = (url or "").strip().lower()
+    if "generated_video" in lowered:
+        return True
+
+    # Some gateways return extension-less links like:
+    # https://.../images/p_<base64(/users/.../generated_video.mp4)>
+    try:
+        path = urlsplit(url).path or ""
+    except Exception:
+        path = ""
+    match = re.search(r"/images/p_([A-Za-z0-9+/_=-]+)", path)
+    if not match:
+        return False
+
+    token = match.group(1)
+    padded = token + ("=" * (-len(token) % 4))
+    for decoder in (base64.urlsafe_b64decode, base64.b64decode):
+        try:
+            decoded = decoder(padded.encode("ascii")).decode("utf-8", errors="ignore")
+        except Exception:
+            continue
+        decoded_l = decoded.lower()
+        if "generated_video" in decoded_l:
+            return True
+        if any(ext in decoded_l for ext in (".mp4", ".webm", ".mov")):
+            return True
+    return False
+
+
 def _is_valid_video_url(url: str) -> bool:
     if not isinstance(url, str):
         return False
@@ -59,15 +89,21 @@ def _is_valid_video_url(url: str) -> bool:
     if not url.startswith(("http://", "https://")):
         return False
     lowered = url.lower()
-    if not any(ext in lowered for ext in (".mp4", ".webm", ".mov")):
-        return False
     if any(c in url for c in ["<", ">", '"', "'", "\n", "\r", "\t"]):
         return False
-    return True
+    if any(ext in lowered for ext in (".mp4", ".webm", ".mov")):
+        return True
+    if _looks_like_proxy_video_url(url):
+        return True
+    return False
 
 
 _VIDEO_URL_RE = re.compile(
     r"(https?://[^\s<>\"')\]\}]+?\.(?:mp4|webm|mov)(?:\?[^\s<>\"')\]\}]*)?)",
+    re.IGNORECASE,
+)
+_GENERIC_URL_RE = re.compile(
+    r"(https?://[^\s<>\"')\]\}]+)",
     re.IGNORECASE,
 )
 
@@ -107,6 +143,12 @@ def _extract_video_url_from_content(content: str) -> str | None:
             url = match.group(1).strip()
             if _is_valid_video_url(url):
                 return url
+
+    # Generic URL fallback (for extension-less proxy video URLs)
+    for match in _GENERIC_URL_RE.finditer(content):
+        url = match.group(1).strip().rstrip(".,;")
+        if _is_valid_video_url(url):
+            return url
 
     return None
 

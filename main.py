@@ -13,7 +13,9 @@ Gitee AI 图像生成插件
 import asyncio
 import base64
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -30,6 +32,18 @@ from .core.provider_registry import ProviderRegistry
 from .core.ref_store import ReferenceStore
 from .core.utils import close_session, get_images_from_event
 from .core.video_manager import VideoManager
+
+
+@dataclass(slots=True)
+class SendImageResult:
+    ok: bool
+    reason: str = ""
+    cached_path: Path | None = None
+    used_fallback: bool = False
+    last_error: str = ""
+
+    def __bool__(self) -> bool:
+        return self.ok
 
 
 class GiteeAIImage(Star):
@@ -95,54 +109,160 @@ class GiteeAIImage(Star):
             return
         self._last_image_by_user[user_id] = Path(image_path)
 
+    @staticmethod
+    def _as_bool(value: Any, *, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in {"1", "true", "yes", "y", "on", "enable", "enabled"}:
+                return True
+            if v in {"0", "false", "no", "n", "off", "disable", "disabled", ""}:
+                return False
+        return default
+
+    @staticmethod
+    def _is_rich_media_transfer_failed(exc: Exception | None) -> bool:
+        if exc is None:
+            return False
+        msg = f"{exc!r} {exc}".lower()
+        return "rich media transfer failed" in msg
+
+    def _is_selfie_enabled(self) -> bool:
+        conf = self._get_feature("selfie")
+        return self._as_bool(conf.get("enabled", True), default=True)
+
+    def _is_selfie_llm_enabled(self) -> bool:
+        conf = self._get_feature("selfie")
+        return self._as_bool(conf.get("llm_tool_enabled", True), default=True)
+
+    @staticmethod
+    def _selfie_disabled_message() -> str:
+        return "自拍参考图模式已关闭（features.selfie.enabled=false）"
+
+    def _build_send_image_failure_message(
+        self, prefix: str, send_result: SendImageResult | None = None
+    ) -> str:
+        reason = str((send_result.reason if send_result else "") or "").strip().lower()
+        if reason == "file_not_found":
+            return f"{prefix}，但缓存文件不存在，无法发送。"
+        if reason == "rich_media_transfer_failed":
+            return (
+                f"{prefix}，但平台富媒体上传失败（rich media transfer failed）。"
+                "可稍后使用：/重发图片"
+            )
+        return f"{prefix}，但发送失败（可能是平台临时异常）。可稍后使用：/重发图片"
+
     async def _send_image_with_fallback(
         self, event: AstrMessageEvent, image_path: Path, *, max_attempts: int = 5
-    ) -> bool:
+    ) -> SendImageResult:
         """Send image with retries and fallback to base64 bytes.
 
         Avoids wasting generation credits when platform send fails transiently.
         """
         p = Path(image_path)
+
         if not p.exists():
             logger.warning("[send_image] file not found: %s", p)
-            return False
+            return SendImageResult(ok=False, reason="file_not_found", cached_path=p)
 
         delay = 1.5
         last_exc: Exception | None = None
         attempts = max(1, int(max_attempts))
+        rich_media_failures = 0
         for attempt in range(1, attempts + 1):
+            fs_exc: Exception | None = None
+            bytes_exc: Exception | None = None
+            fs_failed_by_rich_media = False
+
             try:
                 await event.send(event.chain_result([Image.fromFileSystem(str(p))]))
-                return True
+                return SendImageResult(ok=True, cached_path=p, used_fallback=False)
             except Exception as e:
+                fs_exc = e
                 last_exc = e
-                logger.warning(
+                if self._is_rich_media_transfer_failed(e):
+                    fs_failed_by_rich_media = True
+                logger.debug(
                     "[send_image] fromFileSystem failed (attempt=%s/%s): %s",
                     attempt,
                     attempts,
                     e,
                 )
 
-            try:
-                data = await asyncio.to_thread(p.read_bytes)
-                await event.send(event.chain_result([Image.fromBytes(data)]))
-                return True
-            except Exception as e:
-                last_exc = e
-                logger.warning(
-                    "[send_image] fromBytes failed (attempt=%s/%s): %s",
+            # If platform-side rich media transfer is failing, fromBytes usually fails the same way.
+            if not fs_failed_by_rich_media:
+                try:
+                    data = await asyncio.to_thread(p.read_bytes)
+                    await event.send(event.chain_result([Image.fromBytes(data)]))
+                    if fs_exc is not None:
+                        logger.info(
+                            "[send_image] fromBytes fallback succeeded (attempt=%s/%s).",
+                            attempt,
+                            attempts,
+                        )
+                    return SendImageResult(ok=True, cached_path=p, used_fallback=True)
+                except Exception as e:
+                    bytes_exc = e
+                    last_exc = e
+                    logger.debug(
+                        "[send_image] fromBytes failed (attempt=%s/%s): %s",
+                        attempt,
+                        attempts,
+                        e,
+                    )
+
+            attempt_has_rich_media = self._is_rich_media_transfer_failed(
+                fs_exc
+            ) or self._is_rich_media_transfer_failed(bytes_exc)
+            if attempt_has_rich_media:
+                rich_media_failures += 1
+
+            if fs_exc is not None and bytes_exc is not None:
+                logger.debug(
+                    "[send_image] attempt=%s/%s failed on both channels.",
                     attempt,
                     attempts,
-                    e,
                 )
+            elif fs_exc is not None and fs_failed_by_rich_media:
+                logger.debug(
+                    "[send_image] attempt=%s/%s failed by rich media transfer.",
+                    attempt,
+                    attempts,
+                )
+            else:
+                logger.debug(
+                    "[send_image] attempt=%s/%s failed to send image.",
+                    attempt,
+                    attempts,
+                )
+
+            if rich_media_failures >= 2:
+                logger.info(
+                    "[send_image] detected repeated rich media transfer failures, stop retrying early."
+                )
+                break
 
             if attempt < attempts:
                 await asyncio.sleep(delay)
                 delay = min(delay * 1.8, 8.0)
 
-        if last_exc is not None:
-            logger.error("[send_image] failed after retries: %s", last_exc)
-        return False
+        reason = (
+            "rich_media_transfer_failed"
+            if self._is_rich_media_transfer_failed(last_exc)
+            else "send_failed"
+        )
+        logger.error("[send_image] failed after retries: reason=%s, err=%s", reason, last_exc)
+        return SendImageResult(
+            ok=False,
+            reason=reason,
+            cached_path=p,
+            last_error=str(last_exc or ""),
+        )
 
     def _register_preset_commands(self):
         """动态注册预设命令
@@ -339,7 +459,7 @@ class GiteeAIImage(Star):
             if not sent:
                 await mark_failed(event)
                 yield event.plain_result(
-                    "图片已生成，但发送失败（可能是平台临时异常）。可稍后使用：/重发图片"
+                    self._build_send_image_failure_message("图片已生成", sent)
                 )
                 return
 
@@ -382,7 +502,9 @@ class GiteeAIImage(Star):
         if ok:
             yield event.plain_result("已重发图片。")
         else:
-            yield event.plain_result("重发失败（平台可能异常），请稍后再试。")
+            yield event.plain_result(
+                self._build_send_image_failure_message("重发图片失败", ok)
+            )
 
     @filter.regex(r"[/!！.。．](改图|图生图|修图|aiedit)(\s|$)", priority=-10)
     async def edit_image_regex_fallback(self, event: AstrMessageEvent):
@@ -417,6 +539,9 @@ class GiteeAIImage(Star):
         - /自拍 <提示词>
         - 可附带多张参考图（衣服/姿势/场景）作为额外参考
         """
+        if not self._is_selfie_enabled():
+            yield event.plain_result(self._selfie_disabled_message())
+            return
         event.should_call_llm(True)
         prompt = self._extract_extra_prompt(event, "自拍")
         async for result in self._do_selfie(event, prompt, backend=None):
@@ -431,6 +556,10 @@ class GiteeAIImage(Star):
             return
         prompt = self._extract_command_arg_anywhere(msg, "自拍")
         if prompt or "/自拍" in msg or "自拍" in msg:
+            if not self._is_selfie_enabled():
+                yield event.plain_result(self._selfie_disabled_message())
+                event.stop_event()
+                return
             async for result in self._do_selfie(event, prompt, backend=None):
                 yield result
             event.stop_event()
@@ -445,6 +574,9 @@ class GiteeAIImage(Star):
         - /自拍参考 删除
         """
         event.should_call_llm(True)
+        if not self._is_selfie_enabled():
+            yield event.plain_result(self._selfie_disabled_message())
+            return
         arg = self._extract_extra_prompt(event, "自拍参考")
         action, _, _rest = (arg or "").strip().partition(" ")
         action = action.strip().lower()
@@ -485,6 +617,10 @@ class GiteeAIImage(Star):
         """兼容“图片在前、文字在后”的消息：确保 /自拍参考 能触发。"""
         msg = (event.message_str or "").strip()
         if self._is_direct_command_message(event, ("自拍参考",)):
+            return
+        if not self._is_selfie_enabled():
+            yield event.plain_result(self._selfie_disabled_message())
+            event.stop_event()
             return
         arg = self._extract_command_arg_anywhere(msg, "自拍参考")
         action, _, _rest = (arg or "").strip().partition(" ")
@@ -854,12 +990,11 @@ class GiteeAIImage(Star):
             await mark_processing(event)
 
             if m in {"selfie_ref", "selfie", "ref"}:
-                selfie_conf = self._get_feature("selfie")
-                if not bool(selfie_conf.get("enabled", True)):
+                if not self._is_selfie_enabled():
                     await mark_failed(event)
-                    event.set_result(event.plain_result("自拍功能已关闭（features.selfie.enabled=false）"))
+                    event.set_result(event.plain_result(self._selfie_disabled_message()))
                     return None
-                if not bool(selfie_conf.get("llm_tool_enabled", True)):
+                if not self._is_selfie_llm_enabled():
                     await mark_failed(event)
                     event.set_result(event.plain_result("自拍的 LLM 调用已关闭（features.selfie.llm_tool_enabled=false）"))
                     return None
@@ -874,19 +1009,22 @@ class GiteeAIImage(Star):
                 sent = await self._send_image_with_fallback(event, image_path)
                 if not sent:
                     await mark_failed(event)
-                    event.set_result(event.plain_result("自拍已生成，但发送异常（无需重新生成）。可让主人输入：/重发图片"))
+                    event.set_result(
+                        event.plain_result(
+                            self._build_send_image_failure_message("自拍已生成", sent)
+                        )
+                    )
                     return None
                 await mark_success(event)
                 return None
 
             # 自动模式：优先识别"自拍"语义 + 已配置参考照
             if m == "auto" and await self._should_use_selfie_ref(event, prompt):
-                selfie_conf = self._get_feature("selfie")
-                if not bool(selfie_conf.get("enabled", True)):
+                if not self._is_selfie_enabled():
                     await mark_failed(event)
-                    event.set_result(event.plain_result("自拍功能已关闭（features.selfie.enabled=false）"))
+                    event.set_result(event.plain_result(self._selfie_disabled_message()))
                     return None
-                if not bool(selfie_conf.get("llm_tool_enabled", True)):
+                if not self._is_selfie_llm_enabled():
                     await mark_failed(event)
                     event.set_result(event.plain_result("自拍的 LLM 调用已关闭（features.selfie.llm_tool_enabled=false）"))
                     return None
@@ -901,7 +1039,11 @@ class GiteeAIImage(Star):
                 sent = await self._send_image_with_fallback(event, image_path)
                 if not sent:
                     await mark_failed(event)
-                    event.set_result(event.plain_result("自拍已生成，但发送异常（无需重新生成）。可让主人输入：/重发图片"))
+                    event.set_result(
+                        event.plain_result(
+                            self._build_send_image_failure_message("自拍已生成", sent)
+                        )
+                    )
                     return None
                 await mark_success(event)
                 return None
@@ -938,10 +1080,13 @@ class GiteeAIImage(Star):
                 sent = await self._send_image_with_fallback(event, image_path)
                 if not sent:
                     await mark_failed(event)
-                    event.set_result(event.plain_result("图片已编辑，但发送异常（无需重新生成）。可让主人输入：/重发图片"))
+                    event.set_result(
+                        event.plain_result(
+                            self._build_send_image_failure_message("图片已编辑", sent)
+                        )
+                    )
                     return None
                 await mark_success(event)
-                event.set_result(event.plain_result("图片已编辑并发送。"))
                 return None
 
             # 默认：文生图
@@ -967,10 +1112,13 @@ class GiteeAIImage(Star):
             sent = await self._send_image_with_fallback(event, image_path)
             if not sent:
                 await mark_failed(event)
-                event.set_result(event.plain_result("图片已生成，但发送异常（无需重新生成）。可让主人输入：/重发图片"))
+                event.set_result(
+                    event.plain_result(
+                        self._build_send_image_failure_message("图片已生成", sent)
+                    )
+                )
                 return None
             await mark_success(event)
-            event.set_result(event.plain_result("图片已生成并发送。"))
             return None
 
         except Exception as e:
@@ -1300,7 +1448,7 @@ class GiteeAIImage(Star):
                 await mark_failed(event)
                 await event.send(
                     event.plain_result(
-                        "图片已生成，但发送失败（可能是平台临时异常）。可稍后使用：/重发图片"
+                        self._build_send_image_failure_message("图片已编辑", sent)
                     )
                 )
                 return
@@ -1393,7 +1541,7 @@ class GiteeAIImage(Star):
             if not sent:
                 await mark_failed(event)
                 yield event.plain_result(
-                    "图片已生成，但发送失败（可能是平台临时异常）。可稍后使用：/重发图片"
+                    self._build_send_image_failure_message("图片已编辑", sent)
                 )
                 return
 
@@ -1512,6 +1660,8 @@ class GiteeAIImage(Star):
     async def _should_use_selfie_ref(
         self, event: AstrMessageEvent, prompt: str
     ) -> bool:
+        if not self._is_selfie_enabled():
+            return False
         if not self._is_selfie_prompt(prompt):
             return False
         paths, _ = await self._get_selfie_reference_paths(event)
@@ -1568,8 +1718,8 @@ class GiteeAIImage(Star):
         resolution: str | None = None,
     ) -> Path:
         conf = self._get_selfie_conf()
-        if conf.get("enabled", True) is False:
-            raise RuntimeError("自拍功能已关闭（features.selfie.enabled=false）")
+        if not self._is_selfie_enabled():
+            raise RuntimeError(self._selfie_disabled_message())
 
         # 1) 读取参考照（WebUI 优先，其次命令设置的 store）
         ref_paths, _ = await self._get_selfie_reference_paths(event)
@@ -1647,6 +1797,10 @@ class GiteeAIImage(Star):
         backend: str | None = None,
     ):
         """指令 /自拍 执行入口（generator 版本）。"""
+        if not self._is_selfie_enabled():
+            yield event.plain_result(self._selfie_disabled_message())
+            return
+
         user_id = event.get_sender_id()
         request_id = f"selfie_{user_id}"
 
@@ -1669,7 +1823,7 @@ class GiteeAIImage(Star):
             if not sent:
                 await mark_failed(event)
                 yield event.plain_result(
-                    "自拍已生成，但发送失败（可能是平台临时异常）。可稍后使用：/重发图片"
+                    self._build_send_image_failure_message("自拍已生成", sent)
                 )
                 return
             await mark_success(event)
@@ -1679,6 +1833,10 @@ class GiteeAIImage(Star):
             yield event.plain_result(f"自拍失败: {str(e) or type(e).__name__}")
 
     async def _set_selfie_reference(self, event: AstrMessageEvent):
+        if not self._is_selfie_enabled():
+            yield event.plain_result(self._selfie_disabled_message())
+            return
+
         image_segs = await get_images_from_event(event, include_avatar=False)
         if not image_segs:
             yield event.plain_result(
@@ -1713,6 +1871,10 @@ class GiteeAIImage(Star):
         )
 
     async def _show_selfie_reference(self, event: AstrMessageEvent):
+        if not self._is_selfie_enabled():
+            yield event.plain_result(self._selfie_disabled_message())
+            return
+
         paths, source = await self._get_selfie_reference_paths(event)
         if not paths:
             yield event.plain_result(
@@ -1731,6 +1893,10 @@ class GiteeAIImage(Star):
         )
 
     async def _delete_selfie_reference(self, event: AstrMessageEvent):
+        if not self._is_selfie_enabled():
+            yield event.plain_result(self._selfie_disabled_message())
+            return
+
         store_key = self._get_selfie_ref_store_key(event)
         deleted = await self.refs.delete(store_key)
 
