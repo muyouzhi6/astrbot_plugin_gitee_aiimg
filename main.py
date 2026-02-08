@@ -144,19 +144,6 @@ class GiteeAIImage(Star):
     def _selfie_disabled_message() -> str:
         return "自拍参考图模式已关闭（features.selfie.enabled=false）"
 
-    def _build_send_image_failure_message(
-        self, prefix: str, send_result: SendImageResult | None = None
-    ) -> str:
-        reason = str((send_result.reason if send_result else "") or "").strip().lower()
-        if reason == "file_not_found":
-            return f"{prefix}，但缓存文件不存在，无法发送。"
-        if reason == "rich_media_transfer_failed":
-            return (
-                f"{prefix}，但平台富媒体上传失败（rich media transfer failed）。"
-                "可稍后使用：/重发图片"
-            )
-        return f"{prefix}，但发送失败（可能是平台临时异常）。可稍后使用：/重发图片"
-
     async def _send_image_with_fallback(
         self, event: AstrMessageEvent, image_path: Path, *, max_attempts: int = 5
     ) -> SendImageResult:
@@ -458,9 +445,7 @@ class GiteeAIImage(Star):
             sent = await self._send_image_with_fallback(event, image_path)
             if not sent:
                 await mark_failed(event)
-                yield event.plain_result(
-                    self._build_send_image_failure_message("图片已生成", sent)
-                )
+                logger.warning("[文生图] 图片发送失败，已仅使用表情标注: reason=%s", sent.reason)
                 return
 
             # 标记成功
@@ -502,9 +487,7 @@ class GiteeAIImage(Star):
         if ok:
             yield event.plain_result("已重发图片。")
         else:
-            yield event.plain_result(
-                self._build_send_image_failure_message("重发图片失败", ok)
-            )
+            yield event.plain_result("重发失败，请稍后再试。")
 
     @filter.regex(r"[/!！.。．](改图|图生图|修图|aiedit)(\s|$)", priority=-10)
     async def edit_image_regex_fallback(self, event: AstrMessageEvent):
@@ -1009,10 +992,9 @@ class GiteeAIImage(Star):
                 sent = await self._send_image_with_fallback(event, image_path)
                 if not sent:
                     await mark_failed(event)
-                    event.set_result(
-                        event.plain_result(
-                            self._build_send_image_failure_message("自拍已生成", sent)
-                        )
+                    logger.warning(
+                        "[aiimg_generate] 自拍图片发送失败，已仅使用表情标注: reason=%s",
+                        sent.reason,
                     )
                     return None
                 await mark_success(event)
@@ -1039,10 +1021,9 @@ class GiteeAIImage(Star):
                 sent = await self._send_image_with_fallback(event, image_path)
                 if not sent:
                     await mark_failed(event)
-                    event.set_result(
-                        event.plain_result(
-                            self._build_send_image_failure_message("自拍已生成", sent)
-                        )
+                    logger.warning(
+                        "[aiimg_generate] 自动自拍图片发送失败，已仅使用表情标注: reason=%s",
+                        sent.reason,
                     )
                     return None
                 await mark_success(event)
@@ -1080,10 +1061,9 @@ class GiteeAIImage(Star):
                 sent = await self._send_image_with_fallback(event, image_path)
                 if not sent:
                     await mark_failed(event)
-                    event.set_result(
-                        event.plain_result(
-                            self._build_send_image_failure_message("图片已编辑", sent)
-                        )
+                    logger.warning(
+                        "[aiimg_generate] 改图结果发送失败，已仅使用表情标注: reason=%s",
+                        sent.reason,
                     )
                     return None
                 await mark_success(event)
@@ -1112,10 +1092,9 @@ class GiteeAIImage(Star):
             sent = await self._send_image_with_fallback(event, image_path)
             if not sent:
                 await mark_failed(event)
-                event.set_result(
-                    event.plain_result(
-                        self._build_send_image_failure_message("图片已生成", sent)
-                    )
+                logger.warning(
+                    "[aiimg_generate] 文生图结果发送失败，已仅使用表情标注: reason=%s",
+                    sent.reason,
                 )
                 return None
             await mark_success(event)
@@ -1446,10 +1425,9 @@ class GiteeAIImage(Star):
             sent = await self._send_image_with_fallback(event, image_path)
             if not sent:
                 await mark_failed(event)
-                await event.send(
-                    event.plain_result(
-                        self._build_send_image_failure_message("图片已编辑", sent)
-                    )
+                logger.warning(
+                    "[改图] 结果发送失败，已仅使用表情标注: reason=%s",
+                    sent.reason,
                 )
                 return
 
@@ -1540,8 +1518,9 @@ class GiteeAIImage(Star):
             sent = await self._send_image_with_fallback(event, image_path)
             if not sent:
                 await mark_failed(event)
-                yield event.plain_result(
-                    self._build_send_image_failure_message("图片已编辑", sent)
+                logger.warning(
+                    "[改图] 结果发送失败，已仅使用表情标注: reason=%s",
+                    sent.reason,
                 )
                 return
 
@@ -1822,8 +1801,9 @@ class GiteeAIImage(Star):
             sent = await self._send_image_with_fallback(event, image_path)
             if not sent:
                 await mark_failed(event)
-                yield event.plain_result(
-                    self._build_send_image_failure_message("自拍已生成", sent)
+                logger.warning(
+                    "[自拍] 结果发送失败，已仅使用表情标注: reason=%s",
+                    sent.reason,
                 )
                 return
             await mark_success(event)
