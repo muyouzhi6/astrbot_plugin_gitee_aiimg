@@ -9,6 +9,7 @@ from astrbot.api import logger
 from .gemini_edit import GeminiEditBackend
 from .gemini_flow2api import GeminiFlow2ApiBackend
 from .gitee_edit import GiteeEditBackend
+from .gitee_sizes import GITEE_SUPPORTED_SIZES, normalize_size_text
 from .grok2api_images_backend import Grok2ApiImagesBackend
 from .grok_video_service import GrokVideoService
 from .jimeng_api_backend import JimengApiBackend
@@ -144,6 +145,20 @@ class ProviderRegistry:
     def get(self, provider_id: str) -> dict | None:
         return self._providers.get(str(provider_id or "").strip())
 
+    def _get_draw_ratio_default_sizes(self) -> dict[str, str]:
+        feats = _as_dict(self._config.get("features"))
+        draw = _as_dict(feats.get("draw"))
+        raw = draw.get("ratio_default_sizes", {})
+        if not isinstance(raw, dict):
+            return {}
+        out: dict[str, str] = {}
+        for ratio, size in raw.items():
+            r = str(ratio or "").strip()
+            s = normalize_size_text(size)
+            if r and s:
+                out[r] = s
+        return out
+
     def get_backend(self, provider_id: str) -> object:
         pid = str(provider_id or "").strip()
         if not pid:
@@ -278,6 +293,8 @@ class ProviderRegistry:
                 default_size=str(conf.get("default_size") or "1024x1024").strip(),
                 supports_edit=False,
                 extra_body=extra_body or None,
+                allowed_sizes=GITEE_SUPPORTED_SIZES,
+                ratio_default_sizes=self._get_draw_ratio_default_sizes(),
             )
 
         if template_key == "gitee_async":
