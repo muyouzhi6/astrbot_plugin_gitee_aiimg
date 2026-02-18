@@ -12,6 +12,7 @@ from openai.types.images_response import ImagesResponse
 
 from astrbot.api import logger
 
+from .gitee_sizes import normalize_size_text, ratio_defaults_from_sizes, size_to_ratio
 from .image_format import guess_image_mime_and_ext
 
 
@@ -169,6 +170,8 @@ class OpenAICompatBackend:
         supports_edit: bool = True,
         extra_body: dict | None = None,
         proxy_url: str | None = None,
+        allowed_sizes: list[str] | None = None,
+        ratio_default_sizes: dict[str, str] | None = None,
     ):
         self.imgr = imgr
         self.base_url = normalize_openai_compat_base_url(base_url)
@@ -176,10 +179,28 @@ class OpenAICompatBackend:
         self.timeout = int(timeout or 120)
         self.max_retries = int(max_retries or 2)
         self.default_model = str(default_model or "").strip()
-        self.default_size = str(default_size or "4096x4096").strip()
+        self.default_size = normalize_size_text(
+            str(default_size or "4096x4096").strip()
+        )
         self.supports_edit = bool(supports_edit)
         self.extra_body = extra_body or {}
         self.proxy_url = str(proxy_url or "").strip() or None
+        self.allowed_sizes = [
+            normalize_size_text(s)
+            for s in (allowed_sizes or [])
+            if normalize_size_text(s)
+        ]
+        self._ratio_defaults = (
+            ratio_defaults_from_sizes(self.allowed_sizes)
+            if self.allowed_sizes
+            else {}
+        )
+        if ratio_default_sizes and self.allowed_sizes:
+            for ratio, size in ratio_default_sizes.items():
+                r = str(ratio or "").strip()
+                s = normalize_size_text(size)
+                if r and s and s in self.allowed_sizes:
+                    self._ratio_defaults[r] = s
 
         self._key_index = 0
         self._clients: dict[str, AsyncOpenAI] = {}
@@ -265,6 +286,41 @@ class OpenAICompatBackend:
             )
         )
 
+    def _resolve_size(
+        self, size: str | None, resolution: str | None
+    ) -> tuple[str, str, bool]:
+        raw = normalize_size_text(size)
+        if not raw:
+            raw = normalize_size_text(resolution_to_size(resolution or ""))
+        if not raw:
+            raw = self.default_size
+
+        if not self.allowed_sizes:
+            return raw, raw, False
+
+        if raw in self.allowed_sizes:
+            return raw, raw, False
+
+        requested_ratio = size_to_ratio(raw)
+        fallback = ""
+        if requested_ratio:
+            default_ratio = size_to_ratio(self.default_size)
+            if (
+                self.default_size in self.allowed_sizes
+                and default_ratio == requested_ratio
+            ):
+                fallback = self.default_size
+            else:
+                fallback = self._ratio_defaults.get(requested_ratio, "")
+
+        if not fallback and self.default_size in self.allowed_sizes:
+            fallback = self.default_size
+
+        if not fallback and self.allowed_sizes:
+            fallback = self.allowed_sizes[0]
+
+        return fallback or raw, raw, True
+
     async def close(self) -> None:
         for client in self._clients.values():
             try:
@@ -346,11 +402,13 @@ class OpenAICompatBackend:
         if not final_model:
             raise RuntimeError("未配置 model")
 
-        final_size = (
-            (size or "").strip()
-            or resolution_to_size(resolution or "")  # may be None
-            or self.default_size
-        )
+        final_size, raw_size, fallback_used = self._resolve_size(size, resolution)
+        if fallback_used:
+            logger.warning(
+                "[OpenAICompat][generate] 不支持的 size='%s'，已兜底为 '%s'",
+                raw_size,
+                final_size,
+            )
 
         kwargs: dict = {
             "model": final_model,
@@ -432,11 +490,13 @@ class OpenAICompatBackend:
         if not final_model:
             raise RuntimeError("未配置 model")
 
-        final_size = (
-            (size or "").strip()
-            or resolution_to_size(resolution or "")
-            or self.default_size
-        )
+        final_size, raw_size, fallback_used = self._resolve_size(size, resolution)
+        if fallback_used:
+            logger.warning(
+                "[OpenAICompat][edit] 不支持的 size='%s'，已兜底为 '%s'",
+                raw_size,
+                final_size,
+            )
 
         # Some providers only accept a single input image for edits.
         packed = _build_collage(images) if len(images) > 1 else images[0]

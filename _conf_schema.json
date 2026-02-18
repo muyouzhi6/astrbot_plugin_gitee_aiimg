@@ -19,7 +19,32 @@
             "type": "string",
             "description": "默认输出尺寸/分辨率",
             "hint": "例：4K / 2K / 1K / 2048x2048 / 4096x4096。留空则由服务商默认决定。",
-            "default": "4K"
+            "options": [
+              "1K",
+              "2K",
+              "4K",
+              "256x256",
+              "512x512",
+              "1024x1024",
+              "2048x2048",
+              "1152x896",
+              "2048x1536",
+              "768x1024",
+              "1536x2048",
+              "2048x1360",
+              "1360x2048",
+              "1024x576",
+              "2048x1152",
+              "576x1024",
+              "1152x2048"
+            ],
+            "default": "1024x1024"
+          },
+          "ratio_default_sizes": {
+            "type": "dict",
+            "description": "比例到默认尺寸的映射（仅 /aiimg 比例生效）",
+            "hint": "键为比例（如 1:1 / 16:9），值为尺寸（如 1024x1024）。请使用 Gitee 支持的尺寸；留空使用内置默认。",
+            "default": {}
           },
           "chain": {
             "type": "template_list",
@@ -407,7 +432,27 @@
           "model": { "type": "string", "description": "模型名称", "default": "z-image-turbo" },
           "timeout": { "type": "int", "description": "超时(秒)", "default": 300 },
           "max_retries": { "type": "int", "description": "最大重试次数", "default": 2 },
-          "default_size": { "type": "string", "description": "默认输出尺寸", "default": "1024x1024" },
+          "default_size": {
+            "type": "string",
+            "description": "默认输出尺寸",
+            "options": [
+              "256x256",
+              "512x512",
+              "1024x1024",
+              "2048x2048",
+              "1152x896",
+              "2048x1536",
+              "768x1024",
+              "1536x2048",
+              "2048x1360",
+              "1360x2048",
+              "1024x576",
+              "2048x1152",
+              "576x1024",
+              "1152x2048"
+            ],
+            "default": "1024x1024"
+          },
           "num_inference_steps": { "type": "int", "description": "推理步数", "default": 9, "slider": { "min": 1, "max": 30, "step": 1 } },
           "negative_prompt": { "type": "text", "description": "负面提示词", "default": "" }
         }

@@ -26,6 +26,11 @@ from .core.debouncer import Debouncer
 from .core.draw_service import ImageDrawService
 from .core.edit_router import EditRouter
 from .core.emoji_feedback import mark_failed, mark_processing, mark_success
+from .core.gitee_sizes import (
+    GITEE_SUPPORTED_RATIOS,
+    normalize_size_text,
+    resolve_ratio_size,
+)
 from .core.image_manager import ImageManager
 from .core.nanobanana import NanoBananaService
 from .core.provider_registry import ProviderRegistry
@@ -50,15 +55,7 @@ class GiteeAIImage(Star):
     """Gitee AI 图像生成插件"""
 
     # Gitee AI 支持的图片比例
-    SUPPORTED_RATIOS: dict[str, list[str]] = {
-        "1:1": ["256x256", "512x512", "1024x1024", "2048x2048"],
-        "4:3": ["1152x896", "2048x1536"],
-        "3:4": ["768x1024", "1536x2048"],
-        "3:2": ["2048x1360"],
-        "2:3": ["1360x2048"],
-        "16:9": ["1024x576", "2048x1152"],
-        "9:16": ["576x1024", "1152x2048"],
-    }
+    SUPPORTED_RATIOS: dict[str, list[str]] = GITEE_SUPPORTED_RATIOS
 
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
@@ -415,7 +412,7 @@ class GiteeAIImage(Star):
         if parts and parts[-1] in self.SUPPORTED_RATIOS:
             ratio = parts[-1]
             prompt = " ".join(parts[:-1]).strip()
-            size = self.SUPPORTED_RATIOS[ratio][0]
+            size = self._resolve_ratio_size(ratio)
 
         if not prompt:
             yield event.plain_result(
@@ -881,14 +878,6 @@ class GiteeAIImage(Star):
         Args:
             prompt(string): 图片提示词，需要包含主体、场景、风格等描述
         """
-        # 兜底：如果模型误调用了旧工具，但用户其实在要“自拍参考照”，这里自动纠正到自拍逻辑。
-        if await self._should_use_selfie_ref(event, prompt):
-            return await self.aiimg_generate(
-                event,
-                prompt=prompt,
-                mode="selfie_ref",
-                backend="auto",
-            )
         return await self.aiimg_generate(
             event, prompt=prompt, mode="text", backend="auto"
         )
@@ -910,14 +899,6 @@ class GiteeAIImage(Star):
         """
         if not use_message_images:
             return event.plain_result("当前仅支持 use_message_images=true（请附带/引用图片后再调用）")
-        # 兜底：如果模型误调用了旧工具，但用户其实在要“自拍参考照”，这里自动纠正到自拍逻辑。
-        if await self._should_use_selfie_ref(event, prompt):
-            return await self.aiimg_generate(
-                event,
-                prompt=prompt,
-                mode="selfie_ref",
-                backend=backend,
-            )
         return await self.aiimg_generate(
             event, prompt=prompt, mode="edit", backend=backend
         )
@@ -973,11 +954,18 @@ class GiteeAIImage(Star):
             await mark_processing(event)
 
             if m in {"selfie_ref", "selfie", "ref"}:
+                logger.info("[aiimg_generate] route=selfie_ref (explicit)")
                 if not self._is_selfie_enabled():
+                    logger.warning(
+                        "[aiimg_generate] selfie blocked: features.selfie.enabled=false"
+                    )
                     await mark_failed(event)
                     event.set_result(event.plain_result(self._selfie_disabled_message()))
                     return None
                 if not self._is_selfie_llm_enabled():
+                    logger.warning(
+                        "[aiimg_generate] selfie blocked: features.selfie.llm_tool_enabled=false"
+                    )
                     await mark_failed(event)
                     event.set_result(event.plain_result("自拍的 LLM 调用已关闭（features.selfie.llm_tool_enabled=false）"))
                     return None
@@ -1001,37 +989,47 @@ class GiteeAIImage(Star):
                 return None
 
             # 自动模式：优先识别"自拍"语义 + 已配置参考照
-            if m == "auto" and await self._should_use_selfie_ref(event, prompt):
+            if m == "auto" and await self._should_auto_selfie_ref(event, prompt):
                 if not self._is_selfie_enabled():
-                    await mark_failed(event)
-                    event.set_result(event.plain_result(self._selfie_disabled_message()))
-                    return None
-                if not self._is_selfie_llm_enabled():
-                    await mark_failed(event)
-                    event.set_result(event.plain_result("自拍的 LLM 调用已关闭（features.selfie.llm_tool_enabled=false）"))
-                    return None
-                image_path = await self._generate_selfie_image(
-                    event,
-                    prompt,
-                    target_backend,
-                    size=size,
-                    resolution=resolution,
-                )
-                self._remember_last_image(event, image_path)
-                sent = await self._send_image_with_fallback(event, image_path)
-                if not sent:
-                    await mark_failed(event)
-                    logger.warning(
-                        "[aiimg_generate] 自动自拍图片发送失败，已仅使用表情标注: reason=%s",
-                        sent.reason,
+                    logger.info(
+                        "[aiimg_generate] auto-selfie skipped: features.selfie.enabled=false"
                     )
-                    return None
-                await mark_success(event)
-                return None
+                elif not self._is_selfie_llm_enabled():
+                    logger.info(
+                        "[aiimg_generate] auto-selfie skipped: features.selfie.llm_tool_enabled=false"
+                    )
+                else:
+                    try:
+                        logger.info("[aiimg_generate] route=auto->selfie_ref")
+                        image_path = await self._generate_selfie_image(
+                            event,
+                            prompt,
+                            target_backend,
+                            size=size,
+                            resolution=resolution,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "[aiimg_generate] auto-selfie failed, fallback to draw/edit: %s",
+                            e,
+                        )
+                    else:
+                        self._remember_last_image(event, image_path)
+                        sent = await self._send_image_with_fallback(event, image_path)
+                        if not sent:
+                            await mark_failed(event)
+                            logger.warning(
+                                "[aiimg_generate] 自动自拍图片发送失败，已仅使用表情标注: reason=%s",
+                                sent.reason,
+                            )
+                            return None
+                        await mark_success(event)
+                        return None
 
             # 改图：用户消息中有图片（不含头像兜底）或显式指定
             has_msg_images = await self._has_message_images(event)
             if m in {"edit", "img2img", "aiedit"} or (m == "auto" and has_msg_images):
+                logger.info("[aiimg_generate] route=edit")
                 edit_conf = self._get_feature("edit")
                 if not bool(edit_conf.get("enabled", True)):
                     await mark_failed(event)
@@ -1082,6 +1080,7 @@ class GiteeAIImage(Star):
             if not prompt:
                 prompt = "a selfie photo"
 
+            logger.info("[aiimg_generate] route=draw")
             image_path = await self.draw.generate(
                 prompt,
                 provider_id=target_backend,
@@ -1173,6 +1172,32 @@ class GiteeAIImage(Star):
         feats = feats if isinstance(feats, dict) else {}
         conf = feats.get(name, {})
         return conf if isinstance(conf, dict) else {}
+
+    def _get_draw_ratio_default_sizes(self) -> dict[str, str]:
+        conf = self._get_feature("draw")
+        raw = conf.get("ratio_default_sizes", {})
+        if not isinstance(raw, dict):
+            return {}
+        out: dict[str, str] = {}
+        for ratio, size in raw.items():
+            r = str(ratio or "").strip()
+            s = normalize_size_text(size)
+            if not r or not s:
+                continue
+            out[r] = s
+        return out
+
+    def _resolve_ratio_size(self, ratio: str) -> str:
+        ratio = str(ratio or "").strip()
+        overrides = self._get_draw_ratio_default_sizes()
+        size, warning = resolve_ratio_size(
+            ratio,
+            overrides=overrides,
+            supported_ratios=self.SUPPORTED_RATIOS,
+        )
+        if warning:
+            logger.warning("[aiimg] %s", warning)
+        return size
 
     def _get_video_presets(self) -> dict[str, str]:
         presets: dict[str, str] = {}
@@ -1623,28 +1648,58 @@ class GiteeAIImage(Star):
         image_segs = await get_images_from_event(event, include_avatar=False)
         return bool(image_segs)
 
-    def _is_selfie_prompt(self, prompt: str) -> bool:
+    def _is_auto_selfie_prompt(self, prompt: str) -> bool:
         text = (prompt or "").strip()
         if not text:
-            return True  # 空提示词时，/自拍 默认走自拍逻辑
+            return False
         lowered = text.lower()
         if "自拍" in text or "selfie" in lowered:
             return True
         if any(
-            k in text for k in ("来一张你", "来张你", "你来一张", "你来张", "看看你")
+            k in text
+            for k in (
+                "来一张你",
+                "来张你",
+                "你来一张",
+                "你来张",
+                "看看你",
+                "你自己",
+                "你本人",
+                "你的照片",
+                "你的自拍",
+                "你自己的照片",
+                "你自己的自拍",
+                "你长什么样",
+                "看看你本人",
+                "看看你自己",
+                "bot自拍",
+                "机器人自拍",
+            )
+        ):
+            return True
+        if any(
+            k in lowered
+            for k in ("your selfie", "your photo", "your picture", "your face")
         ):
             return True
         return False
 
-    async def _should_use_selfie_ref(
+    async def _should_auto_selfie_ref(
         self, event: AstrMessageEvent, prompt: str
     ) -> bool:
-        if not self._is_selfie_enabled():
+        if not self._is_auto_selfie_prompt(prompt):
+            logger.debug("[aiimg_generate] auto-selfie skipped: prompt not selfie")
             return False
-        if not self._is_selfie_prompt(prompt):
+        paths, source = await self._get_selfie_reference_paths(event)
+        if not paths:
+            logger.info("[aiimg_generate] auto-selfie skipped: no reference images")
             return False
-        paths, _ = await self._get_selfie_reference_paths(event)
-        return bool(paths)
+        logger.debug(
+            "[aiimg_generate] auto-selfie candidate: refs=%s source=%s",
+            len(paths),
+            source,
+        )
+        return True
 
     def _build_selfie_prompt(self, prompt: str, extra_refs: int) -> str:
         conf = self._get_selfie_conf()
