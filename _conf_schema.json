@@ -8,7 +8,11 @@
         "description": "文生图 (Text-to-Image)",
         "type": "object",
         "items": {
-          "enabled": { "type": "bool", "description": "启用文生图", "default": true },
+          "enabled": {
+            "type": "bool",
+            "description": "启用文生图",
+            "default": true
+          },
           "llm_tool_enabled": {
             "type": "bool",
             "description": "允许 LLM 调用文生图",
@@ -41,10 +45,11 @@
             "default": "1024x1024"
           },
           "ratio_default_sizes": {
-            "type": "dict",
+            "type": "object",
             "description": "比例到默认尺寸的映射（仅 /aiimg 比例生效）",
             "hint": "键为比例（如 1:1 / 16:9），值为尺寸（如 1024x1024）。请使用 Gitee 支持的尺寸；留空使用内置默认。",
-            "default": {}
+            "default": {},
+            "items": {}
           },
           "chain": {
             "type": "template_list",
@@ -76,7 +81,11 @@
         "description": "图生图/改图 (Image-to-Image/Edit)",
         "type": "object",
         "items": {
-          "enabled": { "type": "bool", "description": "启用改图", "default": true },
+          "enabled": {
+            "type": "bool",
+            "description": "启用改图",
+            "default": true
+          },
           "llm_tool_enabled": {
             "type": "bool",
             "description": "允许 LLM 调用改图",
@@ -117,7 +126,11 @@
             "type": "list",
             "description": "Gitee 异步改图默认任务类型",
             "hint": "仅对 providers 中的 gitee_async 类型生效。默认：id/background/style。",
-            "default": ["id", "background", "style"]
+            "default": [
+              "id",
+              "background",
+              "style"
+            ]
           },
           "presets": {
             "type": "list",
@@ -131,7 +144,11 @@
         "description": "自拍参考照模式",
         "type": "object",
         "items": {
-          "enabled": { "type": "bool", "description": "启用自拍参考照", "default": true },
+          "enabled": {
+            "type": "bool",
+            "description": "启用自拍参考照",
+            "default": true
+          },
           "llm_tool_enabled": {
             "type": "bool",
             "description": "允许 LLM 调用自拍参考照",
@@ -143,7 +160,12 @@
             "description": "参考人像（可多张）",
             "hint": "建议上传清晰正脸照，可多张做不同角度参考。",
             "default": [],
-            "file_types": ["jpg", "jpeg", "png", "webp"]
+            "file_types": [
+              "jpg",
+              "jpeg",
+              "png",
+              "webp"
+            ]
           },
           "use_edit_chain_when_empty": {
             "type": "bool",
@@ -184,7 +206,11 @@
             "type": "list",
             "description": "Gitee 异步自拍默认任务类型",
             "hint": "仅对 providers 中的 gitee_async 类型生效。默认：id/background/style。",
-            "default": ["id", "background", "style"]
+            "default": [
+              "id",
+              "background",
+              "style"
+            ]
           },
           "prompt_prefix": {
             "type": "text",
@@ -198,7 +224,11 @@
         "description": "视频生成 (Image-to-Video)",
         "type": "object",
         "items": {
-          "enabled": { "type": "bool", "description": "启用视频生成", "default": false },
+          "enabled": {
+            "type": "bool",
+            "description": "启用视频生成",
+            "default": false
+          },
           "llm_tool_enabled": {
             "type": "bool",
             "description": "允许 LLM 调用视频生成",
@@ -231,21 +261,33 @@
             "type": "string",
             "description": "发送方式",
             "hint": "auto=URL失败再下载；url=仅URL；file=下载后本地文件",
-            "options": ["auto", "url", "file"],
+            "options": [
+              "auto",
+              "url",
+              "file"
+            ],
             "default": "auto"
           },
           "send_timeout_seconds": {
             "type": "int",
             "description": "发送超时(秒)",
             "hint": "发送 Video 组件等待时间",
-            "slider": { "min": 10, "max": 300, "step": 10 },
+            "slider": {
+              "min": 10,
+              "max": 300,
+              "step": 10
+            },
             "default": 90
           },
           "download_timeout_seconds": {
             "type": "int",
             "description": "下载视频超时(秒)",
             "hint": "send_mode=file/auto 时用于下载",
-            "slider": { "min": 30, "max": 3600, "step": 30 },
+            "slider": {
+              "min": 30,
+              "max": 3600,
+              "step": 30
+            },
             "default": 300
           }
         }
@@ -260,14 +302,22 @@
         "description": "图片最大缓存数",
         "hint": "超过此数时，将清理一半的旧缓存图",
         "type": "int",
-        "slider": { "min": 10, "max": 500, "step": 1 },
+        "slider": {
+          "min": 10,
+          "max": 500,
+          "step": 1
+        },
         "default": 50
       },
       "max_cached_videos": {
         "description": "本地视频最大缓存数",
         "hint": "仅在 send_mode=file/auto 且触发下载时生效（0=不清理）",
         "type": "int",
-        "slider": { "min": 0, "max": 500, "step": 1 },
+        "slider": {
+          "min": 0,
+          "max": 500,
+          "step": 1
+        },
         "default": 20
       }
     }
@@ -276,7 +326,11 @@
     "description": "防抖时长(秒)",
     "hint": "防抖时间内无法重复提交生成/改图请求，每个用户单独计时",
     "type": "int",
-    "slider": { "min": 0, "max": 60, "step": 1 },
+    "slider": {
+      "min": 0,
+      "max": 60,
+      "step": 1
+    },
     "default": 10
   },
   "providers": {
@@ -287,151 +341,555 @@
       "gemini_native": {
         "name": "Gemini 原生 (generateContent)",
         "items": {
-          "id": { "type": "string", "description": "服务商 ID（唯一）", "default": "gemini_native" },
-          "label": { "type": "string", "description": "显示名称（可选）", "default": "" },
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "gemini_native"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": ""
+          },
           "api_url": {
             "type": "string",
             "description": "API Base URL",
             "hint": "默认：https://generativelanguage.googleapis.com",
             "default": "https://generativelanguage.googleapis.com"
           },
-          "api_keys": { "type": "list", "description": "API Key 池", "default": [], "obvious_hint": true },
-          "model": { "type": "string", "description": "模型名称", "default": "gemini-3-pro-image-preview" },
-          "default_resolution": { "type": "string", "description": "默认分辨率", "options": ["1K", "2K", "4K"], "default": "4K" },
-          "timeout": { "type": "int", "description": "超时(秒)", "default": 120 },
-          "use_proxy": { "type": "bool", "description": "启用代理", "default": false },
-          "proxy_url": { "type": "string", "description": "代理地址", "default": "" }
+          "api_keys": {
+            "type": "list",
+            "description": "API Key 池",
+            "default": [],
+            "obvious_hint": true
+          },
+          "model": {
+            "type": "string",
+            "description": "模型名称",
+            "default": "gemini-3-pro-image-preview"
+          },
+          "default_resolution": {
+            "type": "string",
+            "description": "默认分辨率",
+            "options": [
+              "1K",
+              "2K",
+              "4K"
+            ],
+            "default": "4K"
+          },
+          "timeout": {
+            "type": "int",
+            "description": "超时(秒)",
+            "default": 120
+          },
+          "use_proxy": {
+            "type": "bool",
+            "description": "启用代理",
+            "default": false
+          },
+          "proxy_url": {
+            "type": "string",
+            "description": "代理地址",
+            "default": ""
+          }
         }
       },
       "flow2api": {
         "name": "Flow2API (OpenAI Chat SSE 出图)",
         "items": {
-          "id": { "type": "string", "description": "服务商 ID（唯一）", "default": "flow2api" },
-          "label": { "type": "string", "description": "显示名称（可选）", "default": "" },
-          "api_url": { "type": "string", "description": "API URL", "hint": "可填 http(s)://host 或 /v1/chat/completions（会自动补齐）。", "default": "" },
-          "api_keys": { "type": "list", "description": "API Key 池", "default": [], "obvious_hint": true },
-          "model": { "type": "string", "description": "模型名称", "default": "" },
-          "timeout": { "type": "int", "description": "超时(秒)", "default": 120 },
-          "use_proxy": { "type": "bool", "description": "启用代理", "default": false },
-          "proxy_url": { "type": "string", "description": "代理地址", "default": "" }
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "flow2api"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": ""
+          },
+          "api_url": {
+            "type": "string",
+            "description": "API URL",
+            "hint": "可填 http(s)://host 或 /v1/chat/completions（会自动补齐）。",
+            "default": ""
+          },
+          "api_keys": {
+            "type": "list",
+            "description": "API Key 池",
+            "default": [],
+            "obvious_hint": true
+          },
+          "model": {
+            "type": "string",
+            "description": "模型名称",
+            "default": ""
+          },
+          "timeout": {
+            "type": "int",
+            "description": "超时(秒)",
+            "default": 120
+          },
+          "use_proxy": {
+            "type": "bool",
+            "description": "启用代理",
+            "default": false
+          },
+          "proxy_url": {
+            "type": "string",
+            "description": "代理地址",
+            "default": ""
+          }
         }
       },
       "openai_images": {
         "name": "OpenAI 兼容 (Images API)",
         "items": {
-          "id": { "type": "string", "description": "服务商 ID（唯一）", "default": "openai_images" },
-          "label": { "type": "string", "description": "显示名称（可选）", "default": "" },
-          "base_url": { "type": "string", "description": "Base URL", "hint": "可填 https://api.example.com 或 https://api.example.com/v1（会自动规范化为包含 /v1）。", "default": "" },
-          "api_keys": { "type": "list", "description": "API Key 池", "default": [], "obvious_hint": true },
-          "model": { "type": "string", "description": "模型名称", "default": "" },
-          "supports_edit": { "type": "bool", "description": "支持改图 (images.edit)", "default": true },
-          "timeout": { "type": "int", "description": "超时(秒)", "default": 120 },
-          "max_retries": { "type": "int", "description": "最大重试次数", "default": 2 },
-          "proxy_url": { "type": "string", "description": "代理地址（可选）", "hint": "如果 SDK 不支持，请使用系统代理环境变量。", "default": "" },
-          "default_size": { "type": "string", "description": "默认输出尺寸", "default": "4096x4096" },
-          "extra_body": { "type": "dict", "description": "额外请求体（高级）", "items": {}, "default": {} }
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "openai_images"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": ""
+          },
+          "base_url": {
+            "type": "string",
+            "description": "Base URL",
+            "hint": "可填 https://api.example.com 或 https://api.example.com/v1（会自动规范化为包含 /v1）。",
+            "default": ""
+          },
+          "api_keys": {
+            "type": "list",
+            "description": "API Key 池",
+            "default": [],
+            "obvious_hint": true
+          },
+          "model": {
+            "type": "string",
+            "description": "模型名称",
+            "default": ""
+          },
+          "supports_edit": {
+            "type": "bool",
+            "description": "支持改图 (images.edit)",
+            "default": true
+          },
+          "timeout": {
+            "type": "int",
+            "description": "超时(秒)",
+            "default": 120
+          },
+          "max_retries": {
+            "type": "int",
+            "description": "最大重试次数",
+            "default": 2
+          },
+          "proxy_url": {
+            "type": "string",
+            "description": "代理地址（可选）",
+            "hint": "如果 SDK 不支持，请使用系统代理环境变量。",
+            "default": ""
+          },
+          "default_size": {
+            "type": "string",
+            "description": "默认输出尺寸",
+            "default": "4096x4096"
+          },
+          "extra_body": {
+            "type": "object",
+            "description": "额外请求体（高级）",
+            "items": {},
+            "default": {}
+          }
         }
       },
       "openai_chat": {
         "name": "OpenAI 兼容 (Chat 出图解析)",
         "items": {
-          "id": { "type": "string", "description": "服务商 ID（唯一）", "default": "openai_chat" },
-          "label": { "type": "string", "description": "显示名称（可选）", "default": "" },
-          "base_url": { "type": "string", "description": "Base URL", "hint": "可填 https://api.example.com 或 https://api.example.com/v1（会自动规范化为包含 /v1）。", "default": "" },
-          "api_keys": { "type": "list", "description": "API Key 池", "default": [], "obvious_hint": true },
-          "model": { "type": "string", "description": "模型名称", "default": "" },
-          "supports_edit": { "type": "bool", "description": "支持改图（图文输入）", "default": true },
-          "timeout": { "type": "int", "description": "超时(秒)", "default": 120 },
-          "max_retries": { "type": "int", "description": "最大重试次数", "default": 2 },
-          "proxy_url": { "type": "string", "description": "代理地址（可选）", "hint": "如果 SDK 不支持，请使用系统代理环境变量。", "default": "" },
-          "extra_body": { "type": "dict", "description": "额外请求体（高级）", "items": {}, "default": {} }
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "openai_chat"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": ""
+          },
+          "base_url": {
+            "type": "string",
+            "description": "Base URL",
+            "hint": "可填 https://api.example.com 或 https://api.example.com/v1（会自动规范化为包含 /v1）。",
+            "default": ""
+          },
+          "api_keys": {
+            "type": "list",
+            "description": "API Key 池",
+            "default": [],
+            "obvious_hint": true
+          },
+          "model": {
+            "type": "string",
+            "description": "模型名称",
+            "default": ""
+          },
+          "supports_edit": {
+            "type": "bool",
+            "description": "支持改图（图文输入）",
+            "default": true
+          },
+          "timeout": {
+            "type": "int",
+            "description": "超时(秒)",
+            "default": 120
+          },
+          "max_retries": {
+            "type": "int",
+            "description": "最大重试次数",
+            "default": 2
+          },
+          "proxy_url": {
+            "type": "string",
+            "description": "代理地址（可选）",
+            "hint": "如果 SDK 不支持，请使用系统代理环境变量。",
+            "default": ""
+          },
+          "extra_body": {
+            "type": "object",
+            "description": "额外请求体（高级）",
+            "items": {},
+            "default": {}
+          }
         }
       },
       "grok_images": {
         "name": "Grok (Images API)",
         "items": {
-          "id": { "type": "string", "description": "服务商 ID（唯一）", "default": "grok" },
-          "label": { "type": "string", "description": "显示名称（可选）", "default": "" },
-          "base_url": { "type": "string", "description": "Base URL", "default": "https://api.x.ai/v1" },
-          "api_keys": { "type": "list", "description": "API Key 池", "default": [], "obvious_hint": true },
-          "model": { "type": "string", "description": "模型名称", "default": "" },
-          "supports_edit": { "type": "bool", "description": "支持改图 (images.edit)", "default": true },
-          "timeout": { "type": "int", "description": "超时(秒)", "default": 120 },
-          "max_retries": { "type": "int", "description": "最大重试次数", "default": 2 },
-          "proxy_url": { "type": "string", "description": "代理地址（可选）", "default": "" },
-          "default_size": { "type": "string", "description": "默认输出尺寸", "default": "4096x4096" },
-          "extra_body": { "type": "dict", "description": "额外请求体（高级）", "items": {}, "default": {} }
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "grok"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": ""
+          },
+          "base_url": {
+            "type": "string",
+            "description": "Base URL",
+            "default": "https://api.x.ai/v1"
+          },
+          "api_keys": {
+            "type": "list",
+            "description": "API Key 池",
+            "default": [],
+            "obvious_hint": true
+          },
+          "model": {
+            "type": "string",
+            "description": "模型名称",
+            "default": ""
+          },
+          "supports_edit": {
+            "type": "bool",
+            "description": "支持改图 (images.edit)",
+            "default": true
+          },
+          "timeout": {
+            "type": "int",
+            "description": "超时(秒)",
+            "default": 120
+          },
+          "max_retries": {
+            "type": "int",
+            "description": "最大重试次数",
+            "default": 2
+          },
+          "proxy_url": {
+            "type": "string",
+            "description": "代理地址（可选）",
+            "default": ""
+          },
+          "default_size": {
+            "type": "string",
+            "description": "默认输出尺寸",
+            "default": "4096x4096"
+          },
+          "extra_body": {
+            "type": "object",
+            "description": "额外请求体（高级）",
+            "items": {},
+            "default": {}
+          }
         }
       },
       "grok_chat": {
         "name": "Grok (Chat 出图解析)",
         "items": {
-          "id": { "type": "string", "description": "服务商 ID（唯一）", "default": "grok_chat" },
-          "label": { "type": "string", "description": "显示名称（可选）", "default": "" },
-          "base_url": { "type": "string", "description": "Base URL", "default": "https://api.x.ai/v1" },
-          "api_keys": { "type": "list", "description": "API Key 池", "default": [], "obvious_hint": true },
-          "model": { "type": "string", "description": "模型名称", "default": "" },
-          "supports_edit": { "type": "bool", "description": "支持改图（图文输入）", "default": true },
-          "timeout": { "type": "int", "description": "超时(秒)", "default": 120 },
-          "max_retries": { "type": "int", "description": "最大重试次数", "default": 2 },
-          "proxy_url": { "type": "string", "description": "代理地址（可选）", "default": "" },
-          "extra_body": { "type": "dict", "description": "额外请求体（高级）", "items": {}, "default": {} }
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "grok_chat"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": ""
+          },
+          "base_url": {
+            "type": "string",
+            "description": "Base URL",
+            "default": "https://api.x.ai/v1"
+          },
+          "api_keys": {
+            "type": "list",
+            "description": "API Key 池",
+            "default": [],
+            "obvious_hint": true
+          },
+          "model": {
+            "type": "string",
+            "description": "模型名称",
+            "default": ""
+          },
+          "supports_edit": {
+            "type": "bool",
+            "description": "支持改图（图文输入）",
+            "default": true
+          },
+          "timeout": {
+            "type": "int",
+            "description": "超时(秒)",
+            "default": 120
+          },
+          "max_retries": {
+            "type": "int",
+            "description": "最大重试次数",
+            "default": 2
+          },
+          "proxy_url": {
+            "type": "string",
+            "description": "代理地址（可选）",
+            "default": ""
+          },
+          "extra_body": {
+            "type": "object",
+            "description": "额外请求体（高级）",
+            "items": {},
+            "default": {}
+          }
         }
       },
       "grok2api_images": {
         "name": "Grok2API (Images /v1/images/generations)",
         "items": {
-          "id": { "type": "string", "description": "服务商 ID（唯一）", "default": "grok2api" },
-          "label": { "type": "string", "description": "显示名称（可选）", "default": "" },
-          "base_url": { "type": "string", "description": "Base URL", "hint": "可填 http://localhost:xxxx 或 http://host/v1", "default": "" },
-          "api_keys": { "type": "list", "description": "API Key（仅取第一个）", "default": [], "obvious_hint": true },
-          "model": { "type": "string", "description": "模型名称", "default": "" },
-          "timeout": { "type": "int", "description": "超时(秒)", "default": 120 },
-          "default_size": { "type": "string", "description": "默认输出尺寸", "default": "4096x4096" },
-          "extra_body": { "type": "dict", "description": "额外请求体（高级）", "items": {}, "default": {} }
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "grok2api"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": ""
+          },
+          "base_url": {
+            "type": "string",
+            "description": "Base URL",
+            "hint": "可填 http://localhost:xxxx 或 http://host/v1",
+            "default": ""
+          },
+          "api_keys": {
+            "type": "list",
+            "description": "API Key（仅取第一个）",
+            "default": [],
+            "obvious_hint": true
+          },
+          "model": {
+            "type": "string",
+            "description": "模型名称",
+            "default": ""
+          },
+          "timeout": {
+            "type": "int",
+            "description": "超时(秒)",
+            "default": 120
+          },
+          "default_size": {
+            "type": "string",
+            "description": "默认输出尺寸",
+            "default": "4096x4096"
+          },
+          "extra_body": {
+            "type": "object",
+            "description": "额外请求体（高级）",
+            "items": {},
+            "default": {}
+          }
         }
       },
       "gemini_openai_images": {
         "name": "Gemini OpenAI兼容 (Images API)",
         "items": {
-          "id": { "type": "string", "description": "服务商 ID（唯一）", "default": "gemini_openai" },
-          "label": { "type": "string", "description": "显示名称（可选）", "default": "" },
-          "base_url": { "type": "string", "description": "Base URL", "default": "" },
-          "api_keys": { "type": "list", "description": "API Key 池", "default": [], "obvious_hint": true },
-          "model": { "type": "string", "description": "模型名称", "default": "" },
-          "supports_edit": { "type": "bool", "description": "支持改图 (images.edit)", "default": true },
-          "timeout": { "type": "int", "description": "超时(秒)", "default": 120 },
-          "max_retries": { "type": "int", "description": "最大重试次数", "default": 2 },
-          "proxy_url": { "type": "string", "description": "代理地址（可选）", "default": "" },
-          "default_size": { "type": "string", "description": "默认输出尺寸", "default": "4096x4096" },
-          "extra_body": { "type": "dict", "description": "额外请求体（高级）", "items": {}, "default": {} }
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "gemini_openai"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": ""
+          },
+          "base_url": {
+            "type": "string",
+            "description": "Base URL",
+            "default": ""
+          },
+          "api_keys": {
+            "type": "list",
+            "description": "API Key 池",
+            "default": [],
+            "obvious_hint": true
+          },
+          "model": {
+            "type": "string",
+            "description": "模型名称",
+            "default": ""
+          },
+          "supports_edit": {
+            "type": "bool",
+            "description": "支持改图 (images.edit)",
+            "default": true
+          },
+          "timeout": {
+            "type": "int",
+            "description": "超时(秒)",
+            "default": 120
+          },
+          "max_retries": {
+            "type": "int",
+            "description": "最大重试次数",
+            "default": 2
+          },
+          "proxy_url": {
+            "type": "string",
+            "description": "代理地址（可选）",
+            "default": ""
+          },
+          "default_size": {
+            "type": "string",
+            "description": "默认输出尺寸",
+            "default": "4096x4096"
+          },
+          "extra_body": {
+            "type": "object",
+            "description": "额外请求体（高级）",
+            "items": {},
+            "default": {}
+          }
         }
       },
       "gemini_openai_chat": {
         "name": "Gemini OpenAI兼容 (Chat 出图解析)",
         "items": {
-          "id": { "type": "string", "description": "服务商 ID（唯一）", "default": "gemini_openai_chat" },
-          "label": { "type": "string", "description": "显示名称（可选）", "default": "" },
-          "base_url": { "type": "string", "description": "Base URL", "default": "" },
-          "api_keys": { "type": "list", "description": "API Key 池", "default": [], "obvious_hint": true },
-          "model": { "type": "string", "description": "模型名称", "default": "" },
-          "supports_edit": { "type": "bool", "description": "支持改图（图文输入）", "default": true },
-          "timeout": { "type": "int", "description": "超时(秒)", "default": 120 },
-          "max_retries": { "type": "int", "description": "最大重试次数", "default": 2 },
-          "proxy_url": { "type": "string", "description": "代理地址（可选）", "default": "" },
-          "extra_body": { "type": "dict", "description": "额外请求体（高级）", "items": {}, "default": {} }
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "gemini_openai_chat"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": ""
+          },
+          "base_url": {
+            "type": "string",
+            "description": "Base URL",
+            "default": ""
+          },
+          "api_keys": {
+            "type": "list",
+            "description": "API Key 池",
+            "default": [],
+            "obvious_hint": true
+          },
+          "model": {
+            "type": "string",
+            "description": "模型名称",
+            "default": ""
+          },
+          "supports_edit": {
+            "type": "bool",
+            "description": "支持改图（图文输入）",
+            "default": true
+          },
+          "timeout": {
+            "type": "int",
+            "description": "超时(秒)",
+            "default": 120
+          },
+          "max_retries": {
+            "type": "int",
+            "description": "最大重试次数",
+            "default": 2
+          },
+          "proxy_url": {
+            "type": "string",
+            "description": "代理地址（可选）",
+            "default": ""
+          },
+          "extra_body": {
+            "type": "object",
+            "description": "额外请求体（高级）",
+            "items": {},
+            "default": {}
+          }
         }
       },
       "gitee_images": {
         "name": "Gitee AI (Images API)",
         "items": {
-          "id": { "type": "string", "description": "服务商 ID（唯一）", "default": "gitee" },
-          "label": { "type": "string", "description": "显示名称（可选）", "default": "" },
-          "base_url": { "type": "string", "description": "Base URL", "default": "https://ai.gitee.com/v1" },
-          "api_keys": { "type": "list", "description": "API Key 池", "default": [], "obvious_hint": true },
-          "model": { "type": "string", "description": "模型名称", "default": "z-image-turbo" },
-          "timeout": { "type": "int", "description": "超时(秒)", "default": 300 },
-          "max_retries": { "type": "int", "description": "最大重试次数", "default": 2 },
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "gitee"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": ""
+          },
+          "base_url": {
+            "type": "string",
+            "description": "Base URL",
+            "default": "https://ai.gitee.com/v1"
+          },
+          "api_keys": {
+            "type": "list",
+            "description": "API Key 池",
+            "default": [],
+            "obvious_hint": true
+          },
+          "model": {
+            "type": "string",
+            "description": "模型名称",
+            "default": "z-image-turbo"
+          },
+          "timeout": {
+            "type": "int",
+            "description": "超时(秒)",
+            "default": 300
+          },
+          "max_retries": {
+            "type": "int",
+            "description": "最大重试次数",
+            "default": 2
+          },
           "default_size": {
             "type": "string",
             "description": "默认输出尺寸",
@@ -453,66 +911,279 @@
             ],
             "default": "1024x1024"
           },
-          "num_inference_steps": { "type": "int", "description": "推理步数", "default": 9, "slider": { "min": 1, "max": 30, "step": 1 } },
-          "negative_prompt": { "type": "text", "description": "负面提示词", "default": "" }
+          "num_inference_steps": {
+            "type": "int",
+            "description": "推理步数",
+            "default": 9,
+            "slider": {
+              "min": 1,
+              "max": 30,
+              "step": 1
+            }
+          },
+          "negative_prompt": {
+            "type": "text",
+            "description": "负面提示词",
+            "default": ""
+          }
         }
       },
       "gitee_async": {
         "name": "Gitee AI (异步改图 /async/images/edits)",
         "items": {
-          "id": { "type": "string", "description": "服务商 ID（唯一）", "default": "gitee_async" },
-          "label": { "type": "string", "description": "显示名称（可选）", "default": "" },
-          "base_url": { "type": "string", "description": "Base URL", "default": "https://ai.gitee.com/v1" },
-          "api_keys": { "type": "list", "description": "API Key 池", "default": [], "obvious_hint": true },
-          "model": { "type": "string", "description": "模型名称", "default": "Qwen-Image-Edit-2511" },
-          "num_inference_steps": { "type": "int", "description": "推理步数", "default": 4, "slider": { "min": 1, "max": 20, "step": 1 } },
-          "guidance_scale": { "type": "float", "description": "引导系数", "default": 1.0, "slider": { "min": 1, "max": 5, "step": 0.1 } },
-          "poll_interval": { "type": "int", "description": "轮询间隔(秒)", "default": 5, "slider": { "min": 1, "max": 20, "step": 1 } },
-          "poll_timeout": { "type": "int", "description": "轮询超时(秒)", "default": 300, "slider": { "min": 60, "max": 600, "step": 10 } }
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "gitee_async"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": ""
+          },
+          "base_url": {
+            "type": "string",
+            "description": "Base URL",
+            "default": "https://ai.gitee.com/v1"
+          },
+          "api_keys": {
+            "type": "list",
+            "description": "API Key 池",
+            "default": [],
+            "obvious_hint": true
+          },
+          "model": {
+            "type": "string",
+            "description": "模型名称",
+            "default": "Qwen-Image-Edit-2511"
+          },
+          "num_inference_steps": {
+            "type": "int",
+            "description": "推理步数",
+            "default": 4,
+            "slider": {
+              "min": 1,
+              "max": 20,
+              "step": 1
+            }
+          },
+          "guidance_scale": {
+            "type": "float",
+            "description": "引导系数",
+            "default": 1.0,
+            "slider": {
+              "min": 1,
+              "max": 5,
+              "step": 0.1
+            }
+          },
+          "poll_interval": {
+            "type": "int",
+            "description": "轮询间隔(秒)",
+            "default": 5,
+            "slider": {
+              "min": 1,
+              "max": 20,
+              "step": 1
+            }
+          },
+          "poll_timeout": {
+            "type": "int",
+            "description": "轮询超时(秒)",
+            "default": 300,
+            "slider": {
+              "min": 60,
+              "max": 600,
+              "step": 10
+            }
+          }
         }
       },
       "jimeng": {
         "name": "即梦（豆包）聚合接口",
         "items": {
-          "id": { "type": "string", "description": "服务商 ID（唯一）", "default": "jimeng" },
-          "label": { "type": "string", "description": "显示名称（可选）", "default": "" },
-          "api_url": { "type": "string", "description": "API URL", "default": "" },
-          "apikey": { "type": "string", "description": "apikey", "default": "", "obvious_hint": true },
-          "cookie_list": { "type": "list", "description": "cookie_list", "hint": "格式：conversation_id:cookie（可多条轮询）。", "default": [], "obvious_hint": true },
-          "default_style": { "type": "string", "description": "默认风格", "default": "真实" },
-          "default_ratio": { "type": "string", "description": "默认比例", "default": "1:1" },
-          "default_model": { "type": "string", "description": "默认模型", "default": "Seedream 4.0" },
-          "timeout": { "type": "int", "description": "超时(秒)", "default": 120 }
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "jimeng"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": ""
+          },
+          "api_url": {
+            "type": "string",
+            "description": "API URL",
+            "default": ""
+          },
+          "apikey": {
+            "type": "string",
+            "description": "apikey",
+            "default": "",
+            "obvious_hint": true
+          },
+          "cookie_list": {
+            "type": "list",
+            "description": "cookie_list",
+            "hint": "格式：conversation_id:cookie（可多条轮询）。",
+            "default": [],
+            "obvious_hint": true
+          },
+          "default_style": {
+            "type": "string",
+            "description": "默认风格",
+            "default": "真实"
+          },
+          "default_ratio": {
+            "type": "string",
+            "description": "默认比例",
+            "default": "1:1"
+          },
+          "default_model": {
+            "type": "string",
+            "description": "默认模型",
+            "default": "Seedream 4.0"
+          },
+          "timeout": {
+            "type": "int",
+            "description": "超时(秒)",
+            "default": 120
+          }
         }
       },
       "grok_video": {
         "name": "Grok 视频 (chat.completions)",
         "items": {
-          "id": { "type": "string", "description": "服务商 ID（唯一）", "default": "grok_video" },
-          "label": { "type": "string", "description": "显示名称（可选）", "default": "" },
-          "server_url": { "type": "string", "description": "API 服务地址", "hint": "默认：https://api.x.ai（内部补全 /v1/chat/completions）", "default": "https://api.x.ai" },
-          "api_key": { "type": "string", "description": "API Key", "default": "", "obvious_hint": true },
-          "model": { "type": "string", "description": "模型 ID", "default": "grok-imagine-0.9" },
-          "timeout_seconds": { "type": "int", "description": "请求超时(秒)", "slider": { "min": 1, "max": 3600, "step": 10 }, "default": 180 },
-          "max_retries": { "type": "int", "description": "最大重试次数", "slider": { "min": 0, "max": 5, "step": 1 }, "default": 2 },
-          "empty_response_retry": { "type": "int", "description": "无视频URL重试次数", "slider": { "min": 0, "max": 10, "step": 1 }, "default": 2 },
-          "retry_delay": { "type": "int", "description": "重试基础间隔(秒)", "slider": { "min": 0, "max": 30, "step": 1 }, "default": 2 }
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "grok_video"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": ""
+          },
+          "server_url": {
+            "type": "string",
+            "description": "API 服务地址",
+            "hint": "默认：https://api.x.ai（内部补全 /v1/chat/completions）",
+            "default": "https://api.x.ai"
+          },
+          "api_key": {
+            "type": "string",
+            "description": "API Key",
+            "default": "",
+            "obvious_hint": true
+          },
+          "model": {
+            "type": "string",
+            "description": "模型 ID",
+            "default": "grok-imagine-0.9"
+          },
+          "timeout_seconds": {
+            "type": "int",
+            "description": "请求超时(秒)",
+            "slider": {
+              "min": 1,
+              "max": 3600,
+              "step": 10
+            },
+            "default": 180
+          },
+          "max_retries": {
+            "type": "int",
+            "description": "最大重试次数",
+            "slider": {
+              "min": 0,
+              "max": 5,
+              "step": 1
+            },
+            "default": 2
+          },
+          "empty_response_retry": {
+            "type": "int",
+            "description": "无视频URL重试次数",
+            "slider": {
+              "min": 0,
+              "max": 10,
+              "step": 1
+            },
+            "default": 2
+          },
+          "retry_delay": {
+            "type": "int",
+            "description": "重试基础间隔(秒)",
+            "slider": {
+              "min": 0,
+              "max": 30,
+              "step": 1
+            },
+            "default": 2
+          }
         }
       },
       "modelscope_openai_images": {
         "name": "魔搭社区（OpenAI兼容）",
         "items": {
-          "id": { "type": "string", "description": "服务商 ID（唯一）", "default": "modelscope" },
-          "label": { "type": "string", "description": "显示名称（可选）", "default": "" },
-          "base_url": { "type": "string", "description": "Base URL", "default": "" },
-          "api_keys": { "type": "list", "description": "API Key 池", "default": [], "obvious_hint": true },
-          "model": { "type": "string", "description": "模型名称", "default": "" },
-          "supports_edit": { "type": "bool", "description": "支持改图 (images.edit)", "default": false },
-          "timeout": { "type": "int", "description": "超时(秒)", "default": 120 },
-          "max_retries": { "type": "int", "description": "最大重试次数", "default": 2 },
-          "proxy_url": { "type": "string", "description": "代理地址（可选）", "default": "" },
-          "default_size": { "type": "string", "description": "默认输出尺寸", "default": "1024x1024" },
-          "extra_body": { "type": "dict", "description": "额外请求体（高级）", "items": {}, "default": {} }
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "modelscope"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": ""
+          },
+          "base_url": {
+            "type": "string",
+            "description": "Base URL",
+            "default": ""
+          },
+          "api_keys": {
+            "type": "list",
+            "description": "API Key 池",
+            "default": [],
+            "obvious_hint": true
+          },
+          "model": {
+            "type": "string",
+            "description": "模型名称",
+            "default": ""
+          },
+          "supports_edit": {
+            "type": "bool",
+            "description": "支持改图 (images.edit)",
+            "default": false
+          },
+          "timeout": {
+            "type": "int",
+            "description": "超时(秒)",
+            "default": 120
+          },
+          "max_retries": {
+            "type": "int",
+            "description": "最大重试次数",
+            "default": 2
+          },
+          "proxy_url": {
+            "type": "string",
+            "description": "代理地址（可选）",
+            "default": ""
+          },
+          "default_size": {
+            "type": "string",
+            "description": "默认输出尺寸",
+            "default": "1024x1024"
+          },
+          "extra_body": {
+            "type": "object",
+            "description": "额外请求体（高级）",
+            "items": {},
+            "default": {}
+          }
         }
       }
     }
