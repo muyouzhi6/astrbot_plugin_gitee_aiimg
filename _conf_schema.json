@@ -506,6 +506,70 @@
           }
         }
       },
+      "openai_full_url_images": {
+        "name": "OpenAI兼容-完整路径",
+        "items": {
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "openai_full_url"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": ""
+          },
+          "full_generate_url": {
+            "type": "string",
+            "description": "完整文生图 URL",
+            "hint": "必须填写完整 endpoint（例如 https://api.example.com/v1/images/generations），不是 base_url。",
+            "default": ""
+          },
+          "full_edit_url": {
+            "type": "string",
+            "description": "完整改图 URL（可选）",
+            "hint": "可留空；留空时改图将复用上方完整文生图 URL。若服务商改图路径不同，请填完整路径（例如 .../v1/images/edits）。",
+            "default": ""
+          },
+          "api_keys": {
+            "type": "list",
+            "description": "API Key 池",
+            "default": [],
+            "obvious_hint": true
+          },
+          "model": {
+            "type": "string",
+            "description": "模型名称",
+            "default": ""
+          },
+          "supports_edit": {
+            "type": "bool",
+            "description": "支持改图 (images.edit)",
+            "default": true
+          },
+          "timeout": {
+            "type": "int",
+            "description": "超时(秒)",
+            "default": 120
+          },
+          "max_retries": {
+            "type": "int",
+            "description": "最大重试次数",
+            "default": 2
+          },
+          "default_size": {
+            "type": "string",
+            "description": "默认输出尺寸",
+            "default": "4096x4096"
+          },
+          "extra_body": {
+            "type": "object",
+            "description": "额外请求体（高级）",
+            "items": {},
+            "default": {}
+          }
+        }
+      },
       "openai_chat": {
         "name": "OpenAI 兼容 (Chat 出图解析)",
         "items": {

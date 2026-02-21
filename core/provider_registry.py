@@ -15,6 +15,7 @@ from .grok_video_service import GrokVideoService
 from .jimeng_api_backend import JimengApiBackend
 from .openai_chat_image_backend import OpenAIChatImageBackend
 from .openai_compat_backend import OpenAICompatBackend
+from .openai_full_url_backend import OpenAIFullURLBackend
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,11 @@ def _as_list(value: Any) -> list:
 
 def _as_dict(value: Any) -> dict:
     return value if isinstance(value, dict) else {}
+
+
+def _is_http_url(value: Any) -> bool:
+    s = str(value or "").strip().lower()
+    return s.startswith("http://") or s.startswith("https://")
 
 
 class ProviderRegistry:
@@ -136,6 +142,25 @@ class ProviderRegistry:
                     errors.append(f"provider '{provider_id}' missing server_url")
                 if not str(item.get("api_key") or "").strip():
                     errors.append(f"provider '{provider_id}' missing api_key")
+            if template_key in {"openai_full_url_images"}:
+                full_generate_url = str(item.get("full_generate_url") or "").strip()
+                if not full_generate_url:
+                    errors.append(
+                        f"provider '{provider_id}' 缺少 full_generate_url（完整文生图 URL）"
+                    )
+                elif not _is_http_url(full_generate_url):
+                    errors.append(
+                        f"provider '{provider_id}' 的 full_generate_url 必须以 http:// 或 https:// 开头"
+                    )
+
+                full_edit_url = str(item.get("full_edit_url") or "").strip()
+                if full_edit_url and not _is_http_url(full_edit_url):
+                    errors.append(
+                        f"provider '{provider_id}' 的 full_edit_url 必须是完整 URL（http/https）"
+                    )
+
+                if not str(item.get("model") or "").strip():
+                    errors.append(f"provider '{provider_id}' missing model")
 
         return errors
 
@@ -218,6 +243,24 @@ class ProviderRegistry:
                 supports_edit=bool(conf.get("supports_edit", True)),
                 extra_body=_as_dict(conf.get("extra_body")) or None,
                 proxy_url=str(conf.get("proxy_url") or "").strip() or None,
+            )
+
+        if template_key == "openai_full_url_images":
+            return OpenAIFullURLBackend(
+                imgr=self._imgr,
+                full_generate_url=str(conf.get("full_generate_url") or "").strip(),
+                full_edit_url=str(conf.get("full_edit_url") or "").strip(),
+                api_keys=[
+                    str(x).strip()
+                    for x in _as_list(conf.get("api_keys"))
+                    if str(x).strip()
+                ],
+                timeout=int(conf.get("timeout") or 120),
+                max_retries=int(conf.get("max_retries") or 2),
+                default_model=str(conf.get("model") or "").strip(),
+                default_size=str(conf.get("default_size") or "4096x4096").strip(),
+                supports_edit=bool(conf.get("supports_edit", True)),
+                extra_body=_as_dict(conf.get("extra_body")) or None,
             )
 
         if template_key == "modelscope_openai_images":

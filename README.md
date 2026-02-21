@@ -22,6 +22,7 @@
 - Gemini 原生（generateContent）
 - Gemini OpenAI 兼容（Images / Chat）
 - OpenAI 兼容通用（Images / Chat）
+- OpenAI兼容-完整路径（手填完整 endpoint URL）
 - Flow2API（Chat SSE 出图）
 - Grok2API（/v1/images/generations）
 - Gitee（Images）
@@ -29,6 +30,28 @@
 - 即梦/豆包聚合（jimeng）
 - Grok 视频（chat.completions）
 - 魔搭社区（OpenAI兼容，按实际网关能力决定是否可用）
+
+如果你需要完全自定义请求路径（而不是只填 `base_url`），可使用 `OpenAI兼容-完整路径`：
+
+```json
+{
+  "id": "custom_full_url",
+  "__template_key": "openai_full_url_images",
+  "full_generate_url": "https://api.example.com/v1/images/generations",
+  "full_edit_url": "https://api.example.com/v1/images/edits",
+  "api_keys": ["sk-xxx"],
+  "model": "gpt-image-1",
+  "supports_edit": true,
+  "timeout": 120,
+  "max_retries": 2,
+  "default_size": "1024x1024",
+  "extra_body": {}
+}
+```
+
+说明：
+- `full_generate_url` / `full_edit_url` 必须是完整 endpoint（包含路径），例如 `.../v1/images/generations`、`.../v1/images/edits`。
+- `full_edit_url` 可留空，留空时会复用 `full_generate_url`（适用于生成和改图共用同一路径的网关）。
 
 ### 2) 再配置 features（在配置面板顶部）
 
