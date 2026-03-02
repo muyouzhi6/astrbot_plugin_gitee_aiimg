@@ -339,7 +339,9 @@
     "type": "template_list",
     "templates": {
       "gemini_native": {
-        "name": "Gemini 原生 (generateContent)",
+        "name": "推荐：Gemini 原生（generateContent）",
+        "description": "适用于 Gemini 官方 generateContent 接口（直连）。",
+        "hint": "需要 API Key；如需代理，用 use_proxy + proxy_url。使用 CPA 反代（将 Google API 反代到自建域名）也选这个模板，api_url 填反代后的 Base URL。",
         "items": {
           "id": {
             "type": "string",
@@ -396,7 +398,9 @@
         }
       },
       "flow2api": {
-        "name": "Flow2API (OpenAI Chat SSE 出图)",
+        "name": "高级：Flow2API（Chat SSE 出图）",
+        "description": "适用于通过 chat.completions 的 SSE 流式输出图片的网关/中转。",
+        "hint": "当服务商不支持 Images API，但能在 Chat SSE 中输出图片（data:image/... 或图片 URL）时使用。",
         "items": {
           "id": {
             "type": "string",
@@ -442,8 +446,79 @@
           }
         }
       },
+      "vertex_ai_anonymous": {
+        "name": "新：Vertex AI Anonymous（Google Console 逆向）",
+        "description": "无需 API Key；通过 recaptcha + cloudconsole GraphQL 生成图片（需能访问 Google）。",
+        "hint": "默认配置一般只需填写 model；若网络受限，可配置 proxy_url 或把 base_api 改成反代。",
+        "items": {
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "vertex_ai_anonymous"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": ""
+          },
+          "model": {
+            "type": "string",
+            "description": "模型名称",
+            "hint": "示例：gemini-3-pro-image-preview",
+            "default": "gemini-3-pro-image-preview"
+          },
+          "timeout": {
+            "type": "int",
+            "description": "超时(秒)",
+            "default": 300
+          },
+          "max_retries": {
+            "type": "int",
+            "description": "最大重试次数",
+            "default": 10
+          },
+          "proxy_url": {
+            "type": "string",
+            "description": "代理地址（可选）",
+            "hint": "示例：http://127.0.0.1:7890 或 socks5://127.0.0.1:7890",
+            "default": ""
+          },
+          "recaptcha_base_api": {
+            "type": "string",
+            "description": "Recaptcha Base API（高级）",
+            "hint": "默认：https://www.google.com（可改成反代）",
+            "default": "https://www.google.com"
+          },
+          "vertex_ai_anonymous_base_api": {
+            "type": "string",
+            "description": "Vertex Base API（高级）",
+            "hint": "默认：https://cloudconsole-pa.clients6.google.com（可改成反代）",
+            "default": "https://cloudconsole-pa.clients6.google.com"
+          },
+          "graphql_api_key": {
+            "type": "string",
+            "description": "GraphQL key（高级）",
+            "hint": "一般无需修改；除非上游变更。",
+            "default": "AIzaSyCI-zsRP85UVOi0DjtiCwWBwQ1djDy741g"
+          },
+          "query_signature": {
+            "type": "string",
+            "description": "querySignature（高级）",
+            "hint": "一般无需修改；除非上游变更。",
+            "default": "2/l8eCsMMY49imcDQ/lwwXyL8cYtTjxZBF2dNqy69LodY="
+          },
+          "system_prompt": {
+            "type": "text",
+            "description": "系统提示词（可选）",
+            "hint": "留空则不传 systemInstruction。",
+            "default": ""
+          }
+        }
+      },
       "openai_images": {
-        "name": "OpenAI 兼容 (Images API)",
+        "name": "推荐：OpenAI 兼容（Images，标准）",
+        "description": "适用于大多数实现了 /v1/images/* 的 OpenAI 兼容网关。",
+        "hint": "如果服务商不支持 Images API，而是在 Chat 里返回图片（markdown/data:image/.../URL），请改用“OpenAI 兼容（Chat 出图解析）”。",
         "items": {
           "id": {
             "type": "string",
@@ -507,7 +582,9 @@
         }
       },
       "openai_full_url_images": {
-        "name": "OpenAI兼容-完整路径",
+        "name": "高级：OpenAI 兼容（Images，完整路径）",
+        "description": "当服务商的 endpoint 路径非标准 /v1/images/*，或需要自定义前缀路径时使用。",
+        "hint": "full_generate_url/full_edit_url 必须是完整 URL（包含路径）。适合各种“反代/路由怪”的网关。",
         "items": {
           "id": {
             "type": "string",
@@ -571,7 +648,9 @@
         }
       },
       "openai_chat": {
-        "name": "OpenAI 兼容 (Chat 出图解析)",
+        "name": "兼容：OpenAI 兼容（Chat 出图解析）",
+        "description": "当服务商不实现 Images API，但会在 chat 回复中返回图片（markdown/data:image/base64/图片 URL）时使用。",
+        "hint": "注意：此模板依赖模型在对话中返回图片引用；稳定性取决于网关实现与提示词。",
         "items": {
           "id": {
             "type": "string",
@@ -630,7 +709,9 @@
         }
       },
       "grok_images": {
-        "name": "Grok (Images API)",
+        "name": "别名：Grok（Images，等同 OpenAI 兼容 Images）",
+        "description": "仅内置了 xAI 的 base_url 示例；底层实现与“OpenAI 兼容（Images，标准）”一致。",
+        "hint": "如果你使用的是第三方网关/反代，直接用 OpenAI 兼容（Images，标准）也可以。",
         "items": {
           "id": {
             "type": "string",
@@ -692,7 +773,9 @@
         }
       },
       "grok_chat": {
-        "name": "Grok (Chat 出图解析)",
+        "name": "别名：Grok（Chat 出图解析，等同 OpenAI 兼容 Chat）",
+        "description": "仅内置了 xAI 的 base_url 示例；底层实现与“OpenAI 兼容（Chat 出图解析）”一致。",
+        "hint": "当网关不支持 Images API 时才需要；优先尝试 Images 模板。",
         "items": {
           "id": {
             "type": "string",
@@ -749,7 +832,9 @@
         }
       },
       "grok2api_images": {
-        "name": "Grok2API (Images /v1/images/generations)",
+        "name": "兼容：Grok2API（Images /v1/images/generations）",
+        "description": "适用于“Grok2API”这类自建中转（只实现 images/generations，常用于本地/私有网关）。",
+        "hint": "base_url 填到服务根（或包含 /v1）；extra_body 可用于传递网关自定义参数。",
         "items": {
           "id": {
             "type": "string",
@@ -797,7 +882,9 @@
         }
       },
       "gemini_openai_images": {
-        "name": "Gemini OpenAI兼容 (Images API)",
+        "name": "别名：Gemini OpenAI 兼容（Images，等同 OpenAI 兼容 Images）",
+        "description": "用于部分“Gemini -> OpenAI 兼容网关”的示例；底层实现与 OpenAI Images 兼容一致。",
+        "hint": "如果你只是要接 OpenAI 兼容网关，优先用“OpenAI 兼容（Images，标准）”。",
         "items": {
           "id": {
             "type": "string",
@@ -859,7 +946,9 @@
         }
       },
       "gemini_openai_chat": {
-        "name": "Gemini OpenAI兼容 (Chat 出图解析)",
+        "name": "别名：Gemini OpenAI 兼容（Chat 出图解析，等同 OpenAI 兼容 Chat）",
+        "description": "用于部分“Gemini -> OpenAI Chat 兼容网关”的示例；底层实现与 OpenAI Chat 出图解析一致。",
+        "hint": "当网关不支持 Images API 时才需要；优先尝试 Images 模板。",
         "items": {
           "id": {
             "type": "string",
@@ -916,7 +1005,9 @@
         }
       },
       "gitee_images": {
-        "name": "Gitee AI (Images API)",
+        "name": "推荐：Gitee AI（Images，白名单尺寸）",
+        "description": "Gitee AI 的 Images API（文生图）。注意：仅支持白名单尺寸/比例。",
+        "hint": "当输出尺寸不被支持时会自动兜底到可用尺寸，并在日志中提示。",
         "items": {
           "id": {
             "type": "string",
@@ -993,7 +1084,9 @@
         }
       },
       "gitee_async": {
-        "name": "Gitee AI (异步改图 /async/images/edits)",
+        "name": "仅改图：Gitee AI（异步改图 /async/images/edits）",
+        "description": "Gitee AI 的异步改图接口（轮询 task）。仅用于改图链路。",
+        "hint": "仅对 features.edit / features.selfie 的链路有效；文生图请使用 Gitee Images 模板。",
         "items": {
           "id": {
             "type": "string",
@@ -1064,7 +1157,9 @@
         }
       },
       "jimeng": {
-        "name": "即梦（豆包）聚合接口",
+        "name": "聚合：即梦（豆包）接口",
+        "description": "即梦/豆包聚合接口（cookie + apikey）。",
+        "hint": "cookie_list 支持轮询；用于提升稳定性。注意隐私与风控风险。",
         "items": {
           "id": {
             "type": "string",
@@ -1117,7 +1212,9 @@
         }
       },
       "grok_video": {
-        "name": "Grok 视频 (chat.completions)",
+        "name": "仅视频：Grok 视频（chat.completions）",
+        "description": "用于视频生成链路（Image-to-Video）。",
+        "hint": "仅对 features.video.chain 生效；图片生成/改图请用其它模板。",
         "items": {
           "id": {
             "type": "string",
@@ -1189,7 +1286,9 @@
         }
       },
       "modelscope_openai_images": {
-        "name": "魔搭社区（OpenAI兼容）",
+        "name": "兼容：魔搭社区（OpenAI Images 兼容）",
+        "description": "魔搭社区 OpenAI 兼容的 Images API（具体能力以网关实现为准）。",
+        "hint": "若不支持 images.edit，请将 supports_edit 设为 false 并使用改图链路兜底。",
         "items": {
           "id": {
             "type": "string",

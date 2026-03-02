@@ -27,6 +27,8 @@ _VIDEO_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_BASE64_PREFIX_RE = re.compile(r"^(?:b64|base64)\s*:\s*", re.IGNORECASE)
+
 
 def _looks_like_video_url(url: str) -> bool:
     u = (url or "").strip().lower()
@@ -63,6 +65,39 @@ def _is_valid_data_image_ref(ref: str) -> bool:
     return True
 
 
+def _guess_mime_from_magic(image_bytes: bytes) -> str | None:
+    if len(image_bytes) >= 3 and image_bytes[0:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if len(image_bytes) >= 8 and image_bytes[0:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if len(image_bytes) >= 6 and (
+        image_bytes[0:6] == b"GIF87a" or image_bytes[0:6] == b"GIF89a"
+    ):
+        return "image/gif"
+    if (
+        len(image_bytes) >= 12
+        and image_bytes[0:4] == b"RIFF"
+        and image_bytes[8:12] == b"WEBP"
+    ):
+        return "image/webp"
+    return None
+
+
+def _base64_to_data_image_ref(text: str) -> str | None:
+    s = (text or "").strip().strip('"').strip("'")
+    s = _BASE64_PREFIX_RE.sub("", s).strip()
+    if len(s) < 256:
+        return None
+    try:
+        raw = base64.b64decode(s, validate=True)
+    except Exception:
+        return None
+    mime = _guess_mime_from_magic(raw)
+    if not mime:
+        return None
+    return f"data:{mime};base64,{s}"
+
+
 def _extract_first_image_ref(text: str) -> str | None:
     s = (text or "").strip()
     if not s:
@@ -91,6 +126,11 @@ def _extract_first_image_ref(text: str) -> str | None:
         if _looks_like_video_url(s):
             return None
         return s
+
+    # Some gateways/models return raw base64 without data:image prefix.
+    ref = _base64_to_data_image_ref(s)
+    if ref:
+        return ref
     return None
 
 
@@ -180,6 +220,23 @@ def _extract_image_ref_from_content(content: object) -> str | None:
             text = content.get("text")
             if isinstance(text, str):
                 ref = _extract_first_image_ref(text)
+                if ref:
+                    return ref
+
+        # Some gateways return explicit base64 fields.
+        for k in ("b64_json", "b64", "base64", "image_b64", "image_base64", "imageB64"):
+            v = content.get(k)
+            if isinstance(v, str):
+                ref = _base64_to_data_image_ref(v)
+                if ref:
+                    return ref
+
+        # Vertex-style inlineData.
+        inline = content.get("inlineData")
+        if isinstance(inline, dict):
+            b64 = inline.get("data")
+            if isinstance(b64, str):
+                ref = _base64_to_data_image_ref(b64)
                 if ref:
                     return ref
 

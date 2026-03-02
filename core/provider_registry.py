@@ -16,6 +16,10 @@ from .jimeng_api_backend import JimengApiBackend
 from .openai_chat_image_backend import OpenAIChatImageBackend
 from .openai_compat_backend import OpenAICompatBackend
 from .openai_full_url_backend import OpenAIFullURLBackend
+from .vertex_ai_anonymous_backend import (
+    VertexAIAnonymousBackend,
+    VertexAIAnonymousSettings,
+)
 
 
 @dataclass(frozen=True)
@@ -142,6 +146,9 @@ class ProviderRegistry:
                     errors.append(f"provider '{provider_id}' missing server_url")
                 if not str(item.get("api_key") or "").strip():
                     errors.append(f"provider '{provider_id}' missing api_key")
+            if template_key in {"vertex_ai_anonymous"}:
+                if not str(item.get("model") or "").strip():
+                    errors.append(f"provider '{provider_id}' missing model")
             if template_key in {"openai_full_url_images"}:
                 full_generate_url = str(item.get("full_generate_url") or "").strip()
                 if not full_generate_url:
@@ -357,6 +364,24 @@ class ProviderRegistry:
                 default_model=str(conf.get("default_model") or "Seedream 4.0").strip(),
                 timeout=int(conf.get("timeout") or 120),
             )
+
+        if template_key == "vertex_ai_anonymous":
+            settings = VertexAIAnonymousSettings(
+                model=str(conf.get("model") or "gemini-3-pro-image-preview").strip(),
+                timeout_seconds=int(conf.get("timeout") or 300),
+                max_retries=int(conf.get("max_retries") or 10),
+                proxy_url=str(conf.get("proxy_url") or "").strip() or None,
+                recaptcha_base_api=str(conf.get("recaptcha_base_api") or "").strip()
+                or "https://www.google.com",
+                vertex_base_api=str(conf.get("vertex_ai_anonymous_base_api") or "").strip()
+                or "https://cloudconsole-pa.clients6.google.com",
+                system_prompt=str(conf.get("system_prompt") or "").strip() or None,
+                query_signature=str(conf.get("query_signature") or "").strip()
+                or "2/l8eCsMMY49imcDQ/lwwXyL8cYtTjxZBF2dNqy69LodY=",
+                graphql_api_key=str(conf.get("graphql_api_key") or "").strip()
+                or "AIzaSyCI-zsRP85UVOi0DjtiCwWBwQ1djDy741g",
+            )
+            return VertexAIAnonymousBackend(imgr=self._imgr, settings=settings)
 
         raise RuntimeError(f"Unsupported provider type: {template_key} ({pid})")
 
