@@ -39,6 +39,30 @@ def _looks_like_video_url(url: str) -> bool:
     return False
 
 
+def _is_valid_data_image_ref(ref: str) -> bool:
+    s = str(ref or "").strip()
+    if not s.startswith("data:image/"):
+        return False
+    if "," not in s:
+        return False
+    _header, b64 = s.split(",", 1)
+    b64 = (b64 or "").strip()
+    if not b64 or b64 == "...":
+        return False
+    # too short usually means truncated
+    if len(b64) < 128:
+        return False
+    # lightweight charset sanity check (prefix only)
+    try:
+        import re as _re
+
+        if not _re.fullmatch(r"[A-Za-z0-9+/=]+", b64[:2048]):
+            return False
+    except Exception:
+        pass
+    return True
+
+
 def _extract_first_image_ref(text: str) -> str | None:
     s = (text or "").strip()
     if not s:
@@ -46,9 +70,13 @@ def _extract_first_image_ref(text: str) -> str | None:
     m = _MARKDOWN_IMAGE_RE.search(s)
     if m:
         return m.group(1).strip()
-    m = _DATA_IMAGE_RE.search(s)
-    if m:
-        return m.group(1).strip()
+
+    # data:image refs may be huge and occasionally truncated; only accept well-formed ones.
+    for m in _DATA_IMAGE_RE.finditer(s):
+        cand = m.group(1).strip()
+        if _is_valid_data_image_ref(cand):
+            return cand
+
     m = _HTML_IMG_RE.search(s)
     if m:
         url = m.group(1).strip()
@@ -318,6 +346,11 @@ class OpenAIChatImageBackend:
             choice0 = resp.choices[0]  # type: ignore[attr-defined]
             msg = getattr(choice0, "message", None)
             if msg is not None:
+                images = getattr(msg, "images", None)
+                ref = _extract_image_ref_from_content(images)
+                if ref:
+                    return ref
+
                 ref = _extract_image_ref_from_content(getattr(msg, "content", None))
                 if ref:
                     return ref
@@ -370,7 +403,9 @@ class OpenAIChatImageBackend:
             try:
                 _header, b64_data = ref.split(",", 1)
             except ValueError:
-                raise RuntimeError("chat 返回 data:image 但缺少 base64 数据") from None
+                raise RuntimeError(
+                    f"chat 返回 data:image 但缺少 base64 数据（len={len(ref)} head={ref[:48]!r}）：{debug_snippet}"
+                ) from None
             image_bytes = base64.b64decode((b64_data or "").strip())
             return await self.imgr.save_image(image_bytes)
 
