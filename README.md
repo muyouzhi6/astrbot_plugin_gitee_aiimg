@@ -1,6 +1,6 @@
 # AstrBot Gitee AI 图像生成插件（多服务商 / 多网关）
 
-> **当前版本**：v4.1.3（全新配置结构，和 v3/v2 不兼容，需要重新在 WebUI 配置）
+> **当前版本**：v4.1.4（全新配置结构，和 v3/v2 不兼容，需要重新在 WebUI 配置）
 
 本插件支持：
 - 文生图（Text-to-Image）
@@ -20,6 +20,7 @@
 
 模板包含（按你的生态做了拆分）：
 - Gemini 原生（generateContent）
+- Vertex AI Anonymous（Google Console 逆向，无 Key；需能访问 Google）
 - Gemini OpenAI 兼容（Images / Chat）
 - OpenAI 兼容通用（Images / Chat）
 - OpenAI兼容-完整路径（手填完整 endpoint URL）
@@ -30,6 +31,13 @@
 - 即梦/豆包聚合（jimeng）
 - Grok 视频（chat.completions）
 - 魔搭社区（OpenAI兼容，按实际网关能力决定是否可用）
+
+选择建议（从上到下优先级）：
+- 你的服务商实现了标准 `POST /v1/images/generations` / `POST /v1/images/edits`：用 `OpenAI 兼容通用（Images）`
+- 你的服务商不实现 Images API，但会在 Chat 回复里返回图片（markdown/data:image/base64/URL）：用 `OpenAI 兼容（Chat 出图解析）`
+- 你的服务商路径不标准（带前缀、不是 /v1/...）：用 `OpenAI兼容-完整路径`
+- 你直连 Gemini 官方 generateContent：用 `Gemini 原生（generateContent）`
+- 你希望使用 Vertex AI Anonymous（无需 Key，但依赖 Google + recaptcha）：用 `Vertex AI Anonymous`
 
 如果你需要完全自定义请求路径（而不是只填 `base_url`），可使用 `OpenAI兼容-完整路径`：
 
