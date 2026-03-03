@@ -333,13 +333,90 @@
     },
     "default": 10
   },
+  "max_user_concurrency": {
+    "description": "单用户并发上限（图像）",
+    "hint": "同一用户同时进行的文生图/改图/自拍任务数量上限（不含重发）。",
+    "type": "int",
+    "slider": {
+      "min": 1,
+      "max": 10,
+      "step": 1
+    },
+    "default": 2
+  },
+  "max_user_video_concurrency": {
+    "description": "单用户并发上限（视频）",
+    "hint": "同一用户同时进行的视频任务数量上限。",
+    "type": "int",
+    "slider": {
+      "min": 1,
+      "max": 5,
+      "step": 1
+    },
+    "default": 1
+  },
+  "network": {
+    "description": "网络/下载安全配置",
+    "hint": "用于图片/视频下载（服务商返回 URL -> 本地缓存/发送）的安全策略。默认阻止本地/LAN/无法解析的地址，以防止 SSRF。",
+    "type": "object",
+    "items": {
+      "media_allow_private": {
+        "type": "bool",
+        "description": "允许从私有地址下载",
+        "hint": "开启后会允许 127.0.0.1/内网IP/内网 DNS 解析等地址（高风险，默认关闭）",
+        "default": false
+      },
+      "max_image_bytes": {
+        "type": "int",
+        "description": "图片下载大小上限(字节)",
+        "hint": "默认 50MB = 52428800",
+        "slider": {
+          "min": 262144,
+          "max": 209715200,
+          "step": 262144
+        },
+        "default": 52428800
+      },
+      "max_video_bytes": {
+        "type": "int",
+        "description": "视频下载大小上限(字节)",
+        "hint": "默认 50MB = 52428800",
+        "slider": {
+          "min": 5242880,
+          "max": 524288000,
+          "step": 5242880
+        },
+        "default": 52428800
+      },
+      "max_redirects": {
+        "type": "int",
+        "description": "最大重定向次数",
+        "slider": {
+          "min": 0,
+          "max": 10,
+          "step": 1
+        },
+        "default": 5
+      },
+      "dns_resolve_timeout_seconds": {
+        "type": "int",
+        "description": "DNS 解析超时(秒)",
+        "slider": {
+          "min": 1,
+          "max": 10,
+          "step": 1
+        },
+        "default": 2
+      }
+    }
+  },
   "providers": {
     "description": "模型服务商（可添加多个，id 必须唯一）",
     "hint": "在这里添加/配置服务商实例（url/key/model/超时/重试/代理等）。上面的各功能链路只引用 provider_id。",
     "type": "template_list",
     "templates": {
       "gemini_native": {
-        "name": "推荐：Gemini 原生（generateContent）",
+        "name": "Gemini 原生",
         "description": "适用于 Gemini 官方 generateContent 接口（直连）。",
         "hint": "需要 API Key；如需代理，用 use_proxy + proxy_url。使用 CPA 反代（将 Google API 反代到自建域名）也选这个模板，api_url 填反代后的 Base URL。",
         "items": {
@@ -398,7 +475,7 @@
         }
       },
       "flow2api": {
-        "name": "高级：Flow2API（Chat SSE 出图）",
+        "name": "Flow2API（出图）",
         "description": "适用于通过 chat.completions 的 SSE 流式输出图片的网关/中转。",
         "hint": "当服务商不支持 Images API，但能在 Chat SSE 中输出图片（data:image/... 或图片 URL）时使用。",
         "items": {
@@ -447,7 +524,7 @@
         }
       },
       "vertex_ai_anonymous": {
-        "name": "新：Vertex AI Anonymous（Google Console 逆向）",
+        "name": "Vertex 匿名",
         "description": "无需 API Key；通过 recaptcha + cloudconsole GraphQL 生成图片（需能访问 Google）。",
         "hint": "默认配置一般只需填写 model；若网络受限，可配置 proxy_url 或把 base_api 改成反代。",
         "items": {
@@ -516,7 +593,7 @@
         }
       },
       "openai_images": {
-        "name": "推荐：OpenAI 兼容（Images，标准）",
+        "name": "OpenAI Images",
         "description": "适用于大多数实现了 /v1/images/* 的 OpenAI 兼容网关。",
         "hint": "如果服务商不支持 Images API，而是在 Chat 里返回图片（markdown/data:image/.../URL），请改用“OpenAI 兼容（Chat 出图解析）”。",
         "items": {
@@ -582,7 +659,7 @@
         }
       },
       "openai_full_url_images": {
-        "name": "高级：OpenAI 兼容（Images，完整路径）",
+        "name": "OpenAI ImagesURL",
         "description": "当服务商的 endpoint 路径非标准 /v1/images/*，或需要自定义前缀路径时使用。",
         "hint": "full_generate_url/full_edit_url 必须是完整 URL（包含路径）。适合各种“反代/路由怪”的网关。",
         "items": {
@@ -648,7 +725,7 @@
         }
       },
       "openai_chat": {
-        "name": "兼容：OpenAI 兼容（Chat 出图解析）",
+        "name": "OpenAI Chat图",
         "description": "当服务商不实现 Images API，但会在 chat 回复中返回图片（markdown/data:image/base64/图片 URL）时使用。",
         "hint": "注意：此模板依赖模型在对话中返回图片引用；稳定性取决于网关实现与提示词。",
         "items": {
@@ -709,7 +786,7 @@
         }
       },
       "grok_images": {
-        "name": "别名：Grok（Images，等同 OpenAI 兼容 Images）",
+        "name": "Grok（Images）",
         "description": "仅内置了 xAI 的 base_url 示例；底层实现与“OpenAI 兼容（Images，标准）”一致。",
         "hint": "如果你使用的是第三方网关/反代，直接用 OpenAI 兼容（Images，标准）也可以。",
         "items": {
@@ -773,7 +850,7 @@
         }
       },
       "grok_chat": {
-        "name": "别名：Grok（Chat 出图解析，等同 OpenAI 兼容 Chat）",
+        "name": "Grok（Chat 出图）",
         "description": "仅内置了 xAI 的 base_url 示例；底层实现与“OpenAI 兼容（Chat 出图解析）”一致。",
         "hint": "当网关不支持 Images API 时才需要；优先尝试 Images 模板。",
         "items": {
@@ -832,7 +909,7 @@
         }
       },
       "grok2api_images": {
-        "name": "兼容：Grok2API（Images /v1/images/generations）",
+        "name": "Grok2API Images",
         "description": "适用于“Grok2API”这类自建中转（只实现 images/generations，常用于本地/私有网关）。",
         "hint": "base_url 填到服务根（或包含 /v1）；extra_body 可用于传递网关自定义参数。",
         "items": {
@@ -882,7 +959,7 @@
         }
       },
       "gemini_openai_images": {
-        "name": "别名：Gemini OpenAI 兼容（Images，等同 OpenAI 兼容 Images）",
+        "name": "Gemini Images",
         "description": "用于部分“Gemini -> OpenAI 兼容网关”的示例；底层实现与 OpenAI Images 兼容一致。",
         "hint": "如果你只是要接 OpenAI 兼容网关，优先用“OpenAI 兼容（Images，标准）”。",
         "items": {
@@ -946,7 +1023,7 @@
         }
       },
       "gemini_openai_chat": {
-        "name": "别名：Gemini OpenAI 兼容（Chat 出图解析，等同 OpenAI 兼容 Chat）",
+        "name": "Gemini Chat图",
         "description": "用于部分“Gemini -> OpenAI Chat 兼容网关”的示例；底层实现与 OpenAI Chat 出图解析一致。",
         "hint": "当网关不支持 Images API 时才需要；优先尝试 Images 模板。",
         "items": {
@@ -1005,7 +1082,7 @@
         }
       },
       "gitee_images": {
-        "name": "推荐：Gitee AI（Images，白名单尺寸）",
+        "name": "Gitee Images",
         "description": "Gitee AI 的 Images API（文生图）。注意：仅支持白名单尺寸/比例。",
         "hint": "当输出尺寸不被支持时会自动兜底到可用尺寸，并在日志中提示。",
         "items": {
@@ -1084,7 +1161,7 @@
         }
       },
       "gitee_async": {
-        "name": "仅改图：Gitee AI（异步改图 /async/images/edits）",
+        "name": "Gitee 异步改图",
         "description": "Gitee AI 的异步改图接口（轮询 task）。仅用于改图链路。",
         "hint": "仅对 features.edit / features.selfie 的链路有效；文生图请使用 Gitee Images 模板。",
         "items": {
@@ -1157,7 +1234,7 @@
         }
       },
       "jimeng": {
-        "name": "聚合：即梦（豆包）接口",
+        "name": "即梦（豆包）",
         "description": "即梦/豆包聚合接口（cookie + apikey）。",
         "hint": "cookie_list 支持轮询；用于提升稳定性。注意隐私与风控风险。",
         "items": {
@@ -1212,7 +1289,7 @@
         }
       },
       "grok_video": {
-        "name": "仅视频：Grok 视频（chat.completions）",
+        "name": "Grok（视频）",
         "description": "用于视频生成链路（Image-to-Video）。",
         "hint": "仅对 features.video.chain 生效；图片生成/改图请用其它模板。",
         "items": {
@@ -1285,8 +1362,57 @@
           }
         }
       },
+      "flow2api_video": {
+        "name": "Flow2API（视频）",
+        "description": "用于视频生成链路（通过 /v1/chat/completions 流式输出视频 URL）。",
+        "hint": "与官方示例一致：POST /v1/chat/completions + stream=true；可文生视频，也可附带图片做图生视频（若模型支持）。",
+        "items": {
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "flow2api_video"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": ""
+          },
+          "api_url": {
+            "type": "string",
+            "description": "API URL",
+            "hint": "可填 http(s)://host 或 /v1/chat/completions（会自动补齐）。",
+            "default": ""
+          },
+          "api_keys": {
+            "type": "list",
+            "description": "API Key 池",
+            "default": [],
+            "obvious_hint": true
+          },
+          "model": {
+            "type": "string",
+            "description": "模型名称",
+            "default": ""
+          },
+          "timeout": {
+            "type": "int",
+            "description": "超时(秒)",
+            "default": 300
+          },
+          "use_proxy": {
+            "type": "bool",
+            "description": "启用代理",
+            "default": false
+          },
+          "proxy_url": {
+            "type": "string",
+            "description": "代理地址",
+            "default": ""
+          }
+        }
+      },
       "modelscope_openai_images": {
-        "name": "兼容：魔搭社区（OpenAI Images 兼容）",
+        "name": "魔搭 Images",
         "description": "魔搭社区 OpenAI 兼容的 Images API（具体能力以网关实现为准）。",
         "hint": "若不支持 images.edit，请将 supports_edit 设为 false 并使用改图链路兜底。",
         "items": {

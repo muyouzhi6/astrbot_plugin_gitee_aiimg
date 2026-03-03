@@ -82,8 +82,9 @@ class GiteeAIImage(Star):
         self.refs = ReferenceStore(self.data_dir)
         self.videomgr = VideoManager(self.config, self.data_dir)
 
-        self._video_lock = asyncio.Lock()
-        self._video_in_progress: set[str] = set()
+        self._concurrency_lock = asyncio.Lock()
+        self._image_inflight: dict[str, int] = {}
+        self._video_inflight: dict[str, int] = {}
         self._video_tasks: set[asyncio.Task] = set()
 
         # 动态注册预设命令 (方案C: /手办化 直接触发)
@@ -107,6 +108,13 @@ class GiteeAIImage(Star):
         self._last_image_by_user[user_id] = Path(image_path)
 
     @staticmethod
+    def _as_int(value: Any, *, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
     def _as_bool(value: Any, *, default: bool) -> bool:
         if isinstance(value, bool):
             return value
@@ -121,6 +129,54 @@ class GiteeAIImage(Star):
             if v in {"0", "false", "no", "n", "off", "disable", "disabled", ""}:
                 return False
         return default
+
+    def _get_max_user_concurrency(self) -> int:
+        v = self._as_int(self.config.get("max_user_concurrency", 2), default=2)
+        return max(1, min(10, v))
+
+    def _get_max_user_video_concurrency(self) -> int:
+        v = self._as_int(self.config.get("max_user_video_concurrency", 1), default=1)
+        return max(1, min(5, v))
+
+    def _debounce_key(self, event: AstrMessageEvent, prefix: str, user_id: str) -> str:
+        """尽量用消息维度去重，避免同用户短时间内无法并发提交多条任务。"""
+        mid = str(getattr(getattr(event, "message_obj", None), "message_id", "") or "").strip()
+        origin = str(getattr(event, "unified_msg_origin", "") or "").strip()
+        if mid and origin:
+            return f"{prefix}:{origin}:{mid}"
+        return f"{prefix}:{user_id}"
+
+    async def _begin_user_job(self, user_id: str, *, kind: str) -> bool:
+        user_id = str(user_id or "").strip()
+        if not user_id:
+            return True
+
+        if kind == "video":
+            limit = self._get_max_user_video_concurrency()
+            store = self._video_inflight
+        else:
+            limit = self._get_max_user_concurrency()
+            store = self._image_inflight
+
+        async with self._concurrency_lock:
+            cur = int(store.get(user_id, 0) or 0)
+            if cur >= limit:
+                return False
+            store[user_id] = cur + 1
+            return True
+
+    async def _end_user_job(self, user_id: str, *, kind: str) -> None:
+        user_id = str(user_id or "").strip()
+        if not user_id:
+            return
+
+        store = self._video_inflight if kind == "video" else self._image_inflight
+        async with self._concurrency_lock:
+            cur = int(store.get(user_id, 0) or 0)
+            if cur <= 1:
+                store.pop(user_id, None)
+            else:
+                store[user_id] = cur - 1
 
     @staticmethod
     def _is_rich_media_transfer_failed(exc: Exception | None) -> bool:
@@ -420,18 +476,23 @@ class GiteeAIImage(Star):
             )
             return
 
-        user_id = event.get_sender_id()
-        request_id = f"generate_{user_id}"
+        user_id = str(event.get_sender_id() or "")
+        request_id = self._debounce_key(event, "generate", user_id)
 
         # 防抖检查
         if self.debouncer.hit(request_id):
-            yield event.plain_result("操作太快了，请稍后再试")
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
 
-        # 标记处理中
-        await mark_processing(event)
+        if not await self._begin_user_job(user_id, kind="image"):
+            await mark_failed(event)
+            yield event.plain_result("😞")
+            return
 
         try:
+            # 标记处理中
+            await mark_processing(event)
             t_start = time.perf_counter()
             image_path = await self.draw.generate(
                 prompt, size=size, provider_id=provider_override
@@ -441,8 +502,10 @@ class GiteeAIImage(Star):
             self._remember_last_image(event, image_path)
             sent = await self._send_image_with_fallback(event, image_path)
             if not sent:
-                await mark_failed(event)
+                ok = await mark_failed(event)
                 logger.warning("[文生图] 图片发送失败，已仅使用表情标注: reason=%s", sent.reason)
+                if not ok:
+                    yield event.plain_result("😞")
                 return
 
             # 标记成功
@@ -454,7 +517,9 @@ class GiteeAIImage(Star):
         except Exception as e:
             logger.error(f"[文生图] 失败: {e}")
             await mark_failed(event)
-            yield event.plain_result(f"生成图片失败: {str(e)}")
+            yield event.plain_result("😞")
+        finally:
+            await self._end_user_job(user_id, kind="image")
 
     # ==================== 图生图/改图 ====================
 
@@ -475,16 +540,19 @@ class GiteeAIImage(Star):
         user_id = str(event.get_sender_id() or "")
         p = self._last_image_by_user.get(user_id)
         if not p:
-            yield event.plain_result("当前没有可重发的图片。")
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
         if not Path(p).exists():
-            yield event.plain_result("上次图片缓存已过期/被清理，无法重发。")
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
         ok = await self._send_image_with_fallback(event, p)
         if ok:
-            yield event.plain_result("已重发图片。")
+            await mark_success(event)
         else:
-            yield event.plain_result("重发失败，请稍后再试。")
+            await mark_failed(event)
+            yield event.plain_result("😞")
 
     @filter.regex(r"[/!！.。．](改图|图生图|修图|aiedit)(\s|$)", priority=-10)
     async def edit_image_regex_fallback(self, event: AstrMessageEvent):
@@ -509,6 +577,45 @@ class GiteeAIImage(Star):
                 yield result
             event.stop_event()
 
+    @filter.regex(r"[/!！.。．][^\s]+", priority=-10)
+    async def preset_regex_fallback(self, event: AstrMessageEvent):
+        """兼容“图片在前、预设命令在后”的消息：确保 /<预设名> 能触发。"""
+        msg = (event.message_str or "").strip()
+        preset_names = self.edit.get_preset_names()
+        if not preset_names:
+            return
+
+        # 如果首段文本本来就是 /预设，则交给 command handler，避免重复处理
+        try:
+            if self._is_direct_command_message(event, tuple(preset_names)):
+                return
+        except Exception:
+            pass
+
+        # 仅当消息/引用里确实带图（不含头像兜底）时才兜底，避免误伤其它插件命令
+        try:
+            if not await self._has_message_images(event):
+                return
+        except Exception:
+            return
+
+        # 在任意位置找到第一个匹配的预设命令
+        used_preset: str | None = None
+        for name in preset_names:
+            for prefix in "/!！.。．":
+                if f"{prefix}{name}" in msg:
+                    used_preset = name
+                    break
+            if used_preset:
+                break
+
+        if not used_preset:
+            return
+
+        extra_prompt = self._extract_command_arg_anywhere(msg, used_preset)
+        await self._do_edit_direct(event, extra_prompt, preset=used_preset)
+        event.stop_event()
+
     # ==================== Bot 自拍（参考照） ====================
 
     @filter.command("自拍")
@@ -520,7 +627,8 @@ class GiteeAIImage(Star):
         - 可附带多张参考图（衣服/姿势/场景）作为额外参考
         """
         if not self._is_selfie_enabled():
-            yield event.plain_result(self._selfie_disabled_message())
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
         event.should_call_llm(True)
         prompt = self._extract_extra_prompt(event, "自拍")
@@ -537,7 +645,8 @@ class GiteeAIImage(Star):
         prompt = self._extract_command_arg_anywhere(msg, "自拍")
         if prompt or "/自拍" in msg or "自拍" in msg:
             if not self._is_selfie_enabled():
-                yield event.plain_result(self._selfie_disabled_message())
+                await mark_failed(event)
+                yield event.plain_result("😞")
                 event.stop_event()
                 return
             async for result in self._do_selfie(event, prompt, backend=None):
@@ -555,7 +664,8 @@ class GiteeAIImage(Star):
         """
         event.should_call_llm(True)
         if not self._is_selfie_enabled():
-            yield event.plain_result(self._selfie_disabled_message())
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
         arg = self._extract_extra_prompt(event, "自拍参考")
         action, _, _rest = (arg or "").strip().partition(" ")
@@ -599,7 +709,8 @@ class GiteeAIImage(Star):
         if self._is_direct_command_message(event, ("自拍参考",)):
             return
         if not self._is_selfie_enabled():
-            yield event.plain_result(self._selfie_disabled_message())
+            await mark_failed(event)
+            yield event.plain_result("😞")
             event.stop_event()
             return
         arg = self._extract_command_arg_anywhere(msg, "自拍参考")
@@ -653,13 +764,13 @@ class GiteeAIImage(Star):
         """
         event.should_call_llm(True)
         if not bool(self._get_feature("video").get("enabled", False)):
-            yield event.plain_result("视频功能已关闭（features.video.enabled=false）")
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
         arg = self._extract_extra_prompt(event, "视频")
         if not arg:
-            yield event.plain_result(
-                "用法: /视频 [@provider_id] <提示词> 或 /视频 [@provider_id] <预设名> [额外提示词]"
-            )
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
 
         provider_override: str | None = None
@@ -668,9 +779,8 @@ class GiteeAIImage(Star):
             provider_override = first.lstrip("@").strip() or None
             arg = rest.strip()
         if not arg:
-            yield event.plain_result(
-                "用法: /视频 [@provider_id] <提示词> 或 /视频 [@provider_id] <预设名> [额外提示词]"
-            )
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
 
         preset, prompt = self._parse_video_args(arg)
@@ -680,17 +790,25 @@ class GiteeAIImage(Star):
             prompt = f"{preset_prompt}, {prompt}" if prompt else preset_prompt
 
         user_id = str(event.get_sender_id() or "")
-        request_id = f"video_{user_id}"
+        request_id = self._debounce_key(event, "video", user_id)
 
         if self.debouncer.hit(request_id):
-            yield event.plain_result("操作太快了，请稍后再试")
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
 
         if not await self._video_begin(user_id):
-            yield event.plain_result("你已有一个视频任务正在进行中，请等待完成后再试")
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
 
-        await mark_processing(event)
+        try:
+            await mark_processing(event)
+        except Exception:
+            await self._video_end(user_id)
+            await mark_failed(event)
+            yield event.plain_result("😞")
+            return
 
         try:
             task = asyncio.create_task(
@@ -701,6 +819,7 @@ class GiteeAIImage(Star):
         except Exception:
             await self._video_end(user_id)
             await mark_failed(event)
+            yield event.plain_result("😞")
             return
 
         self._video_tasks.add(task)
@@ -720,13 +839,13 @@ class GiteeAIImage(Star):
 
         event.should_call_llm(True)
         if not bool(self._get_feature("video").get("enabled", False)):
-            yield event.plain_result("视频功能已关闭（features.video.enabled=false）")
+            await mark_failed(event)
+            yield event.plain_result("😞")
             event.stop_event()
             return
         if not arg:
-            yield event.plain_result(
-                "用法: /视频 [@provider_id] <提示词> 或 /视频 [@provider_id] <预设名> [额外提示词]"
-            )
+            await mark_failed(event)
+            yield event.plain_result("😞")
             event.stop_event()
             return
 
@@ -736,9 +855,8 @@ class GiteeAIImage(Star):
             provider_override = first.lstrip("@").strip() or None
             arg = rest.strip()
         if not arg:
-            yield event.plain_result(
-                "用法: /视频 [@provider_id] <提示词> 或 /视频 [@provider_id] <预设名> [额外提示词]"
-            )
+            await mark_failed(event)
+            yield event.plain_result("😞")
             event.stop_event()
             return
 
@@ -749,19 +867,28 @@ class GiteeAIImage(Star):
             prompt = f"{preset_prompt}, {prompt}" if prompt else preset_prompt
 
         user_id = str(event.get_sender_id() or "")
-        request_id = f"video_{user_id}"
+        request_id = self._debounce_key(event, "video", user_id)
 
         if self.debouncer.hit(request_id):
-            yield event.plain_result("操作太快了，请稍后再试")
+            await mark_failed(event)
+            yield event.plain_result("😞")
             event.stop_event()
             return
 
         if not await self._video_begin(user_id):
-            yield event.plain_result("你已有一个视频任务正在进行中，请等待完成后再试")
+            await mark_failed(event)
+            yield event.plain_result("😞")
             event.stop_event()
             return
 
-        await mark_processing(event)
+        try:
+            await mark_processing(event)
+        except Exception:
+            await self._video_end(user_id)
+            await mark_failed(event)
+            yield event.plain_result("😞")
+            event.stop_event()
+            return
 
         try:
             task = asyncio.create_task(
@@ -772,6 +899,7 @@ class GiteeAIImage(Star):
         except Exception:
             await self._video_end(user_id)
             await mark_failed(event)
+            yield event.plain_result("😞")
             event.stop_event()
             return
 
@@ -898,7 +1026,8 @@ class GiteeAIImage(Star):
             backend(string): auto=自动选择；也可填 provider_id（你在 WebUI providers 里配置的 id）
         """
         if not use_message_images:
-            return event.plain_result("当前仅支持 use_message_images=true（请附带/引用图片后再调用）")
+            await mark_failed(event)
+            return event.plain_result("😞")
         return await self.aiimg_generate(
             event, prompt=prompt, mode="edit", backend=backend
         )
@@ -934,13 +1063,20 @@ class GiteeAIImage(Star):
         if message_id and origin:
             if self.debouncer.llm_tool_is_duplicate(message_id, origin):
                 logger.debug(f"[aiimg_generate] 重复调用已拦截: msg_id={message_id}")
-                event.set_result(event.plain_result("图片已生成，无需重复操作。"))
+                await mark_success(event)
+                event.set_result(event.plain_result("✌️"))
                 return None
 
-        user_id = event.get_sender_id()
-        request_id = f"aiimg_{user_id}"
+        user_id = str(event.get_sender_id() or "")
+        request_id = self._debounce_key(event, "aiimg", user_id)
         if self.debouncer.hit(request_id):
-            event.set_result(event.plain_result("操作太快了，请稍后再试"))
+            await mark_failed(event)
+            event.set_result(event.plain_result("😞"))
+            return None
+
+        if not await self._begin_user_job(user_id, kind="image"):
+            await mark_failed(event)
+            event.set_result(event.plain_result("😞"))
             return None
 
         b_raw = (backend or "auto").strip()
@@ -960,14 +1096,14 @@ class GiteeAIImage(Star):
                         "[aiimg_generate] selfie blocked: features.selfie.enabled=false"
                     )
                     await mark_failed(event)
-                    event.set_result(event.plain_result(self._selfie_disabled_message()))
+                    event.set_result(event.plain_result("😞"))
                     return None
                 if not self._is_selfie_llm_enabled():
                     logger.warning(
                         "[aiimg_generate] selfie blocked: features.selfie.llm_tool_enabled=false"
                     )
                     await mark_failed(event)
-                    event.set_result(event.plain_result("自拍的 LLM 调用已关闭（features.selfie.llm_tool_enabled=false）"))
+                    event.set_result(event.plain_result("😞"))
                     return None
                 image_path = await self._generate_selfie_image(
                     event,
@@ -979,11 +1115,13 @@ class GiteeAIImage(Star):
                 self._remember_last_image(event, image_path)
                 sent = await self._send_image_with_fallback(event, image_path)
                 if not sent:
-                    await mark_failed(event)
+                    ok = await mark_failed(event)
                     logger.warning(
                         "[aiimg_generate] 自拍图片发送失败，已仅使用表情标注: reason=%s",
                         sent.reason,
                     )
+                    if not ok:
+                        event.set_result(event.plain_result("😞"))
                     return None
                 await mark_success(event)
                 return None
@@ -1017,11 +1155,13 @@ class GiteeAIImage(Star):
                         self._remember_last_image(event, image_path)
                         sent = await self._send_image_with_fallback(event, image_path)
                         if not sent:
-                            await mark_failed(event)
+                            ok = await mark_failed(event)
                             logger.warning(
                                 "[aiimg_generate] 自动自拍图片发送失败，已仅使用表情标注: reason=%s",
                                 sent.reason,
                             )
+                            if not ok:
+                                event.set_result(event.plain_result("😞"))
                             return None
                         await mark_success(event)
                         return None
@@ -1033,19 +1173,21 @@ class GiteeAIImage(Star):
                 edit_conf = self._get_feature("edit")
                 if not bool(edit_conf.get("enabled", True)):
                     await mark_failed(event)
-                    event.set_result(event.plain_result("改图功能已关闭（features.edit.enabled=false）"))
+                    event.set_result(event.plain_result("😞"))
                     return None
                 if not bool(edit_conf.get("llm_tool_enabled", True)):
                     await mark_failed(event)
-                    event.set_result(event.plain_result(
-                        "改图的 LLM 调用已关闭（features.edit.llm_tool_enabled=false）"
-                    ))
+                    event.set_result(event.plain_result("😞"))
                     return None
-                image_segs = await get_images_from_event(event, include_avatar=False)
+                image_segs = await get_images_from_event(
+                    event,
+                    include_avatar=True,
+                    include_sender_avatar_fallback=False,
+                )
                 bytes_images = await self._image_segs_to_bytes(image_segs)
                 if not bytes_images:
                     await mark_failed(event)
-                    event.set_result(event.plain_result("请在消息中附带需要编辑的图片（可发送图片或引用图片）。"))
+                    event.set_result(event.plain_result("😞"))
                     return None
 
                 image_path = await self.edit.edit(
@@ -1058,11 +1200,13 @@ class GiteeAIImage(Star):
                 self._remember_last_image(event, image_path)
                 sent = await self._send_image_with_fallback(event, image_path)
                 if not sent:
-                    await mark_failed(event)
+                    ok = await mark_failed(event)
                     logger.warning(
                         "[aiimg_generate] 改图结果发送失败，已仅使用表情标注: reason=%s",
                         sent.reason,
                     )
+                    if not ok:
+                        event.set_result(event.plain_result("😞"))
                     return None
                 await mark_success(event)
                 return None
@@ -1071,11 +1215,11 @@ class GiteeAIImage(Star):
             draw_conf = self._get_feature("draw")
             if not bool(draw_conf.get("enabled", True)):
                 await mark_failed(event)
-                event.set_result(event.plain_result("文生图功能已关闭（features.draw.enabled=false）"))
+                event.set_result(event.plain_result("😞"))
                 return None
             if not bool(draw_conf.get("llm_tool_enabled", True)):
                 await mark_failed(event)
-                event.set_result(event.plain_result("文生图的 LLM 调用已关闭（features.draw.llm_tool_enabled=false）"))
+                event.set_result(event.plain_result("😞"))
                 return None
             if not prompt:
                 prompt = "a selfie photo"
@@ -1090,11 +1234,13 @@ class GiteeAIImage(Star):
             self._remember_last_image(event, image_path)
             sent = await self._send_image_with_fallback(event, image_path)
             if not sent:
-                await mark_failed(event)
+                ok = await mark_failed(event)
                 logger.warning(
                     "[aiimg_generate] 文生图结果发送失败，已仅使用表情标注: reason=%s",
                     sent.reason,
                 )
+                if not ok:
+                    event.set_result(event.plain_result("😞"))
                 return None
             await mark_success(event)
             return None
@@ -1102,8 +1248,10 @@ class GiteeAIImage(Star):
         except Exception as e:
             logger.error(f"[aiimg_generate] 失败: {e}", exc_info=True)
             await mark_failed(event)
-            event.set_result(event.plain_result(f"生成失败: {str(e) or type(e).__name__}（本次已停止，请稍后再试或换后端）"))
+            event.set_result(event.plain_result("😞"))
             return None
+        finally:
+            await self._end_user_job(user_id, kind="image")
 
     @filter.llm_tool()
     async def grok_generate_video(self, event: AstrMessageEvent, prompt: str):
@@ -1114,13 +1262,16 @@ class GiteeAIImage(Star):
         """
         vconf = self._get_feature("video")
         if not bool(vconf.get("enabled", False)):
-            return event.plain_result("视频功能已关闭（features.video.enabled=false）")
+            await mark_failed(event)
+            return event.plain_result("😞")
         if not bool(vconf.get("llm_tool_enabled", True)):
-            return event.plain_result("视频的 LLM 调用已关闭（features.video.llm_tool_enabled=false）")
+            await mark_failed(event)
+            return event.plain_result("😞")
 
         arg = (prompt or "").strip()
         if not arg:
-            return event.plain_result("需要提供视频提示词")
+            await mark_failed(event)
+            return event.plain_result("😞")
 
         provider_override: str | None = None
         if arg.lstrip().startswith("@"):
@@ -1128,7 +1279,8 @@ class GiteeAIImage(Star):
             provider_override = first.lstrip("@").strip() or None
             arg = rest.strip()
         if not arg:
-            return event.plain_result("需要提供视频提示词")
+            await mark_failed(event)
+            return event.plain_result("😞")
 
         preset, extra_prompt = self._parse_video_args(arg)
         presets = self._get_video_presets()
@@ -1139,17 +1291,18 @@ class GiteeAIImage(Star):
             )
 
         user_id = str(event.get_sender_id() or "")
-        request_id = f"video_{user_id}"
+        request_id = self._debounce_key(event, "video", user_id)
 
         if self.debouncer.hit(request_id):
-            return event.plain_result("操作太快了，请稍后再试")
+            await mark_failed(event)
+            return event.plain_result("😞")
 
         if not await self._video_begin(user_id):
-            return event.plain_result("你已有一个视频任务正在进行中，请等待完成后再试")
-
-        await mark_processing(event)
+            await mark_failed(event)
+            return event.plain_result("😞")
 
         try:
+            await mark_processing(event)
             task = asyncio.create_task(
                 self._async_generate_video(
                     event, extra_prompt, user_id, provider_id=provider_override
@@ -1158,12 +1311,12 @@ class GiteeAIImage(Star):
         except Exception:
             await self._video_end(user_id)
             await mark_failed(event)
-            return event.plain_result("")
+            return event.plain_result("😞")
 
         self._video_tasks.add(task)
         task.add_done_callback(lambda t: self._video_tasks.discard(t))
 
-        return event.plain_result("视频正在生成中，请稍候...")
+        return event.plain_result("🔄")
 
     # ==================== 内部方法 ====================
 
@@ -1244,18 +1397,11 @@ class GiteeAIImage(Star):
         return None, text
 
     async def _video_begin(self, user_id: str) -> bool:
-        """单用户并发保护：成功占用返回 True，否则 False"""
-        user_id = str(user_id or "")
-        async with self._video_lock:
-            if user_id in self._video_in_progress:
-                return False
-            self._video_in_progress.add(user_id)
-            return True
+        """单用户并发保护：成功占用返回 True，否则 False（上限可配置）"""
+        return await self._begin_user_job(str(user_id or ""), kind="video")
 
     async def _video_end(self, user_id: str) -> None:
-        user_id = str(user_id or "")
-        async with self._video_lock:
-            self._video_in_progress.discard(user_id)
+        await self._end_user_job(str(user_id or ""), kind="video")
 
     async def _send_video_result(self, event: AstrMessageEvent, video_url: str) -> None:
         vconf = self._get_feature("video")
@@ -1312,14 +1458,12 @@ class GiteeAIImage(Star):
         provider_id: str | None = None,
     ) -> None:
         try:
-            image_segs = await get_images_from_event(event, include_avatar=False)
-            if not image_segs:
-                await event.send(
-                    event.plain_result("请发送或引用一张图片后再使用 /视频。")
-                )
-                await mark_failed(event)
-                return
-
+            image_segs = await get_images_from_event(
+                event,
+                include_avatar=True,
+                include_sender_avatar_fallback=False,
+            )
+            had_image = bool(image_segs)
             image_bytes: bytes | None = None
             for i, seg in enumerate(image_segs):
                 try:
@@ -1329,9 +1473,10 @@ class GiteeAIImage(Star):
                 except Exception as e:
                     logger.warning(f"[视频] 图片 {i + 1} 转换失败，跳过: {e}")
 
-            if not image_bytes:
-                await event.send(event.plain_result("图片读取失败，请更换图片后重试。"))
+            # 允许文生视频（无图）走支持的后端；但若用户确实发了图却读不到，则直接失败
+            if had_image and not image_bytes:
                 await mark_failed(event)
+                await event.send(event.plain_result("😞"))
                 return
 
             t_start = time.perf_counter()
@@ -1373,9 +1518,7 @@ class GiteeAIImage(Star):
             logger.error(f"[视频] 失败: {e}", exc_info=True)
             await mark_failed(event)
             try:
-                await event.send(
-                    event.plain_result(f"视频生成失败: {str(e) or type(e).__name__}")
-                )
+                await event.send(event.plain_result("😞"))
             except Exception:
                 pass
         finally:
@@ -1392,12 +1535,13 @@ class GiteeAIImage(Star):
 
         使用 event.send() 直接发送消息，不使用 yield
         """
-        user_id = event.get_sender_id()
-        request_id = f"edit_{user_id}"
+        user_id = str(event.get_sender_id() or "")
+        request_id = self._debounce_key(event, "edit", user_id)
 
         # 防抖
         if self.debouncer.hit(request_id):
-            await event.send(event.plain_result("操作太快了，请稍后再试"))
+            await mark_failed(event)
+            await event.send(event.plain_result("😞"))
             return
 
         p = (prompt or "").strip()
@@ -1407,14 +1551,15 @@ class GiteeAIImage(Star):
             prompt = rest.strip()
 
         # 获取图片
-        image_segs = await get_images_from_event(event, include_avatar=False)
+        image_segs = await get_images_from_event(
+            event,
+            include_avatar=True,
+            include_sender_avatar_fallback=False,
+        )
         logger.debug(f"[改图] 获取到 {len(image_segs)} 个图片段")
         if not image_segs:
-            await event.send(
-                event.plain_result(
-                    "请发送或引用图片！\n用法: 发送图片 + 命令\n或: 引用图片消息 + 命令"
-                )
-            )
+            await mark_failed(event)
+            await event.send(event.plain_result("😞"))
             return
 
         bytes_images: list[bytes] = []
@@ -1430,13 +1575,21 @@ class GiteeAIImage(Star):
                 logger.warning(f"[改图] 图片 {i + 1} 转换失败，跳过: {e}")
 
         if not bytes_images:
-            await event.send(event.plain_result("图片处理失败，请重试"))
+            await mark_failed(event)
+            await event.send(event.plain_result("😞"))
             return
 
-        # 标记处理中
-        await mark_processing(event)
+        if not await self._begin_user_job(user_id, kind="image"):
+            await mark_failed(event)
+            try:
+                await event.send(event.plain_result("😞"))
+            except Exception:
+                pass
+            return
 
         try:
+            # 标记处理中
+            await mark_processing(event)
             t_start = time.perf_counter()
             image_path = await self.edit.edit(
                 prompt=prompt,
@@ -1449,11 +1602,13 @@ class GiteeAIImage(Star):
             self._remember_last_image(event, image_path)
             sent = await self._send_image_with_fallback(event, image_path)
             if not sent:
-                await mark_failed(event)
+                ok = await mark_failed(event)
                 logger.warning(
                     "[改图] 结果发送失败，已仅使用表情标注: reason=%s",
                     sent.reason,
                 )
+                if not ok:
+                    await event.send(event.plain_result("😞"))
                 return
 
             # 标记成功
@@ -1464,7 +1619,9 @@ class GiteeAIImage(Star):
         except Exception as e:
             logger.error(f"[改图] 失败: {e}", exc_info=True)
             await mark_failed(event)
-            await event.send(event.plain_result(f"改图失败: {str(e)}"))
+            await event.send(event.plain_result("😞"))
+        finally:
+            await self._end_user_job(user_id, kind="image")
 
     async def _do_edit(
         self,
@@ -1480,12 +1637,13 @@ class GiteeAIImage(Star):
         2. 否则检查 prompt 是否匹配预设名，若匹配则自动转为预设
         3. 都不匹配则作为普通提示词处理
         """
-        user_id = event.get_sender_id()
-        request_id = f"edit_{user_id}"
+        user_id = str(event.get_sender_id() or "")
+        request_id = self._debounce_key(event, "edit", user_id)
 
         # 防抖
         if self.debouncer.hit(request_id):
-            yield event.plain_result("操作太快了，请稍后再试")
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
 
         # Optional provider override: "/aiedit @provider_id <prompt>"
@@ -1505,13 +1663,14 @@ class GiteeAIImage(Star):
                 logger.debug(f"[改图] 自动匹配预设: {preset}")
 
         # 获取图片
-        image_segs = await get_images_from_event(event, include_avatar=False)
+        image_segs = await get_images_from_event(
+            event,
+            include_avatar=True,
+            include_sender_avatar_fallback=False,
+        )
         if not image_segs:
-            yield event.plain_result(
-                "请发送或引用图片！\n"
-                "用法: 发送图片 + /aiedit <提示词>\n"
-                "或: 引用图片消息 + /aiedit <提示词>"
-            )
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
 
         bytes_images: list[bytes] = []
@@ -1523,13 +1682,18 @@ class GiteeAIImage(Star):
                 logger.warning(f"[改图] 图片转换失败，跳过: {e}")
 
         if not bytes_images:
-            yield event.plain_result("图片处理失败，请重试")
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
 
-        # 标记处理中
-        await mark_processing(event)
+        if not await self._begin_user_job(user_id, kind="image"):
+            await mark_failed(event)
+            yield event.plain_result("😞")
+            return
 
         try:
+            # 标记处理中
+            await mark_processing(event)
             t_start = time.perf_counter()
             image_path = await self.edit.edit(
                 prompt=prompt,
@@ -1542,11 +1706,13 @@ class GiteeAIImage(Star):
             self._remember_last_image(event, image_path)
             sent = await self._send_image_with_fallback(event, image_path)
             if not sent:
-                await mark_failed(event)
+                ok = await mark_failed(event)
                 logger.warning(
                     "[改图] 结果发送失败，已仅使用表情标注: reason=%s",
                     sent.reason,
                 )
+                if not ok:
+                    yield event.plain_result("😞")
                 return
 
             # 标记成功
@@ -1557,7 +1723,9 @@ class GiteeAIImage(Star):
         except Exception as e:
             logger.error(f"[改图] 失败: {e}")
             await mark_failed(event)
-            yield event.plain_result(f"改图失败: {str(e)}")
+            yield event.plain_result("😞")
+        finally:
+            await self._end_user_job(user_id, kind="image")
 
     # ==================== 自拍参考照：内部实现 ====================
 
@@ -1832,14 +2000,21 @@ class GiteeAIImage(Star):
     ):
         """指令 /自拍 执行入口（generator 版本）。"""
         if not self._is_selfie_enabled():
-            yield event.plain_result(self._selfie_disabled_message())
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
 
-        user_id = event.get_sender_id()
-        request_id = f"selfie_{user_id}"
+        user_id = str(event.get_sender_id() or "")
+        request_id = self._debounce_key(event, "selfie", user_id)
 
         if self.debouncer.hit(request_id):
-            yield event.plain_result("操作太快了，请稍后再试")
+            await mark_failed(event)
+            yield event.plain_result("😞")
+            return
+
+        if not await self._begin_user_job(user_id, kind="image"):
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
 
         p = (prompt or "").strip()
@@ -1848,28 +2023,32 @@ class GiteeAIImage(Star):
             backend = first.lstrip("@").strip() or backend
             prompt = rest.strip()
 
-        await mark_processing(event)
-
         try:
+            await mark_processing(event)
             image_path = await self._generate_selfie_image(event, prompt, backend)
             self._remember_last_image(event, image_path)
             sent = await self._send_image_with_fallback(event, image_path)
             if not sent:
-                await mark_failed(event)
+                ok = await mark_failed(event)
                 logger.warning(
                     "[自拍] 结果发送失败，已仅使用表情标注: reason=%s",
                     sent.reason,
                 )
+                if not ok:
+                    yield event.plain_result("😞")
                 return
             await mark_success(event)
         except Exception as e:
             logger.error(f"[自拍] 失败: {e}", exc_info=True)
             await mark_failed(event)
-            yield event.plain_result(f"自拍失败: {str(e) or type(e).__name__}")
+            yield event.plain_result("😞")
+        finally:
+            await self._end_user_job(user_id, kind="image")
 
     async def _set_selfie_reference(self, event: AstrMessageEvent):
         if not self._is_selfie_enabled():
-            yield event.plain_result(self._selfie_disabled_message())
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
 
         image_segs = await get_images_from_event(event, include_avatar=False)
@@ -1881,7 +2060,8 @@ class GiteeAIImage(Star):
 
         bytes_images = await self._image_segs_to_bytes(image_segs)
         if not bytes_images:
-            yield event.plain_result("参考图处理失败，请重试")
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
 
         # 限制数量，避免一次塞太多
@@ -1892,7 +2072,8 @@ class GiteeAIImage(Star):
         try:
             count = await self.refs.set(store_key, bytes_images)
         except Exception as e:
-            yield event.plain_result(f"保存参考照失败: {str(e) or type(e).__name__}")
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
 
         webui_paths = self._get_config_selfie_reference_paths()
@@ -1907,7 +2088,8 @@ class GiteeAIImage(Star):
 
     async def _show_selfie_reference(self, event: AstrMessageEvent):
         if not self._is_selfie_enabled():
-            yield event.plain_result(self._selfie_disabled_message())
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
 
         paths, source = await self._get_selfie_reference_paths(event)
@@ -1929,7 +2111,8 @@ class GiteeAIImage(Star):
 
     async def _delete_selfie_reference(self, event: AstrMessageEvent):
         if not self._is_selfie_enabled():
-            yield event.plain_result(self._selfie_disabled_message())
+            await mark_failed(event)
+            yield event.plain_result("😞")
             return
 
         store_key = self._get_selfie_ref_store_key(event)

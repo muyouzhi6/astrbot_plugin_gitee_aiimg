@@ -14,6 +14,8 @@ from astrbot.api import logger
 from astrbot.core.message.components import At, Image, Reply
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 
+from .net_safety import URLFetchPolicy, ensure_url_allowed
+
 # 尝试导入 PIL 用于 GIF 处理
 try:
     from PIL import Image as PILImage
@@ -61,12 +63,52 @@ async def download_image(url: str, retries: int = 3) -> bytes | None:
     """
     session = await _get_session()
 
+    policy = URLFetchPolicy(
+        allow_private=False,
+        trusted_origins=frozenset(),
+        allowed_hosts=frozenset(),
+        dns_timeout_seconds=2.0,
+    )
+    max_redirects = 5
+    max_bytes = 50 * 1024 * 1024
+
     for i in range(retries):
         try:
-            async with session.get(url) as resp:
-                if resp.status == 200:
-                    return await resp.read()
-                logger.warning(f"[下载图片] HTTP {resp.status}: {url[:60]}...")
+            current = str(url or "").strip()
+            redirects = 0
+            while True:
+                await ensure_url_allowed(current, policy=policy)
+                async with session.get(current, allow_redirects=False) as resp:
+                    if resp.status in {301, 302, 303, 307, 308}:
+                        if redirects >= max_redirects:
+                            raise RuntimeError("Too many redirects")
+                        loc = (resp.headers.get("location") or "").strip()
+                        if not loc:
+                            raise RuntimeError("Redirect without location")
+                        current = (
+                            aiohttp.client.URL(current)
+                            .join(aiohttp.client.URL(loc))
+                            .human_repr()
+                        )
+                        redirects += 1
+                        continue
+
+                    if resp.status != 200:
+                        logger.warning(
+                            f"[下载图片] HTTP {resp.status}: {current[:60]}..."
+                        )
+                        break
+
+                    total = 0
+                    chunks: list[bytes] = []
+                    async for chunk in resp.content.iter_chunked(1024 * 256):
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise RuntimeError("Image too large")
+                        chunks.append(chunk)
+                    return b"".join(chunks)
         except asyncio.TimeoutError:
             logger.warning(f"[下载图片] 超时 (第{i + 1}次): {url[:60]}...")
         except Exception as e:
@@ -124,6 +166,7 @@ async def _extract_first_frame(raw: bytes) -> bytes:
 async def get_images_from_event(
     event: AstrMessageEvent,
     include_avatar: bool = True,
+    include_sender_avatar_fallback: bool = True,
 ) -> list[Image]:
     """从消息事件中提取图片组件列表
 
@@ -136,6 +179,7 @@ async def get_images_from_event(
     Args:
         event: 消息事件
         include_avatar: 是否包含头像，默认 True
+        include_sender_avatar_fallback: include_avatar=True 且无图片无@时，是否用发送者头像兜底
 
     Returns:
         Image 组件列表
@@ -192,7 +236,7 @@ async def get_images_from_event(
                     b64 = base64.b64encode(avatar_bytes).decode()
                     image_segs.append(Image.fromBase64(b64))
                     logger.debug(f"[get_images] 获取@用户头像成功: {uid}")
-        elif not image_segs:
+        elif include_sender_avatar_fallback and not image_segs:
             # 无@用户且无图片：获取发送者自己的头像（兜底）
             sender_id = event.get_sender_id()
             if sender_id:

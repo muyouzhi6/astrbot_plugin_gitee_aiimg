@@ -367,7 +367,7 @@ class GrokVideoService:
     async def generate_video_url(
         self,
         prompt: str,
-        image_bytes: bytes,
+        image_bytes: bytes | None = None,
         *,
         preset: str | None = None,
     ) -> str:

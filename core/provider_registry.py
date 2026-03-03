@@ -7,7 +7,7 @@ from typing import Any
 from astrbot.api import logger
 
 from .gemini_edit import GeminiEditBackend
-from .gemini_flow2api import GeminiFlow2ApiBackend
+from .gemini_flow2api import Flow2ApiVideoBackend, GeminiFlow2ApiBackend
 from .gitee_edit import GiteeEditBackend
 from .gitee_sizes import GITEE_SUPPORTED_SIZES, normalize_size_text
 from .grok2api_images_backend import Grok2ApiImagesBackend
@@ -51,7 +51,7 @@ class ProviderRegistry:
 
         self._providers: dict[str, dict] = {}
         self._backends: dict[str, object] = {}
-        self._video_backends: dict[str, GrokVideoService] = {}
+        self._video_backends: dict[str, object] = {}
 
         self._load_providers()
 
@@ -146,6 +146,11 @@ class ProviderRegistry:
                     errors.append(f"provider '{provider_id}' missing server_url")
                 if not str(item.get("api_key") or "").strip():
                     errors.append(f"provider '{provider_id}' missing api_key")
+            if template_key in {"flow2api_video"}:
+                if not str(item.get("api_url") or "").strip():
+                    errors.append(f"provider '{provider_id}' missing api_url")
+                if not str(item.get("model") or "").strip():
+                    errors.append(f"provider '{provider_id}' missing model")
             if template_key in {"vertex_ai_anonymous"}:
                 if not str(item.get("model") or "").strip():
                     errors.append(f"provider '{provider_id}' missing model")
@@ -226,7 +231,8 @@ class ProviderRegistry:
         if template_key == "flow2api":
             settings = {
                 "api_url": conf.get("api_url"),
-                "api_keys": _as_list(conf.get("api_keys")),
+                "api_keys": conf.get("api_keys"),
+                "api_key": conf.get("api_key"),
                 "model": conf.get("model"),
                 "timeout": conf.get("timeout", 120),
                 "use_proxy": bool(conf.get("use_proxy", False)),
@@ -385,7 +391,7 @@ class ProviderRegistry:
 
         raise RuntimeError(f"Unsupported provider type: {template_key} ({pid})")
 
-    def get_video_backend(self, provider_id: str) -> GrokVideoService:
+    def get_video_backend(self, provider_id: str) -> object:
         pid = str(provider_id or "").strip()
         if not pid:
             raise RuntimeError("Empty provider_id")
@@ -395,14 +401,33 @@ class ProviderRegistry:
         if not p:
             raise RuntimeError(f"Unknown provider_id: {pid}")
         template_key = str(p.get("__template_key") or "").strip()
-        if template_key != "grok_video":
+        if template_key == "grok_video":
+            backend: object = GrokVideoService(settings=p)
+        elif template_key == "flow2api_video":
+            settings = {
+                "api_url": p.get("api_url"),
+                "api_keys": p.get("api_keys"),
+                "api_key": p.get("api_key"),
+                "model": p.get("model"),
+                "timeout": p.get("timeout", 300),
+                "use_proxy": bool(p.get("use_proxy", False)),
+                "proxy_url": p.get("proxy_url", ""),
+            }
+            backend = Flow2ApiVideoBackend(settings=settings)
+        else:
             raise RuntimeError(f"Provider '{pid}' is not a video provider")
-        backend = GrokVideoService(settings=p)
         self._video_backends[pid] = backend
         return backend
 
     async def close(self) -> None:
         for backend in list(self._backends.values()):
+            close = getattr(backend, "close", None)
+            if callable(close):
+                try:
+                    await close()
+                except Exception:
+                    pass
+        for backend in list(self._video_backends.values()):
             close = getattr(backend, "close", None)
             if callable(close):
                 try:

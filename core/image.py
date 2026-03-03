@@ -13,6 +13,13 @@ from astrbot.api.message_components import Image
 from astrbot.core.message.components import Reply
 from astrbot.core.utils.io import download_image_by_url
 
+from .net_safety import (
+    URLFetchPolicy,
+    collect_trusted_origins,
+    ensure_url_allowed,
+    read_network_policy,
+)
+
 
 class ImageManager:
     """
@@ -23,20 +30,89 @@ class ImageManager:
         self.config = config
         self.image_dir = data_dir / "images"
         self.image_dir.mkdir(parents=True, exist_ok=True)
+        timeout_seconds = 60
+        try:
+            timeout_seconds = int(config.get("timeout", 60) or 60)
+        except Exception:
+            timeout_seconds = 60
+
+        net = read_network_policy(config)
+        self._media_allow_private: bool = bool(net.get("media_allow_private", False))
+        self._media_max_image_bytes: int = self._clamp_int(
+            net.get("max_image_bytes", 50 * 1024 * 1024),
+            default=50 * 1024 * 1024,
+            min_value=256 * 1024,
+            max_value=200 * 1024 * 1024,
+        )
+        self._media_max_redirects: int = self._clamp_int(
+            net.get("max_redirects", 5), default=5, min_value=0, max_value=10
+        )
+        self._dns_timeout_seconds: int = self._clamp_int(
+            net.get("dns_resolve_timeout_seconds", 2),
+            default=2,
+            min_value=1,
+            max_value=10,
+        )
+        self._trusted_origins: frozenset[str] = frozenset(collect_trusted_origins(config))
+
         self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=config["timeout"])
+            timeout=aiohttp.ClientTimeout(total=float(max(1, min(timeout_seconds, 3600))))
         )
         self.cleanup_batch_ratio = 0.5
+
+    @staticmethod
+    def _clamp_int(value, *, default: int, min_value: int, max_value: int) -> int:
+        try:
+            value_int = int(value)
+        except (TypeError, ValueError):
+            return default
+        return max(min_value, min(max_value, value_int))
 
     async def close(self) -> None:
         await self._session.close()
 
     async def download_image(self, url: str) -> Path:
         """下载远程图片并保存到本地，返回文件路径"""
-        async with self._session.get(url) as resp:
-            if resp.status != 200:
-                raise RuntimeError(f"图片下载失败 HTTP {resp.status}")
-            data = await resp.read()
+        policy = URLFetchPolicy(
+            allow_private=self._media_allow_private,
+            trusted_origins=self._trusted_origins,
+            allowed_hosts=frozenset(),
+            dns_timeout_seconds=float(self._dns_timeout_seconds),
+        )
+
+        current = str(url or "").strip()
+        redirects = 0
+        while True:
+            await ensure_url_allowed(current, policy=policy)
+            async with self._session.get(current, allow_redirects=False) as resp:
+                if resp.status in {301, 302, 303, 307, 308}:
+                    if redirects >= self._media_max_redirects:
+                        raise RuntimeError("Too many redirects")
+                    loc = (resp.headers.get("location") or "").strip()
+                    if not loc:
+                        raise RuntimeError("Redirect without location")
+                    current = (
+                        aiohttp.client.URL(current)
+                        .join(aiohttp.client.URL(loc))
+                        .human_repr()
+                    )
+                    redirects += 1
+                    continue
+
+                if resp.status != 200:
+                    raise RuntimeError(f"图片下载失败 HTTP {resp.status}")
+
+                total = 0
+                chunks: list[bytes] = []
+                async for chunk in resp.content.iter_chunked(1024 * 256):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > self._media_max_image_bytes:
+                        raise RuntimeError("Image too large")
+                    chunks.append(chunk)
+                data = b"".join(chunks)
+                break
 
         return await self.save_image(data)
 
@@ -58,7 +134,7 @@ class ImageManager:
     async def cleanup_old_images(self) -> None:
         """清理旧图片（按比例清理，默认清一半）"""
         try:
-            max_keep: int = self.config["max_cached_images"]
+            max_keep: int = int(self.config.get("max_cached_images", 50) or 50)
 
             images: list[Path] = list(self.image_dir.iterdir())
             total = len(images)
@@ -99,15 +175,52 @@ class ImageManager:
             return None
 
         try:
-            async with self._session.get(
-                url, timeout=aiohttp.ClientTimeout(total=timeout)
-            ) as resp:
-                if resp.status == 200:
-                    return await resp.read()
-                else:
-                    logger.warning(
-                        f"下载图片失败: HTTP {resp.status}, URL: {url[:60]}..."
-                    )
+            policy = URLFetchPolicy(
+                allow_private=self._media_allow_private,
+                trusted_origins=self._trusted_origins,
+                allowed_hosts=frozenset(),
+                dns_timeout_seconds=float(self._dns_timeout_seconds),
+            )
+
+            current = str(url or "").strip()
+            redirects = 0
+            while True:
+                await ensure_url_allowed(current, policy=policy)
+                async with self._session.get(
+                    current,
+                    timeout=aiohttp.ClientTimeout(total=float(max(1, min(timeout, 3600)))),
+                    allow_redirects=False,
+                ) as resp:
+                    if resp.status in {301, 302, 303, 307, 308}:
+                        if redirects >= self._media_max_redirects:
+                            raise RuntimeError("Too many redirects")
+                        loc = (resp.headers.get("location") or "").strip()
+                        if not loc:
+                            raise RuntimeError("Redirect without location")
+                        current = (
+                            aiohttp.client.URL(current)
+                            .join(aiohttp.client.URL(loc))
+                            .human_repr()
+                        )
+                        redirects += 1
+                        continue
+
+                    if resp.status != 200:
+                        logger.warning(
+                            f"下载图片失败: HTTP {resp.status}, URL: {current[:60]}..."
+                        )
+                        return None
+
+                    total = 0
+                    chunks: list[bytes] = []
+                    async for chunk in resp.content.iter_chunked(1024 * 256):
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if total > self._media_max_image_bytes:
+                            raise RuntimeError("Image too large")
+                        chunks.append(chunk)
+                    return b"".join(chunks)
         except Exception as e:
             logger.warning(f"下载图片异常: {type(e).__name__}, URL: {url[:60]}...")
         return None

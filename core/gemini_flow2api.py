@@ -101,6 +101,27 @@ def _clamp_int(value: Any, *, default: int, min_value: int, max_value: int) -> i
     return max(min_value, min(max_value, value_int))
 
 
+def _parse_api_keys(conf: dict) -> list[str]:
+    """Parse Flow2API api key settings.
+
+    Accepts:
+    - api_keys: ["k1", "k2"]  (preferred)
+    - api_keys: "k1,k2"      (legacy / convenience)
+    - api_key: "k1"          (legacy)
+    """
+    if not isinstance(conf, dict):
+        return []
+    raw = conf.get("api_keys", None)
+    if raw is None or raw == []:
+        raw = conf.get("api_key", None)
+
+    if isinstance(raw, str):
+        return [k.strip() for k in raw.split(",") if k.strip()]
+    if isinstance(raw, list):
+        return [str(k).strip() for k in raw if str(k).strip()]
+    return []
+
+
 def normalize_flow2api_chat_url(raw: str) -> str:
     """Normalize Flow2API chat.completions endpoint URL.
 
@@ -154,8 +175,7 @@ class GeminiFlow2ApiBackend:
         self.use_proxy: bool = bool(conf.get("use_proxy", False))
         self.proxy_url: str = str(conf.get("proxy_url") or "").strip()
 
-        raw_keys = conf.get("api_keys", [])
-        self.api_keys = [str(k).strip() for k in (raw_keys or []) if str(k).strip()]
+        self.api_keys = _parse_api_keys(conf)
         self._key_index = 0
         self._key_lock = asyncio.Lock()
 
@@ -183,7 +203,7 @@ class GeminiFlow2ApiBackend:
     async def _next_key(self) -> str:
         async with self._key_lock:
             if not self.api_keys:
-                raise RuntimeError("Gemini(Flow2API) API Key 未配置")
+                raise RuntimeError("Flow2API API Key 未配置")
             key = self.api_keys[self._key_index]
             self._key_index = (self._key_index + 1) % len(self.api_keys)
             return key
@@ -203,14 +223,10 @@ class GeminiFlow2ApiBackend:
         return ""
 
     def _build_user_text(self, prompt: str, *, resolution: str | None) -> str:
-        p = (prompt or "").strip() or "a high quality image"
-        hint = self._resolution_hint(resolution)
-        return (
-            f"{p}\n\n"
-            "Return ONLY one direct https image URL (png/jpg/webp/gif) OR one data:image/...;base64,... .\n"
-            "Do NOT return video/mp4, HTML, or any explanation.\n"
-            f"{hint}"
-        )
+        # 尽量与官方示例保持一致：content 直接使用用户提示词（避免网关对提示词模板敏感导致失败）。
+        # 分辨率提示不强制拼接，以免改变模型行为；需要的话请在 prompt 内自行表达。
+        p = (prompt or "").strip()
+        return p or "a high quality image"
 
     async def _request_stream_text(self, payload: dict, headers: dict) -> str:
         session = await self._get_session()
@@ -271,11 +287,38 @@ class GeminiFlow2ApiBackend:
 
                     choice0 = (obj.get("choices") or [{}])[0]
                     delta = choice0.get("delta") or {}
-                    delta_content = delta.get("content")
-                    if isinstance(delta_content, str):
-                        full += delta_content
-                    elif delta_content is not None:
-                        full += str(delta_content)
+                    message = choice0.get("message") or {}
+                    delta_content = (
+                        delta.get("content")
+                        if "content" in delta
+                        else message.get("content")
+                    )
+
+                    def _content_to_text(value: Any) -> str:
+                        if value is None:
+                            return ""
+                        if isinstance(value, str):
+                            return value
+                        if isinstance(value, list):
+                            return "".join(_content_to_text(x) for x in value)
+                        if isinstance(value, dict):
+                            # multimodal chunks: {"type":"text","text":...}
+                            text = value.get("text")
+                            if isinstance(text, str) and text:
+                                return text
+                            # {"type":"image_url","image_url":{"url":"..."}}
+                            image_url = value.get("image_url")
+                            if isinstance(image_url, dict):
+                                url = image_url.get("url")
+                                if isinstance(url, str) and url:
+                                    return url
+                            url = value.get("url")
+                            if isinstance(url, str) and url:
+                                return url
+                            return str(value)
+                        return str(value)
+
+                    full += _content_to_text(delta_content)
 
                     if len(full) > max_chars:
                         raise RuntimeError(
@@ -326,9 +369,9 @@ class GeminiFlow2ApiBackend:
         self, prompt: str, *, resolution: str | None = None, **_
     ) -> Path:
         if not self.api_url:
-            raise RuntimeError("未配置 Flow2API 地址（gemini_native.api_url）")
+            raise RuntimeError("未配置 Flow2API 地址（flow2api.api_url）")
         if not self.model:
-            raise RuntimeError("未配置 Flow2API 模型（gemini_native.model）")
+            raise RuntimeError("未配置 Flow2API 模型（flow2api.model）")
 
         key = await self._next_key()
         headers = {
@@ -353,9 +396,9 @@ class GeminiFlow2ApiBackend:
         if not images:
             raise ValueError("至少需要一张图片")
         if not self.api_url:
-            raise RuntimeError("未配置 Flow2API 地址（gemini_native.api_url）")
+            raise RuntimeError("未配置 Flow2API 地址（flow2api.api_url）")
         if not self.model:
-            raise RuntimeError("未配置 Flow2API 模型（gemini_native.model）")
+            raise RuntimeError("未配置 Flow2API 模型（flow2api.model）")
 
         key = await self._next_key()
         headers = {
@@ -384,3 +427,209 @@ class GeminiFlow2ApiBackend:
 
         content = await self._request_stream_text(payload, headers)
         return await self._save_from_content(content)
+
+
+class Flow2ApiVideoBackend:
+    """Flow2API 视频后端（OpenAI Chat Completions + SSE 流式输出视频 URL）。"""
+
+    def __init__(self, *, settings: dict):
+        conf = settings if isinstance(settings, dict) else {}
+
+        self.api_url: str = normalize_flow2api_chat_url(conf.get("api_url"))
+        self.model: str = str(conf.get("model") or "").strip()
+        self.timeout: int = _clamp_int(
+            conf.get("timeout", 300), default=300, min_value=1, max_value=3600
+        )
+
+        self.use_proxy: bool = bool(conf.get("use_proxy", False))
+        self.proxy_url: str = str(conf.get("proxy_url") or "").strip()
+
+        self.api_keys = _parse_api_keys(conf)
+        self._key_index = 0
+        self._key_lock = asyncio.Lock()
+
+        self._session: aiohttp.ClientSession | None = None
+        self._session_lock = asyncio.Lock()
+
+    async def close(self) -> None:
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            async with self._session_lock:
+                if self._session is None or self._session.closed:
+                    timeout = aiohttp.ClientTimeout(total=float(self.timeout))
+                    connector = aiohttp.TCPConnector(
+                        limit=10, limit_per_host=5, ttl_dns_cache=300
+                    )
+                    self._session = aiohttp.ClientSession(
+                        timeout=timeout, connector=connector
+                    )
+        return self._session
+
+    async def _next_key(self) -> str:
+        async with self._key_lock:
+            if not self.api_keys:
+                raise RuntimeError("Flow2API API Key 未配置")
+            key = self.api_keys[self._key_index]
+            self._key_index = (self._key_index + 1) % len(self.api_keys)
+            return key
+
+    def _proxy(self) -> str | None:
+        return self.proxy_url if self.use_proxy and self.proxy_url else None
+
+    async def _request_stream_text(self, payload: dict, headers: dict) -> str:
+        session = await self._get_session()
+        proxy = self._proxy()
+        t0 = time.perf_counter()
+
+        async with session.post(
+            self.api_url, json=payload, headers=headers, proxy=proxy
+        ) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                if resp.status == 405:
+                    raise RuntimeError(
+                        "Flow2API 请求失败 HTTP 405(Method Not Allowed)："
+                        f"{text[:300]}；请确认 api_url 指向 /v1/chat/completions 且为 POST"
+                        f"（当前: {self.api_url}）"
+                    )
+                raise RuntimeError(
+                    f"Flow2API 请求失败 HTTP {resp.status}: {text[:300]} (url={self.api_url})"
+                )
+
+            ctype = (resp.headers.get("content-type") or "").lower()
+            if "application/json" in ctype:
+                data = await resp.json()
+                content = ((data.get("choices") or [{}])[0].get("message") or {}).get(
+                    "content"
+                ) or ""
+                logger.info(
+                    "[Flow2API-Video] 非流式 JSON 响应耗时: %.2fs",
+                    time.perf_counter() - t0,
+                )
+                return str(content)
+
+            buffer = ""
+            full = ""
+            max_chars = 8_000_000
+
+            async for chunk in resp.content.iter_chunked(1024):
+                if not chunk:
+                    continue
+                buffer += chunk.decode("utf-8", errors="ignore")
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if data_str == "[DONE]":
+                        logger.info(
+                            "[Flow2API-Video] SSE 结束, 耗时: %.2fs",
+                            time.perf_counter() - t0,
+                        )
+                        return full
+                    try:
+                        obj = json.loads(data_str)
+                    except Exception:
+                        continue
+
+                    choice0 = (obj.get("choices") or [{}])[0]
+                    delta = choice0.get("delta") or {}
+                    message = choice0.get("message") or {}
+                    delta_content = (
+                        delta.get("content")
+                        if "content" in delta
+                        else message.get("content")
+                    )
+
+                    def _content_to_text(value: Any) -> str:
+                        if value is None:
+                            return ""
+                        if isinstance(value, str):
+                            return value
+                        if isinstance(value, list):
+                            return "".join(_content_to_text(x) for x in value)
+                        if isinstance(value, dict):
+                            text = value.get("text")
+                            if isinstance(text, str) and text:
+                                return text
+                            image_url = value.get("image_url")
+                            if isinstance(image_url, dict):
+                                url = image_url.get("url")
+                                if isinstance(url, str) and url:
+                                    return url
+                            url = value.get("url")
+                            if isinstance(url, str) and url:
+                                return url
+                            return str(value)
+                        return str(value)
+
+                    full += _content_to_text(delta_content)
+
+                    if len(full) > max_chars:
+                        raise RuntimeError(
+                            "Flow2API 返回内容过大，已终止解析（可能是服务异常输出）"
+                        )
+
+                    # 视频优先：命中媒体引用即可提前结束
+                    if _extract_first_video_ref(full) or _extract_first_image_ref(full):
+                        logger.info(
+                            "[Flow2API-Video] 提前命中媒体引用, 耗时: %.2fs",
+                            time.perf_counter() - t0,
+                        )
+                        return full
+
+            logger.info(
+                "[Flow2API-Video] SSE 读完但无 [DONE], 耗时: %.2fs",
+                time.perf_counter() - t0,
+            )
+            return full
+
+    async def generate_video_url(
+        self, *, prompt: str, image_bytes: bytes | None = None
+    ) -> str:
+        if not self.api_url:
+            raise RuntimeError("未配置 Flow2API 地址（flow2api_video.api_url）")
+        if not self.model:
+            raise RuntimeError("未配置 Flow2API 模型（flow2api_video.model）")
+
+        key = await self._next_key()
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+        }
+
+        p = (prompt or "").strip()
+        if not p:
+            raise ValueError("缺少提示词")
+
+        if image_bytes:
+            mime, _ = guess_image_mime_and_ext(image_bytes)
+            image_url = f"data:{mime};base64,{base64.b64encode(image_bytes).decode()}"
+            content: Any = [
+                {"type": "text", "text": p},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ]
+        else:
+            # 与官方示例一致：纯文本 prompt
+            content = p
+
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": content}],
+            "stream": True,
+        }
+
+        content_text = await self._request_stream_text(payload, headers)
+        ref = _extract_first_video_ref(content_text)
+        if ref:
+            return ref
+        img = _extract_first_image_ref(content_text)
+        if img:
+            raise RuntimeError("Flow2API 返回了图片而不是视频")
+        snippet = (content_text or "").strip().replace("\n", " ")[:200]
+        raise RuntimeError(f"Flow2API 未返回视频：{snippet}")
