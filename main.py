@@ -261,20 +261,36 @@ class GiteeAIImage(Star):
             size_bytes = int(p.stat().st_size)
         except Exception:
             size_bytes = 0
-        if size_bytes > self.IMAGE_AS_FILE_THRESHOLD_BYTES:
+
+        file_send_tries = 0
+
+        async def try_send_as_file(trigger: str) -> bool:
+            nonlocal file_send_tries
+            if file_send_tries >= 2:
+                return False
+            file_send_tries += 1
             try:
                 await event.send(event.chain_result([File(name=p.name, file=str(p))]))
                 logger.info(
-                    "[send_image] large image sent as file: %s (%s bytes)",
+                    "[send_image][file-fallback-v2] file send success: %s (%s bytes), trigger=%s, try=%s",
                     p.name,
                     size_bytes,
+                    trigger,
+                    file_send_tries,
                 )
-                return SendImageResult(ok=True, cached_path=p, used_fallback=True)
+                return True
             except Exception as e:
                 logger.warning(
-                    "[send_image] large-file send failed, fallback to image channels: %s",
+                    "[send_image][file-fallback-v2] file send failed: trigger=%s, try=%s, err=%s",
+                    trigger,
+                    file_send_tries,
                     e,
                 )
+                return False
+
+        if size_bytes > self.IMAGE_AS_FILE_THRESHOLD_BYTES:
+            if await try_send_as_file("size_threshold"):
+                return SendImageResult(ok=True, cached_path=p, used_fallback=True)
 
         delay = 1.5
         last_exc: Exception | None = None
@@ -322,6 +338,13 @@ class GiteeAIImage(Star):
                     attempts,
                     e,
                 )
+
+            # If rich-media channel is failing, immediately try original-file sending.
+            if self._is_rich_media_transfer_failed(
+                fs_exc
+            ) or self._is_rich_media_transfer_failed(bytes_exc):
+                if await try_send_as_file("rich_media_transfer_failed"):
+                    return SendImageResult(ok=True, cached_path=p, used_fallback=True)
 
             # Extra fallback for repeated rich-media failures: compress and retry by bytes.
             if self._is_rich_media_transfer_failed(fs_exc) or self._is_rich_media_transfer_failed(
