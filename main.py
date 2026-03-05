@@ -12,6 +12,7 @@ Gitee AI 图像生成插件
 
 import asyncio
 import base64
+import io
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -185,6 +186,49 @@ class GiteeAIImage(Star):
         msg = f"{exc!r} {exc}".lower()
         return "rich media transfer failed" in msg
 
+    @staticmethod
+    def _build_compact_image_bytes(
+        image_path: Path, *, max_side: int = 2048, target_bytes: int = 3_500_000
+    ) -> bytes | None:
+        """Build a smaller JPEG variant for platforms that reject large rich-media upload."""
+        try:
+            from PIL import Image as PILImage
+        except Exception:
+            return None
+
+        try:
+            with PILImage.open(image_path) as im:
+                if im.mode not in {"RGB", "L"}:
+                    im = im.convert("RGB")
+                elif im.mode == "L":
+                    im = im.convert("RGB")
+
+                w, h = im.size
+                if max(w, h) > max_side:
+                    ratio = float(max_side) / float(max(w, h))
+                    nw = max(1, int(w * ratio))
+                    nh = max(1, int(h * ratio))
+                    resampling = getattr(
+                        getattr(PILImage, "Resampling", PILImage), "LANCZOS"
+                    )
+                    im = im.resize((nw, nh), resampling)
+
+                for q in (88, 82, 76, 70, 64):
+                    buf = io.BytesIO()
+                    im.save(
+                        buf,
+                        format="JPEG",
+                        quality=q,
+                        optimize=True,
+                        progressive=True,
+                    )
+                    data = buf.getvalue()
+                    if data and (len(data) <= target_bytes or q == 64):
+                        return data
+        except Exception:
+            return None
+        return None
+
     def _is_selfie_enabled(self) -> bool:
         conf = self._get_feature("selfie")
         return self._as_bool(conf.get("enabled", True), default=True)
@@ -214,9 +258,12 @@ class GiteeAIImage(Star):
         last_exc: Exception | None = None
         attempts = max(1, int(max_attempts))
         rich_media_failures = 0
+        compact_bytes: bytes | None = None
+        compact_prepared = False
         for attempt in range(1, attempts + 1):
             fs_exc: Exception | None = None
             bytes_exc: Exception | None = None
+            compact_exc: Exception | None = None
             fs_failed_by_rich_media = False
 
             try:
@@ -234,35 +281,75 @@ class GiteeAIImage(Star):
                     e,
                 )
 
-            # If platform-side rich media transfer is failing, fromBytes usually fails the same way.
-            if not fs_failed_by_rich_media:
-                try:
-                    data = await asyncio.to_thread(p.read_bytes)
-                    await event.send(event.chain_result([Image.fromBytes(data)]))
-                    if fs_exc is not None:
+            try:
+                data = await asyncio.to_thread(p.read_bytes)
+                await event.send(event.chain_result([Image.fromBytes(data)]))
+                if fs_exc is not None:
+                    logger.info(
+                        "[send_image] fromBytes fallback succeeded (attempt=%s/%s).",
+                        attempt,
+                        attempts,
+                    )
+                return SendImageResult(ok=True, cached_path=p, used_fallback=True)
+            except Exception as e:
+                bytes_exc = e
+                last_exc = e
+                logger.debug(
+                    "[send_image] fromBytes failed (attempt=%s/%s): %s",
+                    attempt,
+                    attempts,
+                    e,
+                )
+
+            # Extra fallback for repeated rich-media failures: compress and retry by bytes.
+            if self._is_rich_media_transfer_failed(fs_exc) or self._is_rich_media_transfer_failed(
+                bytes_exc
+            ):
+                if not compact_prepared:
+                    compact_prepared = True
+                    compact_bytes = await asyncio.to_thread(
+                        self._build_compact_image_bytes, p
+                    )
+                    if compact_bytes:
                         logger.info(
-                            "[send_image] fromBytes fallback succeeded (attempt=%s/%s).",
+                            "[send_image] prepared compact fallback image: %s -> %s bytes",
+                            p,
+                            len(compact_bytes),
+                        )
+                if compact_bytes:
+                    try:
+                        await event.send(event.chain_result([Image.fromBytes(compact_bytes)]))
+                        logger.info(
+                            "[send_image] compact fromBytes fallback succeeded (attempt=%s/%s).",
                             attempt,
                             attempts,
                         )
-                    return SendImageResult(ok=True, cached_path=p, used_fallback=True)
-                except Exception as e:
-                    bytes_exc = e
-                    last_exc = e
-                    logger.debug(
-                        "[send_image] fromBytes failed (attempt=%s/%s): %s",
-                        attempt,
-                        attempts,
-                        e,
-                    )
+                        return SendImageResult(ok=True, cached_path=p, used_fallback=True)
+                    except Exception as e:
+                        compact_exc = e
+                        last_exc = e
+                        logger.debug(
+                            "[send_image] compact fromBytes failed (attempt=%s/%s): %s",
+                            attempt,
+                            attempts,
+                            e,
+                        )
 
             attempt_has_rich_media = self._is_rich_media_transfer_failed(
                 fs_exc
-            ) or self._is_rich_media_transfer_failed(bytes_exc)
+            ) or self._is_rich_media_transfer_failed(bytes_exc) or self._is_rich_media_transfer_failed(
+                compact_exc
+            )
             if attempt_has_rich_media:
                 rich_media_failures += 1
 
-            if fs_exc is not None and bytes_exc is not None:
+            if fs_exc is not None and bytes_exc is not None and compact_exc is not None:
+                logger.debug(
+                    "[send_image] attempt=%s/%s failed on all channels.",
+                    attempt,
+                    attempts,
+                )
+            elif fs_exc is not None and bytes_exc is not None:
                 logger.debug(
                     "[send_image] attempt=%s/%s failed on both channels.",
                     attempt,
