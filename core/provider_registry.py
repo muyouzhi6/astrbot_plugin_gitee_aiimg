@@ -41,6 +41,18 @@ def _is_http_url(value: Any) -> bool:
     return s.startswith("http://") or s.startswith("https://")
 
 
+_TEMPLATE_KEY_ALIASES: dict[str, str] = {
+    "gitee": "gitee_images",
+    "grok": "grok_images",
+    "grok2api": "grok2api_images",
+    "openai": "openai_images",
+    "openai_compat": "openai_images",
+    "openai_full_url": "openai_full_url_images",
+    "gemini_openai": "gemini_openai_images",
+    "modelscope": "modelscope_openai_images",
+}
+
+
 class ProviderRegistry:
     """Build and cache provider backends from v4 config."""
 
@@ -55,6 +67,62 @@ class ProviderRegistry:
 
         self._load_providers()
 
+    @classmethod
+    def _normalize_template_key(cls, raw: Any) -> str:
+        key = str(raw or "").strip()
+        if not key:
+            return ""
+        return _TEMPLATE_KEY_ALIASES.get(key, key)
+
+    @classmethod
+    def _resolve_template_key(cls, item: dict) -> str:
+        if not isinstance(item, dict):
+            return ""
+        for k in ("__template_key", "template_key", "type", "provider_type"):
+            key = cls._normalize_template_key(item.get(k))
+            if key:
+                return key
+
+        # Legacy fallback by id
+        pid = str(item.get("id") or "").strip().lower()
+        if pid in {"gemini_native"}:
+            return "gemini_native"
+        if pid in {"gemini_openai", "gemini_openai_images"}:
+            return "gemini_openai_images"
+        if pid in {"openai", "openai_compat", "openai_images"}:
+            return "openai_images"
+        if pid in {"grok_images", "grok"}:
+            return "grok_images"
+        if pid in {"gitee"}:
+            return "gitee_images"
+        if pid in {"grok_chat"}:
+            return "grok_chat"
+        if pid in {"flow2api"}:
+            return "flow2api"
+        if pid in {"grok2api"}:
+            return "grok2api_images"
+        if pid in {"openai_chat"}:
+            return "openai_chat"
+        if pid in {"openai_full_url", "openai_full_url_images"}:
+            return "openai_full_url_images"
+        if pid in {"modelscope", "modelscope_openai_images"}:
+            return "modelscope_openai_images"
+        if pid in {"gemini_openai_chat"}:
+            return "gemini_openai_chat"
+        if pid in {"gitee_images"}:
+            return "gitee_images"
+        if pid in {"gitee_async"}:
+            return "gitee_async"
+        if pid in {"jimeng"}:
+            return "jimeng"
+        if pid in {"vertex_ai_anonymous"}:
+            return "vertex_ai_anonymous"
+        if pid in {"grok_video"}:
+            return "grok_video"
+        if pid in {"flow2api_video"}:
+            return "flow2api_video"
+        return ""
+
     def _load_providers(self) -> None:
         raw = _as_list(self._config.get("providers"))
         for item in raw:
@@ -68,7 +136,11 @@ class ProviderRegistry:
                     "[ProviderRegistry] Duplicate provider id detected: %s", provider_id
                 )
                 continue
-            self._providers[provider_id] = item
+            normalized = dict(item)
+            template_key = self._resolve_template_key(normalized)
+            if template_key:
+                normalized["__template_key"] = template_key
+            self._providers[provider_id] = normalized
 
     def validate(self) -> list[str]:
         """Return human-readable validation errors. Never raises."""
@@ -96,7 +168,7 @@ class ProviderRegistry:
                 continue
             seen.add(provider_id)
 
-            template_key = str(item.get("__template_key") or "").strip()
+            template_key = self._resolve_template_key(item)
             if not template_key:
                 errors.append(f"providers[{idx}].__template_key is required")
                 continue

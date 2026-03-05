@@ -17,6 +17,25 @@ def _as_list(value: object) -> list:
     return value if isinstance(value, list) else []
 
 
+def _parse_chain_item(item: object) -> tuple[str, str] | None:
+    if isinstance(item, str):
+        pid = item.strip()
+        return (pid, "") if pid else None
+    if not isinstance(item, dict):
+        return None
+    pid = str(
+        item.get("provider_id")
+        or item.get("id")
+        or item.get("provider")
+        or item.get("backend")
+        or ""
+    ).strip()
+    if not pid:
+        return None
+    out_override = str(item.get("output") or item.get("default_output") or "").strip()
+    return pid, out_override
+
+
 class ImageDrawService:
     """Text-to-Image router for v4 config (provider chain)."""
 
@@ -42,17 +61,16 @@ class ImageDrawService:
     def _default_output(self) -> str:
         return str(self._feature_conf().get("default_output") or "").strip()
 
-    def _chain(self) -> list[dict]:
-        return [
-            x
-            for x in _as_list(self._feature_conf().get("chain"))
-            if isinstance(x, dict)
-        ]
+    def _chain(self) -> list:
+        return _as_list(self._feature_conf().get("chain"))
 
     def _candidate_ids(self) -> list[str]:
         out: list[str] = []
         for item in self._chain():
-            pid = str(item.get("provider_id") or "").strip()
+            parsed = _parse_chain_item(item)
+            if not parsed:
+                continue
+            pid, _ = parsed
             if pid and pid not in out:
                 out.append(pid)
         return out
@@ -79,10 +97,10 @@ class ImageDrawService:
             candidates = [(str(provider_id).strip(), "")]
         else:
             for item in self._chain():
-                pid = str(item.get("provider_id") or "").strip()
-                out_override = str(item.get("output") or "").strip()
-                if pid:
-                    candidates.append((pid, out_override))
+                parsed = _parse_chain_item(item)
+                if not parsed:
+                    continue
+                candidates.append(parsed)
 
         if not candidates:
             raise RuntimeError(
@@ -115,6 +133,8 @@ class ImageDrawService:
                 if not callable(gen):
                     raise RuntimeError("Provider does not support generate()")
                 result = await gen(prompt, size=final_size, resolution=final_res)
+                if not result:
+                    raise RuntimeError("Provider returned empty generate result")
                 logger.info(
                     "[draw] Provider=%s success in %.2fs", pid, time.perf_counter() - t0
                 )

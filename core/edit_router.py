@@ -20,6 +20,25 @@ def _as_list(value: object) -> list:
     return value if isinstance(value, list) else []
 
 
+def _parse_chain_item(item: object) -> tuple[str, str] | None:
+    if isinstance(item, str):
+        pid = item.strip()
+        return (pid, "") if pid else None
+    if not isinstance(item, dict):
+        return None
+    pid = str(
+        item.get("provider_id")
+        or item.get("id")
+        or item.get("provider")
+        or item.get("backend")
+        or ""
+    ).strip()
+    if not pid:
+        return None
+    out_override = str(item.get("output") or item.get("default_output") or "").strip()
+    return pid, out_override
+
+
 class EditRouter:
     """Image-to-Image router for v4 config (provider chain + presets)."""
 
@@ -53,12 +72,8 @@ class EditRouter:
     def _default_output(self) -> str:
         return str(self._feature_conf().get("default_output") or "").strip()
 
-    def _chain(self) -> list[dict]:
-        return [
-            x
-            for x in _as_list(self._feature_conf().get("chain"))
-            if isinstance(x, dict)
-        ]
+    def _chain(self) -> list:
+        return _as_list(self._feature_conf().get("chain"))
 
     def _load_presets(self) -> dict[str, str]:
         presets: dict[str, str] = {}
@@ -90,19 +105,22 @@ class EditRouter:
         await self.registry.close()
 
     @staticmethod
-    def _candidates_from_chain(raw_chain: list[dict]) -> list[tuple[str, str]]:
+    def _candidates_from_chain(raw_chain: list) -> list[tuple[str, str]]:
         out: list[tuple[str, str]] = []
+        seen: set[str] = set()
         for item in raw_chain:
-            if not isinstance(item, dict):
+            parsed = _parse_chain_item(item)
+            if not parsed:
                 continue
-            pid = str(item.get("provider_id") or "").strip()
-            out_override = str(item.get("output") or "").strip()
-            if pid:
-                out.append((pid, out_override))
+            pid, out_override = parsed
+            if pid in seen:
+                continue
+            seen.add(pid)
+            out.append((pid, out_override))
         return out
 
     def _candidate_chain(
-        self, backend: str | None, chain_override: list[dict] | None
+        self, backend: str | None, chain_override: list | None
     ) -> list[tuple[str, str]]:
         if backend:
             return [(str(backend).strip(), "")]
@@ -126,7 +144,7 @@ class EditRouter:
         size: str | None = None,
         resolution: str | None = None,
         default_output: str | None = None,
-        chain_override: list[dict] | None = None,
+        chain_override: list | None = None,
     ) -> Path:
         feature = self._feature_conf()
         if not bool(feature.get("enabled", True)):
@@ -208,6 +226,8 @@ class EditRouter:
                             size=final_size,
                             resolution=final_res,
                         )
+                    if not result:
+                        raise RuntimeError("Provider returned empty edit result")
                     logger.info(
                         "[edit] Provider=%s success in %.2fs",
                         pid,

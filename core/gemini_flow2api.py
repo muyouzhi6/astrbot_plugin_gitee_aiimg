@@ -34,11 +34,70 @@ _IMG_URL_RE = re.compile(
     r"(https?://[^\s<>\"')\]]+?\.(?:png|jpg|jpeg|webp|gif)(?:\?[^\s<>\"')\]]*)?)",
     re.IGNORECASE,
 )
+_JSON_URL_FIELD_RE = re.compile(
+    r'"(?:image_url|imageUrl|url|image|src|uri|link|href|fifeUrl|fife_url|final_image_url|origin_image_url)"\s*:\s*"([^"]+)"'
+)
 _HTML_VIDEO_RE = re.compile(r'<video[^>]*src=["\']([^"\'>]+)["\']', re.IGNORECASE)
 _VIDEO_URL_RE = re.compile(
     r"(https?://[^\s<>\"')\]]+?\.(?:mp4|webm|mov)(?:\?[^\s<>\"')\]]*)?)",
     re.IGNORECASE,
 )
+
+
+def _strip_markdown_target(target: str) -> str | None:
+    s = (target or "").strip()
+    if not s:
+        return None
+    if s.startswith("<") and ">" in s:
+        right = s.find(">")
+        if right > 1:
+            s = s[1:right].strip()
+    m = re.match(r'^(?P<url>\S+)(?:\s+(?:"[^"]*"|\'[^\']*\'))?\s*$', s)
+    if m:
+        s = m.group("url")
+    s = s.strip().strip('"').strip("'")
+    return s or None
+
+
+def _decode_base64_bytes(text: str) -> bytes:
+    s = re.sub(r"\s+", "", str(text or "").strip())
+    if not s:
+        return b""
+    candidates = [s, s.replace("-", "+").replace("_", "/")]
+    for cand in candidates:
+        pad = "=" * ((4 - len(cand) % 4) % 4)
+        try:
+            raw = base64.b64decode(cand + pad, validate=False)
+            if raw:
+                return raw
+        except Exception:
+            continue
+    try:
+        raw = base64.urlsafe_b64decode(s + ("=" * ((4 - len(s) % 4) % 4)))
+        if raw:
+            return raw
+    except Exception:
+        pass
+    return b""
+
+
+def _is_valid_data_image_ref(ref: str) -> bool:
+    s = str(ref or "").strip()
+    if not s.startswith("data:image/"):
+        return False
+    if "," not in s:
+        return False
+    _header, b64 = s.split(",", 1)
+    b64 = re.sub(r"\s+", "", (b64 or "").strip())
+    if not b64 or b64 == "...":
+        return False
+    if len(b64) < 16:
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9+/=_-]+", b64[:2048]):
+        return False
+    if len(b64) < 128 and not _decode_base64_bytes(b64):
+        return False
+    return True
 
 
 def _looks_like_video_url(url: str) -> bool:
@@ -56,13 +115,23 @@ def _extract_first_image_ref(text: str) -> str | None:
     s = (text or "").strip()
     if not s:
         return None
+    if s.startswith("data:image/"):
+        compact = re.sub(r"\s+", "", s)
+        if _is_valid_data_image_ref(compact):
+            return compact
     m = _MD_IMAGE_RE.search(s)
     if m:
-        ref = m.group(1).strip()
-        return None if _looks_like_video_url(ref) else (ref or None)
-    m = _DATA_IMAGE_RE.search(s)
-    if m:
-        return m.group(1).strip()
+        ref = _strip_markdown_target(m.group(1)) or m.group(1).strip()
+        if ref.startswith("data:image/"):
+            ref = re.sub(r"\s+", "", ref)
+            if _is_valid_data_image_ref(ref):
+                return ref
+        elif not _looks_like_video_url(ref):
+            return ref or None
+    for m in _DATA_IMAGE_RE.finditer(s):
+        ref = re.sub(r"\s+", "", m.group(1).strip())
+        if _is_valid_data_image_ref(ref):
+            return ref
     m = _HTML_IMG_RE.search(s)
     if m:
         ref = m.group(1).strip()
@@ -73,6 +142,50 @@ def _extract_first_image_ref(text: str) -> str | None:
         return None if _looks_like_video_url(ref) else (ref or None)
     if s.startswith(("http://", "https://")) and not _looks_like_video_url(s):
         return s
+
+    for m in _JSON_URL_FIELD_RE.finditer(s):
+        cand = m.group(1).strip().replace("\\/", "/")
+        cand = _strip_markdown_target(cand) or cand
+        if cand.startswith("data:image/"):
+            cand = re.sub(r"\s+", "", cand)
+            if _is_valid_data_image_ref(cand):
+                return cand
+        if cand.startswith(("http://", "https://")) and not _looks_like_video_url(cand):
+            return cand
+
+    if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+        try:
+            parsed = json.loads(s)
+        except Exception:
+            parsed = None
+        if parsed is not None:
+            candidates: list[str] = []
+            seen: set[int] = set()
+
+            def walk(x: Any) -> None:
+                if x is None:
+                    return
+                oid = id(x)
+                if oid in seen:
+                    return
+                seen.add(oid)
+                if isinstance(x, str):
+                    candidates.append(x)
+                    return
+                if isinstance(x, dict):
+                    for v in x.values():
+                        walk(v)
+                    return
+                if isinstance(x, list):
+                    for v in x:
+                        walk(v)
+                    return
+
+            walk(parsed)
+            for cand in candidates:
+                ref = _extract_first_image_ref(cand)
+                if ref:
+                    return ref
     return None
 
 
@@ -90,6 +203,143 @@ def _extract_first_video_ref(text: str) -> str | None:
         return ref if _looks_like_video_url(ref) else None
     if _looks_like_video_url(s):
         return s
+    return None
+
+
+def _iter_strings(obj: Any) -> list[str]:
+    out: list[str] = []
+    seen: set[int] = set()
+
+    def walk(x: Any) -> None:
+        if x is None:
+            return
+        oid = id(x)
+        if oid in seen:
+            return
+        seen.add(oid)
+        if isinstance(x, str):
+            out.append(x)
+            return
+        if isinstance(x, dict):
+            for v in x.values():
+                walk(v)
+            return
+        if isinstance(x, list):
+            for v in x:
+                walk(v)
+            return
+
+    walk(obj)
+    return out
+
+
+def _extract_first_image_ref_from_obj(obj: Any) -> str | None:
+    if obj is None:
+        return None
+    if isinstance(obj, str):
+        return _extract_first_image_ref(obj)
+    if isinstance(obj, list):
+        for item in obj:
+            ref = _extract_first_image_ref_from_obj(item)
+            if ref:
+                return ref
+        return None
+    if isinstance(obj, dict):
+        b64 = obj.get("b64_json")
+        if isinstance(b64, str) and b64.strip():
+            return f"data:image/png;base64,{b64.strip()}"
+
+        for key in (
+            "url",
+            "image_url",
+            "image",
+            "src",
+            "uri",
+            "link",
+            "href",
+            "fifeUrl",
+            "fife_url",
+            "final_image_url",
+            "origin_image_url",
+            "thumbnail",
+        ):
+            value = obj.get(key)
+            if isinstance(value, str):
+                ref = _extract_first_image_ref(value)
+                if ref:
+                    return ref
+            ref = _extract_first_image_ref_from_obj(value)
+            if ref:
+                return ref
+
+        for key in (
+            "images",
+            "image_urls",
+            "attachments",
+            "media",
+            "result",
+            "response",
+            "content",
+            "delta",
+            "message",
+            "tool_calls",
+            "choices",
+            "parts",
+            "candidates",
+        ):
+            ref = _extract_first_image_ref_from_obj(obj.get(key))
+            if ref:
+                return ref
+
+        for s in _iter_strings(obj):
+            ref = _extract_first_image_ref(s)
+            if ref:
+                return ref
+    return None
+
+
+def _extract_first_video_ref_from_obj(obj: Any) -> str | None:
+    if obj is None:
+        return None
+    if isinstance(obj, str):
+        return _extract_first_video_ref(obj)
+    if isinstance(obj, list):
+        for item in obj:
+            ref = _extract_first_video_ref_from_obj(item)
+            if ref:
+                return ref
+        return None
+    if isinstance(obj, dict):
+        for key in ("video_url", "file_url", "url", "href", "download_url"):
+            value = obj.get(key)
+            if isinstance(value, str):
+                ref = _extract_first_video_ref(value)
+                if ref:
+                    return ref
+            ref = _extract_first_video_ref_from_obj(value)
+            if ref:
+                return ref
+
+        for key in (
+            "media",
+            "result",
+            "response",
+            "content",
+            "delta",
+            "message",
+            "tool_calls",
+            "choices",
+            "parts",
+            "candidates",
+        ):
+            ref = _extract_first_video_ref_from_obj(obj.get(key))
+            if ref:
+                return ref
+
+        for s in _iter_strings(obj):
+            ref = _extract_first_video_ref(s)
+            if ref:
+                return ref
     return None
 
 
@@ -251,6 +501,20 @@ class GeminiFlow2ApiBackend:
             ctype = (resp.headers.get("content-type") or "").lower()
             if "application/json" in ctype:
                 data = await resp.json()
+                image_ref = _extract_first_image_ref_from_obj(data)
+                if image_ref:
+                    logger.info(
+                        "[GeminiFlow2API] 非流式 JSON 命中图片引用, 耗时: %.2fs",
+                        time.perf_counter() - t0,
+                    )
+                    return image_ref
+                video_ref = _extract_first_video_ref_from_obj(data)
+                if video_ref:
+                    logger.info(
+                        "[GeminiFlow2API] 非流式 JSON 命中视频引用, 耗时: %.2fs",
+                        time.perf_counter() - t0,
+                    )
+                    return video_ref
                 content = ((data.get("choices") or [{}])[0].get("message") or {}).get(
                     "content"
                 ) or ""
@@ -262,7 +526,7 @@ class GeminiFlow2ApiBackend:
 
             buffer = ""
             full = ""
-            max_chars = 8_000_000  # 防止异常输出导致内存膨胀
+            max_chars = 80_000_000  # 4K data:image 可能超过 27MB，保留保护上限
 
             async for chunk in resp.content.iter_chunked(1024):
                 if not chunk:
@@ -285,6 +549,13 @@ class GeminiFlow2ApiBackend:
                     except Exception:
                         continue
 
+                    chunk_image_ref = _extract_first_image_ref_from_obj(obj)
+                    if chunk_image_ref and chunk_image_ref not in full:
+                        full += f"\n{chunk_image_ref}"
+                    chunk_video_ref = _extract_first_video_ref_from_obj(obj)
+                    if chunk_video_ref and chunk_video_ref not in full:
+                        full += f"\n{chunk_video_ref}"
+
                     choice0 = (obj.get("choices") or [{}])[0]
                     delta = choice0.get("delta") or {}
                     message = choice0.get("message") or {}
@@ -293,6 +564,10 @@ class GeminiFlow2ApiBackend:
                         if "content" in delta
                         else message.get("content")
                     )
+                    if delta_content is None and "reasoning_content" in delta:
+                        delta_content = delta.get("reasoning_content")
+                    if delta_content is None and "reasoning_content" in message:
+                        delta_content = message.get("reasoning_content")
 
                     def _content_to_text(value: Any) -> str:
                         if value is None:
@@ -320,18 +595,31 @@ class GeminiFlow2ApiBackend:
 
                     full += _content_to_text(delta_content)
 
-                    if len(full) > max_chars:
-                        raise RuntimeError(
-                            "Flow2API 返回内容过大，已终止解析（可能是服务异常输出）"
-                        )
+                    image_ref = _extract_first_image_ref(full)
+                    video_ref = _extract_first_video_ref(full)
 
-                    # 提前发现 URL / data:image 就可提前结束（避免一直等）
-                    if _extract_first_image_ref(full) or _extract_first_video_ref(full):
+                    # 仅当出现 URL 类媒体引用时提前结束；
+                    # data:image 在流式中可能尚未完整，提前返回会导致 base64 被截断。
+                    if (
+                        chunk_image_ref
+                        and chunk_image_ref.startswith(("http://", "https://"))
+                    ) or chunk_video_ref:
+                        logger.info(
+                            "[GeminiFlow2API] 提前命中结构化媒体引用, 耗时: %.2fs",
+                            time.perf_counter() - t0,
+                        )
+                        return full
+                    if (image_ref and image_ref.startswith(("http://", "https://"))) or video_ref:
                         logger.info(
                             "[GeminiFlow2API] 提前命中媒体引用, 耗时: %.2fs",
                             time.perf_counter() - t0,
                         )
                         return full
+
+                    if len(full) > max_chars:
+                        raise RuntimeError(
+                            "Flow2API 返回内容过大，已终止解析（可能是服务异常输出）"
+                        )
 
             logger.info(
                 "[GeminiFlow2API] SSE 读完但无 [DONE], 耗时: %.2fs",
@@ -351,13 +639,16 @@ class GeminiFlow2ApiBackend:
             raise RuntimeError(f"Flow2API 未返回图片：{snippet}")
 
         if ref.startswith("data:image/"):
+            ref = re.sub(r"\s+", "", ref)
             try:
                 _header, b64_data = ref.split(",", 1)
             except ValueError:
                 raise RuntimeError(
                     "Flow2API 返回 data:image 但缺少 base64 数据"
                 ) from None
-            image_bytes = base64.b64decode((b64_data or "").strip())
+            image_bytes = _decode_base64_bytes((b64_data or "").strip())
+            if not image_bytes:
+                raise RuntimeError("Flow2API 返回 data:image 但 base64 解码失败")
             return await self.imgr.save_image(image_bytes)
 
         if ref.startswith(("http://", "https://")):
@@ -503,6 +794,20 @@ class Flow2ApiVideoBackend:
             ctype = (resp.headers.get("content-type") or "").lower()
             if "application/json" in ctype:
                 data = await resp.json()
+                video_ref = _extract_first_video_ref_from_obj(data)
+                if video_ref:
+                    logger.info(
+                        "[Flow2API-Video] 非流式 JSON 命中视频引用, 耗时: %.2fs",
+                        time.perf_counter() - t0,
+                    )
+                    return video_ref
+                image_ref = _extract_first_image_ref_from_obj(data)
+                if image_ref:
+                    logger.info(
+                        "[Flow2API-Video] 非流式 JSON 命中图片引用, 耗时: %.2fs",
+                        time.perf_counter() - t0,
+                    )
+                    return image_ref
                 content = ((data.get("choices") or [{}])[0].get("message") or {}).get(
                     "content"
                 ) or ""
@@ -537,6 +842,13 @@ class Flow2ApiVideoBackend:
                     except Exception:
                         continue
 
+                    chunk_video_ref = _extract_first_video_ref_from_obj(obj)
+                    if chunk_video_ref and chunk_video_ref not in full:
+                        full += f"\n{chunk_video_ref}"
+                    chunk_image_ref = _extract_first_image_ref_from_obj(obj)
+                    if chunk_image_ref and chunk_image_ref not in full:
+                        full += f"\n{chunk_image_ref}"
+
                     choice0 = (obj.get("choices") or [{}])[0]
                     delta = choice0.get("delta") or {}
                     message = choice0.get("message") or {}
@@ -545,6 +857,10 @@ class Flow2ApiVideoBackend:
                         if "content" in delta
                         else message.get("content")
                     )
+                    if delta_content is None and "reasoning_content" in delta:
+                        delta_content = delta.get("reasoning_content")
+                    if delta_content is None and "reasoning_content" in message:
+                        delta_content = message.get("reasoning_content")
 
                     def _content_to_text(value: Any) -> str:
                         if value is None:
@@ -575,8 +891,20 @@ class Flow2ApiVideoBackend:
                             "Flow2API 返回内容过大，已终止解析（可能是服务异常输出）"
                         )
 
-                    # 视频优先：命中媒体引用即可提前结束
-                    if _extract_first_video_ref(full) or _extract_first_image_ref(full):
+                    # 视频优先：命中 URL 类媒体引用即可提前结束
+                    video_ref = _extract_first_video_ref(full)
+                    image_ref = _extract_first_image_ref(full)
+                    if chunk_video_ref or (
+                        chunk_image_ref and chunk_image_ref.startswith(("http://", "https://"))
+                    ):
+                        logger.info(
+                            "[Flow2API-Video] 提前命中结构化媒体引用, 耗时: %.2fs",
+                            time.perf_counter() - t0,
+                        )
+                        return full
+                    if video_ref or (
+                        image_ref and image_ref.startswith(("http://", "https://"))
+                    ):
                         logger.info(
                             "[Flow2API-Video] 提前命中媒体引用, 耗时: %.2fs",
                             time.perf_counter() - t0,

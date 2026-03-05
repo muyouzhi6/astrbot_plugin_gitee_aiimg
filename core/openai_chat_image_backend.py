@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import inspect
+import json
 import re
 import time
 from pathlib import Path
@@ -14,11 +15,14 @@ from .image_format import guess_image_mime_and_ext
 from .openai_compat_backend import normalize_openai_compat_base_url
 
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[.*?\]\((.*?)\)")
-_DATA_IMAGE_RE = re.compile(r"(data:image/[^\\s)]+)")
+_DATA_IMAGE_RE = re.compile(r"(data:image/[^\s)]+)")
 _HTML_IMG_RE = re.compile(r'<img[^>]*src=["\']([^"\'>]+)["\']', re.IGNORECASE)
 _IMAGE_URL_RE = re.compile(
     r"(https?://[^\s<>\"')\]]+?\.(?:png|jpg|jpeg|webp|gif)(?:\?[^\s<>\"')\]]*)?)",
     re.IGNORECASE,
+)
+_JSON_URL_FIELD_RE = re.compile(
+    r'"(?:image_url|imageUrl|url|image|src|uri|link|href|fifeUrl|fife_url|final_image_url|origin_image_url)"\s*:\s*"([^"]+)"'
 )
 
 _HTML_VIDEO_RE = re.compile(r'<video[^>]*src=["\']([^"\'>]+)["\']', re.IGNORECASE)
@@ -28,6 +32,44 @@ _VIDEO_URL_RE = re.compile(
 )
 
 _BASE64_PREFIX_RE = re.compile(r"^(?:b64|base64)\s*:\s*", re.IGNORECASE)
+
+
+def _strip_markdown_target(target: str) -> str | None:
+    s = (target or "").strip()
+    if not s:
+        return None
+    if s.startswith("<") and ">" in s:
+        right = s.find(">")
+        if right > 1:
+            s = s[1:right].strip()
+    # markdown may include optional title: (url "title")
+    m = re.match(r'^(?P<url>\S+)(?:\s+(?:"[^"]*"|\'[^\']*\'))?\s*$', s)
+    if m:
+        s = m.group("url")
+    s = s.strip().strip('"').strip("'")
+    return s or None
+
+
+def _decode_base64_bytes(text: str) -> bytes:
+    s = re.sub(r"\s+", "", str(text or "").strip())
+    if not s:
+        return b""
+    candidates = [s, s.replace("-", "+").replace("_", "/")]
+    for cand in candidates:
+        pad = "=" * ((4 - len(cand) % 4) % 4)
+        try:
+            raw = base64.b64decode(cand + pad, validate=False)
+            if raw:
+                return raw
+        except Exception:
+            continue
+    try:
+        raw = base64.urlsafe_b64decode(s + ("=" * ((4 - len(s) % 4) % 4)))
+        if raw:
+            return raw
+    except Exception:
+        pass
+    return b""
 
 
 def _looks_like_video_url(url: str) -> bool:
@@ -48,20 +90,26 @@ def _is_valid_data_image_ref(ref: str) -> bool:
     if "," not in s:
         return False
     _header, b64 = s.split(",", 1)
-    b64 = (b64 or "").strip()
+    b64 = re.sub(r"\s+", "", (b64 or "").strip())
     if not b64 or b64 == "...":
         return False
-    # too short usually means truncated
-    if len(b64) < 128:
+    if len(b64) < 16:
         return False
     # lightweight charset sanity check (prefix only)
     try:
         import re as _re
 
-        if not _re.fullmatch(r"[A-Za-z0-9+/=]+", b64[:2048]):
+        if not _re.fullmatch(r"[A-Za-z0-9+/=_-]+", b64[:2048]):
             return False
     except Exception:
         pass
+    # short payloads may still be valid (small png/jpg); verify by decode + magic.
+    if len(b64) < 128:
+        raw = _decode_base64_bytes(b64)
+        if not raw:
+            return False
+        if not _guess_mime_from_magic(raw):
+            return False
     return True
 
 
@@ -86,29 +134,41 @@ def _guess_mime_from_magic(image_bytes: bytes) -> str | None:
 def _base64_to_data_image_ref(text: str) -> str | None:
     s = (text or "").strip().strip('"').strip("'")
     s = _BASE64_PREFIX_RE.sub("", s).strip()
-    if len(s) < 256:
+    s = re.sub(r"\s+", "", s)
+    if len(s) < 128:
         return None
-    try:
-        raw = base64.b64decode(s, validate=True)
-    except Exception:
+    raw = _decode_base64_bytes(s)
+    if not raw:
         return None
     mime = _guess_mime_from_magic(raw)
     if not mime:
         return None
-    return f"data:{mime};base64,{s}"
+    std_b64 = base64.b64encode(raw).decode()
+    return f"data:{mime};base64,{std_b64}"
 
 
 def _extract_first_image_ref(text: str) -> str | None:
     s = (text or "").strip()
     if not s:
         return None
+    if s.startswith("data:image/"):
+        compact = re.sub(r"\s+", "", s)
+        if _is_valid_data_image_ref(compact):
+            return compact
     m = _MARKDOWN_IMAGE_RE.search(s)
     if m:
-        return m.group(1).strip()
+        cand = _strip_markdown_target(m.group(1))
+        if cand:
+            if cand.startswith("data:image/"):
+                cand = re.sub(r"\s+", "", cand)
+                if _is_valid_data_image_ref(cand):
+                    return cand
+            elif not _looks_like_video_url(cand):
+                return cand
 
     # data:image refs may be huge and occasionally truncated; only accept well-formed ones.
     for m in _DATA_IMAGE_RE.finditer(s):
-        cand = m.group(1).strip()
+        cand = re.sub(r"\s+", "", m.group(1).strip())
         if _is_valid_data_image_ref(cand):
             return cand
 
@@ -126,6 +186,29 @@ def _extract_first_image_ref(text: str) -> str | None:
         if _looks_like_video_url(s):
             return None
         return s
+
+    # JSON-like snippets: {"image_url":"..."} / {"url":"..."} etc.
+    for m in _JSON_URL_FIELD_RE.finditer(s):
+        cand = m.group(1).strip().replace("\\/", "/")
+        cand = _strip_markdown_target(cand) or cand
+        if cand.startswith("data:image/"):
+            cand = re.sub(r"\s+", "", cand)
+            if _is_valid_data_image_ref(cand):
+                return cand
+        if cand.startswith(("http://", "https://")) and not _looks_like_video_url(cand):
+            return cand
+
+    # Some gateways wrap full payload into JSON string.
+    if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+        try:
+            parsed = json.loads(s)
+        except Exception:
+            parsed = None
+        if parsed is not None:
+            for v in _iter_strings(parsed):
+                ref = _extract_first_image_ref(v)
+                if ref:
+                    return ref
 
     # Some gateways/models return raw base64 without data:image prefix.
     ref = _base64_to_data_image_ref(s)
@@ -168,10 +251,15 @@ def _is_client_closed_error(exc: Exception) -> bool:
 
 def _iter_strings(obj: object) -> list[str]:
     out: list[str] = []
+    seen: set[int] = set()
 
     def walk(x: object) -> None:
         if x is None:
             return
+        oid = id(x)
+        if oid in seen:
+            return
+        seen.add(oid)
         if isinstance(x, str):
             out.append(x)
             return
@@ -182,6 +270,24 @@ def _iter_strings(obj: object) -> list[str]:
         if isinstance(x, (list, tuple)):
             for v in x:
                 walk(v)
+            return
+        model_dump = getattr(x, "model_dump", None)
+        if callable(model_dump):
+            try:
+                walk(model_dump())
+                return
+            except Exception:
+                pass
+        as_dict = getattr(x, "dict", None)
+        if callable(as_dict):
+            try:
+                walk(as_dict())
+                return
+            except Exception:
+                pass
+        obj_dict = getattr(x, "__dict__", None)
+        if isinstance(obj_dict, dict):
+            walk(obj_dict)
             return
 
     walk(obj)
@@ -240,14 +346,34 @@ def _extract_image_ref_from_content(content: object) -> str | None:
                 if ref:
                     return ref
 
-        # Some gateways return {"url": "..."} / {"image": "data:image/..."} etc.
-        for k in ("url", "image", "image_url", "data"):
+        # Some gateways return {"url": "..."} / {"image": "..."} with various key names.
+        for k in (
+            "url",
+            "image",
+            "image_url",
+            "data",
+            "src",
+            "uri",
+            "link",
+            "href",
+            "final_image_url",
+            "origin_image_url",
+            "fifeUrl",
+            "fife_url",
+            "thumbnail",
+        ):
             v = content.get(k)
             if isinstance(v, str):
                 ref = _extract_first_image_ref(v)
                 if ref:
                     return ref
             ref = _extract_image_ref_from_content(v)
+            if ref:
+                return ref
+
+        # Common container fields.
+        for k in ("images", "image_urls", "attachments", "media", "result", "response"):
+            ref = _extract_image_ref_from_content(content.get(k))
             if ref:
                 return ref
 
@@ -397,45 +523,84 @@ class OpenAIChatImageBackend:
         self._clients[key] = client
         return client
 
-    def _extract_image_ref_from_response(self, resp: object) -> str | None:
-        # 1) Preferred: first choice message content.
+    @staticmethod
+    def _normalize_ref_candidate(value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        s = value.strip().strip('"').strip("'")
+        if not s:
+            return None
+        if s.startswith("data:image/"):
+            return re.sub(r"\s+", "", s)
+        if s.startswith("http://") or s.startswith("https://"):
+            return s
+        ref = _extract_first_image_ref(s)
+        if not ref:
+            return None
+        if ref.startswith("data:image/"):
+            return re.sub(r"\s+", "", ref)
+        return ref
+
+    def _extract_image_refs_from_response(self, resp: object) -> list[str]:
+        refs: list[str] = []
+        seen: set[str] = set()
+
+        def add_ref(value: object) -> None:
+            ref = self._normalize_ref_candidate(value)
+            if not ref:
+                return
+            if ref.startswith(("http://", "https://")) and _looks_like_video_url(ref):
+                return
+            if ref in seen:
+                return
+            seen.add(ref)
+            refs.append(ref)
+
+        def collect(content: object) -> None:
+            if content is None:
+                return
+            add_ref(_extract_image_ref_from_content(content))
+            for s in _iter_strings(content):
+                add_ref(s)
+
+        # 1) Preferred: all choices message blocks.
         try:
-            choice0 = resp.choices[0]  # type: ignore[attr-defined]
-            msg = getattr(choice0, "message", None)
-            if msg is not None:
-                images = getattr(msg, "images", None)
-                ref = _extract_image_ref_from_content(images)
-                if ref:
-                    return ref
-
-                ref = _extract_image_ref_from_content(getattr(msg, "content", None))
-                if ref:
-                    return ref
-
-                tool_calls = getattr(msg, "tool_calls", None)
-                ref = _extract_image_ref_from_content(tool_calls)
-                if ref:
-                    return ref
+            choices = list(getattr(resp, "choices", []) or [])  # type: ignore[attr-defined]
+            if not choices and hasattr(resp, "choices"):  # type: ignore[attr-defined]
+                choices = [resp.choices[0]]  # type: ignore[attr-defined]
+            for choice in choices[:4]:
+                msg = getattr(choice, "message", None)
+                if msg is None:
+                    continue
+                collect(getattr(msg, "images", None))
+                collect(getattr(msg, "content", None))
+                collect(getattr(msg, "tool_calls", None))
         except Exception:
             pass
 
-        # 2) Fallback: scan model dump (dict/list) for any data:image / markdown / url.
+        # 2) Fallback: scan model dump (dict/list) for data:image / markdown / url.
         try:
             dumped = resp.model_dump()  # type: ignore[attr-defined]
         except Exception:
             dumped = None
         if dumped is not None:
-            ref = _extract_image_ref_from_content(dumped)
-            if ref:
-                return ref
+            collect(dumped)
 
-        return None
+        return refs
+
+    def _extract_image_ref_from_response(self, resp: object) -> str | None:
+        refs = self._extract_image_refs_from_response(resp)
+        return refs[0] if refs else None
 
     def _extract_video_ref_from_response(self, resp: object) -> str | None:
         try:
-            choice0 = resp.choices[0]  # type: ignore[attr-defined]
-            msg = getattr(choice0, "message", None)
-            if msg is not None:
+            choices = list(getattr(resp, "choices", []) or [])  # type: ignore[attr-defined]
+            if not choices and hasattr(resp, "choices"):  # type: ignore[attr-defined]
+                choices = [resp.choices[0]]  # type: ignore[attr-defined]
+            for choice in choices[:4]:
+                msg = getattr(choice, "message", None)
+                if msg is None:
+                    continue
                 url = _extract_video_ref_from_content(getattr(msg, "content", None))
                 if url:
                     return url
@@ -450,20 +615,30 @@ class OpenAIChatImageBackend:
             return _extract_video_ref_from_content(dumped)
         return None
 
-    async def _save_from_ref(self, ref: str, *, debug_snippet: str = "") -> Path:
+    async def _save_single_ref(self, ref: str, *, debug_snippet: str = "") -> Path:
         if not ref:
             raise RuntimeError(
                 f"chat 返回未包含图片（需 markdown/data:image/url）：{debug_snippet}"
             )
 
         if ref.startswith("data:image/"):
+            compact = re.sub(r"\s+", "", ref)
             try:
-                _header, b64_data = ref.split(",", 1)
+                _header, b64_data = compact.split(",", 1)
             except ValueError:
                 raise RuntimeError(
-                    f"chat 返回 data:image 但缺少 base64 数据（len={len(ref)} head={ref[:48]!r}）：{debug_snippet}"
+                    "chat 返回 data:image 但缺少 base64 数据"
+                    f"（len={len(compact)} head={compact[:64]!r} tail={compact[-32:]!r}）：{debug_snippet}"
                 ) from None
-            image_bytes = base64.b64decode((b64_data or "").strip())
+            try:
+                image_bytes = _decode_base64_bytes((b64_data or "").strip())
+            except Exception:
+                image_bytes = b""
+            if not image_bytes:
+                raise RuntimeError(
+                    "chat 返回 data:image 但 base64 解码失败"
+                    f"（len={len(b64_data or '')} head={str(b64_data)[:48]!r}）：{debug_snippet}"
+                )
             return await self.imgr.save_image(image_bytes)
 
         if ref.startswith("http://") or ref.startswith("https://"):
@@ -474,6 +649,32 @@ class OpenAIChatImageBackend:
             return await self.imgr.download_image(ref)
 
         raise RuntimeError("chat 返回的图片引用格式不支持")
+
+    async def _save_from_ref(
+        self, ref: str, *, debug_snippet: str = "", fallback_refs: list[str] | None = None
+    ) -> Path:
+        candidates: list[str] = [str(ref or "").strip()]
+        for extra in fallback_refs or []:
+            s = str(extra or "").strip()
+            if s and s not in candidates:
+                candidates.append(s)
+
+        last_error: Exception | None = None
+        for idx, cand in enumerate(candidates):
+            try:
+                return await self._save_single_ref(cand, debug_snippet=debug_snippet)
+            except Exception as e:
+                last_error = e
+                if idx + 1 < len(candidates):
+                    logger.warning(
+                        "[OpenAIChatImage] 图片引用解析失败，尝试回退候选 %s/%s: %s",
+                        idx + 1,
+                        len(candidates),
+                        e,
+                    )
+                    continue
+                raise
+        raise RuntimeError(f"chat 图片保存失败: {last_error}")
 
     async def generate(
         self,
@@ -536,7 +737,8 @@ class OpenAIChatImageBackend:
                 )
                 raise
 
-        ref = self._extract_image_ref_from_response(resp)
+        refs = self._extract_image_refs_from_response(resp)
+        ref = refs[0] if refs else None
         debug_snippet = ""
         try:
             debug_snippet = (
@@ -554,7 +756,9 @@ class OpenAIChatImageBackend:
                 raise RuntimeError(
                     f"chat 返回了视频而不是图片：{video_url}（如果想要视频请用 /视频；如果想要图片请换模型或改用 images 接口）"
                 )
-        return await self._save_from_ref(ref or "", debug_snippet=debug_snippet)
+        return await self._save_from_ref(
+            ref or "", debug_snippet=debug_snippet, fallback_refs=refs[1:]
+        )
 
     async def edit(
         self,
@@ -634,7 +838,8 @@ class OpenAIChatImageBackend:
                 )
                 raise
 
-        ref = self._extract_image_ref_from_response(resp)
+        refs = self._extract_image_refs_from_response(resp)
+        ref = refs[0] if refs else None
         debug_snippet = ""
         try:
             debug_snippet = (
@@ -652,4 +857,6 @@ class OpenAIChatImageBackend:
                 raise RuntimeError(
                     f"chat 返回了视频而不是图片：{video_url}（如果想要视频请用 /视频；如果想要图片请换模型或改用 images 接口）"
                 )
-        return await self._save_from_ref(ref or "", debug_snippet=debug_snippet)
+        return await self._save_from_ref(
+            ref or "", debug_snippet=debug_snippet, fallback_refs=refs[1:]
+        )

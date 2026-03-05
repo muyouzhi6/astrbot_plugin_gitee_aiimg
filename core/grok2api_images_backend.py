@@ -11,6 +11,8 @@ Grok2API Images 后端（/v1/images/generations）
 from __future__ import annotations
 
 import base64
+import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -53,22 +55,164 @@ def _pick_first_api_key(api_keys: list[str]) -> str:
     return keys[0]
 
 
+_MD_IMAGE_RE = re.compile(r"!\[.*?\]\((.*?)\)")
+_DATA_IMAGE_RE = re.compile(r"(data:image/[^\s)]+)")
+_JSON_URL_FIELD_RE = re.compile(
+    r'"(?:image_url|imageUrl|url|image|src|uri|link|href|fifeUrl|fife_url|final_image_url|origin_image_url)"\s*:\s*"([^"]+)"'
+)
+
+
+def _strip_markdown_target(target: str) -> str | None:
+    s = (target or "").strip()
+    if not s:
+        return None
+    if s.startswith("<") and ">" in s:
+        right = s.find(">")
+        if right > 1:
+            s = s[1:right].strip()
+    m = re.match(r'^(?P<url>\S+)(?:\s+(?:"[^"]*"|\'[^\']*\'))?\s*$', s)
+    if m:
+        s = m.group("url")
+    s = s.strip().strip('"').strip("'")
+    return s or None
+
+
+def _decode_base64_bytes(text: str) -> bytes:
+    s = re.sub(r"\s+", "", str(text or "").strip())
+    if not s:
+        return b""
+    candidates = [s, s.replace("-", "+").replace("_", "/")]
+    for cand in candidates:
+        pad = "=" * ((4 - len(cand) % 4) % 4)
+        try:
+            raw = base64.b64decode(cand + pad, validate=False)
+            if raw:
+                return raw
+        except Exception:
+            continue
+    try:
+        raw = base64.urlsafe_b64decode(s + ("=" * ((4 - len(s) % 4) % 4)))
+        if raw:
+            return raw
+    except Exception:
+        pass
+    return b""
+
+
+def _is_valid_data_image_ref(ref: str) -> bool:
+    s = str(ref or "").strip()
+    if not s.startswith("data:image/"):
+        return False
+    if "," not in s:
+        return False
+    _header, b64 = s.split(",", 1)
+    b64 = re.sub(r"\s+", "", (b64 or "").strip())
+    if len(b64) < 64:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9+/=_-]+", b64[:2048]))
+
+
+def _extract_ref_from_text(text: str) -> str | None:
+    s = (text or "").strip()
+    if not s:
+        return None
+    if s.startswith("data:image/"):
+        compact = re.sub(r"\s+", "", s)
+        if _is_valid_data_image_ref(compact):
+            return compact
+
+    m = _MD_IMAGE_RE.search(s)
+    if m:
+        cand = _strip_markdown_target(m.group(1))
+        if cand:
+            if cand.startswith("data:image/"):
+                cand = re.sub(r"\s+", "", cand)
+                if _is_valid_data_image_ref(cand):
+                    return cand
+            if cand.startswith(("http://", "https://", "/")):
+                return cand
+
+    for m in _DATA_IMAGE_RE.finditer(s):
+        cand = re.sub(r"\s+", "", m.group(1).strip())
+        if _is_valid_data_image_ref(cand):
+            return cand
+
+    for m in _JSON_URL_FIELD_RE.finditer(s):
+        cand = (m.group(1) or "").strip().replace("\\/", "/")
+        cand = _strip_markdown_target(cand) or cand
+        if cand.startswith("data:image/"):
+            cand = re.sub(r"\s+", "", cand)
+            if _is_valid_data_image_ref(cand):
+                return cand
+        if cand.startswith(("http://", "https://", "/")):
+            return cand
+
+    if s.startswith(("http://", "https://", "/")):
+        return s
+
+    if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+        try:
+            parsed = json.loads(s)
+        except Exception:
+            parsed = None
+        if parsed is not None:
+            ref = _extract_image_ref(parsed)
+            if ref:
+                return ref
+    return None
+
+
 def _extract_image_ref(data: Any) -> str | None:
     # OpenAI-like images response: {"data":[{"url":"..." }]} or {"data":[{"b64_json":"..."}]}
-    if not isinstance(data, dict):
+    if isinstance(data, dict):
+        items = data.get("data")
+        if isinstance(items, list):
+            for item in items:
+                ref = _extract_image_ref(item)
+                if ref:
+                    return ref
+
+        b64 = data.get("b64_json")
+        if isinstance(b64, str) and b64.strip():
+            return f"data:image/png;base64,{b64.strip()}"
+
+        for key in (
+            "url",
+            "image_url",
+            "image",
+            "data",
+            "src",
+            "uri",
+            "link",
+            "href",
+            "final_image_url",
+            "origin_image_url",
+            "fifeUrl",
+            "fife_url",
+            "thumbnail",
+        ):
+            value = data.get(key)
+            if isinstance(value, str):
+                ref = _extract_ref_from_text(value)
+                if ref:
+                    return ref
+            ref = _extract_image_ref(value)
+            if ref:
+                return ref
+
+        for key in ("images", "image_urls", "attachments", "media", "result", "response"):
+            ref = _extract_image_ref(data.get(key))
+            if ref:
+                return ref
         return None
-    items = data.get("data")
-    if not isinstance(items, list) or not items:
+    if isinstance(data, list):
+        for item in data:
+            ref = _extract_image_ref(item)
+            if ref:
+                return ref
         return None
-    item0 = items[0]
-    if not isinstance(item0, dict):
-        return None
-    url = item0.get("url")
-    if isinstance(url, str) and url.strip():
-        return url.strip()
-    b64 = item0.get("b64_json")
-    if isinstance(b64, str) and b64.strip():
-        return f"data:image/png;base64,{b64.strip()}"
+    if isinstance(data, str):
+        return _extract_ref_from_text(data)
     return None
 
 
@@ -322,11 +466,14 @@ class Grok2ApiImagesBackend:
             raise RuntimeError("空图片引用")
 
         if ref.startswith("data:image/"):
+            ref = re.sub(r"\s+", "", ref)
             try:
                 _header, b64_data = ref.split(",", 1)
             except ValueError:
                 raise RuntimeError("data:image 缺少 base64 数据") from None
-            image_bytes = base64.b64decode((b64_data or "").strip())
+            image_bytes = _decode_base64_bytes((b64_data or "").strip())
+            if not image_bytes:
+                raise RuntimeError("data:image base64 解码失败")
             return await self.imgr.save_image(image_bytes)
 
         if ref.startswith(("http://", "https://")):
