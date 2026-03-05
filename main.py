@@ -20,7 +20,7 @@ from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import At, AtAll, Image, Plain, Reply, Video
+from astrbot.api.message_components import At, AtAll, File, Image, Plain, Reply, Video
 from astrbot.api.star import Context, Star, StarTools
 
 from .core.debouncer import Debouncer
@@ -57,6 +57,7 @@ class GiteeAIImage(Star):
 
     # Gitee AI 支持的图片比例
     SUPPORTED_RATIOS: dict[str, list[str]] = GITEE_SUPPORTED_RATIOS
+    IMAGE_AS_FILE_THRESHOLD_BYTES: int = 20 * 1024 * 1024
 
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
@@ -253,6 +254,27 @@ class GiteeAIImage(Star):
         if not p.exists():
             logger.warning("[send_image] file not found: %s", p)
             return SendImageResult(ok=False, reason="file_not_found", cached_path=p)
+
+        # Large original images (e.g. 4K 20MB+) are likely to fail rich-media upload.
+        # Prefer sending as a normal file first so the original bytes are preserved.
+        try:
+            size_bytes = int(p.stat().st_size)
+        except Exception:
+            size_bytes = 0
+        if size_bytes > self.IMAGE_AS_FILE_THRESHOLD_BYTES:
+            try:
+                await event.send(event.chain_result([File(name=p.name, file=str(p))]))
+                logger.info(
+                    "[send_image] large image sent as file: %s (%s bytes)",
+                    p.name,
+                    size_bytes,
+                )
+                return SendImageResult(ok=True, cached_path=p, used_fallback=True)
+            except Exception as e:
+                logger.warning(
+                    "[send_image] large-file send failed, fallback to image channels: %s",
+                    e,
+                )
 
         delay = 1.5
         last_exc: Exception | None = None
