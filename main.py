@@ -509,6 +509,48 @@ class GiteeAIImage(Star):
                 return msg[idx + len(token) :].strip()
         return ""
 
+    def _extract_command_arg_from_chain(
+        self, event: AstrMessageEvent, command_name: str
+    ) -> tuple[bool, str]:
+        """从消息链中提取命令后的提示词。
+
+        用于修复“/命令 + 图片 + 文本”时，平台把文本段无空格拼接到 `message_str`
+        导致 command filter 和字符串提取都失效的问题。
+        """
+        try:
+            chain = event.get_messages()
+        except Exception:
+            return False, ""
+
+        found = False
+        parts: list[str] = []
+        for seg in chain:
+            if isinstance(seg, (At, AtAll, Reply)):
+                continue
+
+            if not found:
+                if not isinstance(seg, Plain):
+                    continue
+                plain = str(getattr(seg, "text", "") or "").lstrip()
+                if not plain:
+                    continue
+                if plain[0] in "/!！.。．":
+                    plain = plain[1:]
+                if not plain.startswith(command_name):
+                    continue
+                found = True
+                tail = plain[len(command_name) :].strip()
+                if tail:
+                    parts.append(tail)
+                continue
+
+            if isinstance(seg, Plain):
+                text = str(getattr(seg, "text", "") or "").strip()
+                if text:
+                    parts.append(text)
+
+        return found, " ".join(parts).strip()
+
     def _extract_chain_provider_id(self, item: object) -> str:
         if isinstance(item, str):
             return item.strip()
@@ -585,6 +627,21 @@ class GiteeAIImage(Star):
             return False
         return any(
             self._plain_starts_with_command(first_plain, name)
+            for name in command_names
+        )
+
+    @staticmethod
+    def _is_framework_direct_command_text(
+        message: str, command_names: tuple[str, ...], *, allow_bare: bool = True
+    ) -> bool:
+        """按 AstrBot CommandFilter 的文本规则判断是否可直接命中 command handler。"""
+        plain = " ".join(str(message or "").strip().split())
+        if not plain:
+            return False
+        if plain[0] in "/!！.。．":
+            plain = plain[1:].lstrip()
+        return any(
+            (plain == name if allow_bare else False) or plain.startswith(f"{name} ")
             for name in command_names
         )
 
@@ -688,8 +745,7 @@ class GiteeAIImage(Star):
         需要同时发送或引用图片
         """
         event.should_call_llm(True)
-        async for result in self._do_edit(event, prompt, backend=None):
-            yield result
+        await self._do_edit(event, prompt, backend=None)
 
     @filter.command("重发图片")
     async def resend_last_image(self, event: AstrMessageEvent):
@@ -708,27 +764,32 @@ class GiteeAIImage(Star):
         else:
             await mark_failed(event)
 
-    @filter.regex(r"[/!！.。．](改图|图生图|修图|aiedit)(\s|$)", priority=-10)
+    @filter.regex(r"(?:[/!！.。．])?(改图|图生图|修图|aiedit)", priority=-10)
     async def edit_image_regex_fallback(self, event: AstrMessageEvent):
         """兼容“图片在前、文字在后”的消息：确保 /改图 能触发。"""
         msg = (event.message_str or "").strip()
-        if self._is_direct_command_message(event, ("改图", "图生图", "修图", "aiedit")):
+        command_names = ("改图", "图生图", "修图", "aiedit")
+        if self._is_framework_direct_command_text(msg, command_names, allow_bare=False):
             return
+        try:
+            if not await self._has_message_images(event):
+                return
+        except Exception:
+            return
+
         prompt = ""
-        for name in ("改图", "图生图", "修图", "aiedit"):
+        matched = False
+        for name in command_names:
             prompt = self._extract_command_arg_anywhere(msg, name)
-            if prompt:
+            found_in_chain, chain_prompt = self._extract_command_arg_from_chain(event, name)
+            if prompt or found_in_chain:
+                matched = True
+                if not prompt:
+                    prompt = chain_prompt
                 break
-        if (
-            prompt
-            or "/改图" in msg
-            or "/图生图" in msg
-            or "/修图" in msg
-            or "/aiedit" in msg
-        ):
+        if matched:
             event.should_call_llm(True)
-            async for result in self._do_edit(event, prompt, backend=None):
-                yield result
+            await self._do_edit(event, prompt, backend=None)
             event.stop_event()
 
     @filter.regex(r"[/!！.。．][^\s]+", priority=-10)
@@ -785,8 +846,7 @@ class GiteeAIImage(Star):
             return
         event.should_call_llm(True)
         prompt = self._extract_extra_prompt(event, "自拍")
-        async for result in self._do_selfie(event, prompt, backend=None):
-            yield result
+        await self._do_selfie(event, prompt, backend=None)
 
     @filter.regex(r"[/!！.。．]自拍(\s|$)", priority=-10)
     async def selfie_regex_fallback(self, event: AstrMessageEvent):
@@ -801,8 +861,7 @@ class GiteeAIImage(Star):
                 await mark_failed(event)
                 event.stop_event()
                 return
-            async for result in self._do_selfie(event, prompt, backend=None):
-                yield result
+            await self._do_selfie(event, prompt, backend=None)
             event.stop_event()
 
     @filter.command("自拍参考")
@@ -837,8 +896,7 @@ class GiteeAIImage(Star):
             return
 
         if action in {"设置", "set"}:
-            async for result in self._set_selfie_reference(event):
-                yield result
+            await self._set_selfie_reference(event)
             return
 
         if action in {"查看", "show", "看"}:
@@ -847,8 +905,7 @@ class GiteeAIImage(Star):
             return
 
         if action in {"删除", "del", "delete"}:
-            async for result in self._delete_selfie_reference(event):
-                yield result
+            await self._delete_selfie_reference(event)
             return
 
         await mark_failed(event)
@@ -882,8 +939,7 @@ class GiteeAIImage(Star):
             return
 
         if action in {"设置", "set"}:
-            async for r in self._set_selfie_reference(event):
-                yield r
+            await self._set_selfie_reference(event)
             event.stop_event()
             return
 
@@ -894,8 +950,7 @@ class GiteeAIImage(Star):
             return
 
         if action in {"删除", "del", "delete"}:
-            async for r in self._delete_selfie_reference(event):
-                yield r
+            await self._delete_selfie_reference(event)
             event.stop_event()
             return
 
@@ -2109,7 +2164,7 @@ class GiteeAIImage(Star):
         prompt: str,
         backend: str | None = None,
     ):
-        """指令 /自拍 执行入口（generator 版本）。"""
+        """指令 /自拍 执行入口。"""
         if not self._is_selfie_enabled():
             await mark_failed(event)
             return

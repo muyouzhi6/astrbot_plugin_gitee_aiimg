@@ -56,6 +56,32 @@ def _is_client_closed_error(exc: Exception) -> bool:
     return False
 
 
+async def _resolve_awaitable(value: object) -> object:
+    while inspect.isawaitable(value):
+        value = await value
+    return value
+
+
+def build_proxy_http_client(proxy_url: str):
+    proxy = str(proxy_url or "").strip()
+    if not proxy:
+        return None
+    try:
+        import httpx
+    except Exception:
+        return None
+
+    for kwargs in ({"proxy": proxy}, {"proxies": proxy}):
+        try:
+            return httpx.AsyncClient(**kwargs)
+        except TypeError:
+            continue
+        except Exception as e:
+            logger.warning("[openai_compat] failed to build proxy client: %s", e)
+            return None
+    return None
+
+
 def normalize_openai_compat_base_url(raw: str) -> str:
     """Normalize OpenAI-compatible base_url.
 
@@ -224,15 +250,7 @@ class OpenAICompatBackend:
             return None
         if self._http_client is not None:
             return self._http_client
-        try:
-            import httpx
-        except Exception:
-            return None
-        try:
-            self._http_client = httpx.AsyncClient(proxies=self.proxy_url)
-        except TypeError:
-            # httpx signature may differ; skip proxy support gracefully.
-            self._http_client = None
+        self._http_client = build_proxy_http_client(self.proxy_url)
         return self._http_client
 
     @staticmethod
@@ -366,24 +384,62 @@ class OpenAICompatBackend:
                 await old.close()
             except Exception:
                 pass
+        kwargs: dict = {
+            "base_url": self.base_url,
+            "api_key": key,
+            "timeout": self.timeout,
+            "max_retries": self.max_retries,
+        }
+        if self.proxy_url and self._supports_http_client_param():
+            http_client = self._get_http_client()
+            if http_client is not None:
+                kwargs["http_client"] = http_client
         client = AsyncOpenAI(
-            base_url=self.base_url,
-            api_key=key,
-            timeout=self.timeout,
-            max_retries=self.max_retries,
+            **kwargs
         )
         self._clients[key] = client
         return client
 
     async def _save_images_response(self, resp: ImagesResponse) -> Path:
-        if not resp.data:
+        resp = await _resolve_awaitable(resp)
+
+        if isinstance(resp, dict):
+            data = await _resolve_awaitable(resp.get("data"))
+        else:
+            data = await _resolve_awaitable(getattr(resp, "data", None))
+
+        if data is None:
+            try:
+                model_dump = getattr(resp, "model_dump", None)
+                dumped = await _resolve_awaitable(model_dump()) if callable(model_dump) else None
+            except Exception:
+                dumped = None
+            if isinstance(dumped, dict):
+                data = dumped.get("data")
+
+        if not data:
             raise RuntimeError("未返回图片数据")
 
-        img = resp.data[0]
-        if getattr(img, "url", None):
-            return await self.imgr.download_image(img.url)
-        if getattr(img, "b64_json", None):
-            return await self.imgr.save_base64_image(img.b64_json)
+        if isinstance(data, list):
+            items = data
+        else:
+            try:
+                items = list(data)
+            except TypeError:
+                items = [data]
+
+        img = await _resolve_awaitable(items[0])
+        if isinstance(img, dict):
+            url = await _resolve_awaitable(img.get("url"))
+            b64_json = await _resolve_awaitable(img.get("b64_json"))
+        else:
+            url = await _resolve_awaitable(getattr(img, "url", None))
+            b64_json = await _resolve_awaitable(getattr(img, "b64_json", None))
+
+        if url:
+            return await self.imgr.download_image(str(url))
+        if b64_json:
+            return await self.imgr.save_base64_image(str(b64_json))
         raise RuntimeError("返回数据不包含图片")
 
     async def generate(

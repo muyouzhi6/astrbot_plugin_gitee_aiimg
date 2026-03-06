@@ -41,8 +41,10 @@ class ReferenceStore:
         return out
 
     async def _write_index(self, index: dict[str, list[str]]) -> None:
-        async with aiofiles.open(self.index_path, "w", encoding="utf-8") as f:
+        tmp_path = self.index_path.with_suffix(f"{self.index_path.suffix}.tmp")
+        async with aiofiles.open(tmp_path, "w", encoding="utf-8") as f:
             await f.write(json.dumps(index, ensure_ascii=False, indent=2))
+        await asyncio.to_thread(tmp_path.replace, self.index_path)
 
     async def list_names(self) -> list[str]:
         async with self._lock:

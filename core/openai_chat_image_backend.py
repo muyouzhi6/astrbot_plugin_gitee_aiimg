@@ -12,7 +12,10 @@ from openai import AsyncOpenAI
 from astrbot.api import logger
 
 from .image_format import guess_image_mime_and_ext
-from .openai_compat_backend import normalize_openai_compat_base_url
+from .openai_compat_backend import (
+    build_proxy_http_client,
+    normalize_openai_compat_base_url,
+)
 
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[.*?\]\((.*?)\)")
 _DATA_IMAGE_RE = re.compile(r"(data:image/[^\s)]+)")
@@ -249,6 +252,12 @@ def _is_client_closed_error(exc: Exception) -> bool:
     return False
 
 
+async def _resolve_awaitable(value: object) -> object:
+    while inspect.isawaitable(value):
+        value = await value
+    return value
+
+
 def _iter_strings(obj: object) -> list[str]:
     out: list[str] = []
     seen: set[int] = set()
@@ -454,14 +463,7 @@ class OpenAIChatImageBackend:
             return None
         if self._http_client is not None:
             return self._http_client
-        try:
-            import httpx
-        except Exception:
-            return None
-        try:
-            self._http_client = httpx.AsyncClient(proxies=self.proxy_url)
-        except TypeError:
-            self._http_client = None
+        self._http_client = build_proxy_http_client(self.proxy_url)
         return self._http_client
 
     async def close(self) -> None:
@@ -541,7 +543,7 @@ class OpenAIChatImageBackend:
             return re.sub(r"\s+", "", ref)
         return ref
 
-    def _extract_image_refs_from_response(self, resp: object) -> list[str]:
+    async def _extract_image_refs_from_response(self, resp: object) -> list[str]:
         refs: list[str] = []
         seen: set[str] = set()
 
@@ -556,7 +558,8 @@ class OpenAIChatImageBackend:
             seen.add(ref)
             refs.append(ref)
 
-        def collect(content: object) -> None:
+        async def collect(content: object) -> None:
+            content = await _resolve_awaitable(content)
             if content is None:
                 return
             add_ref(_extract_image_ref_from_content(content))
@@ -565,50 +568,65 @@ class OpenAIChatImageBackend:
 
         # 1) Preferred: all choices message blocks.
         try:
-            choices = list(getattr(resp, "choices", []) or [])  # type: ignore[attr-defined]
-            if not choices and hasattr(resp, "choices"):  # type: ignore[attr-defined]
-                choices = [resp.choices[0]]  # type: ignore[attr-defined]
+            choices_raw = await _resolve_awaitable(getattr(resp, "choices", []))  # type: ignore[attr-defined]
+            if choices_raw is None:
+                choices = []
+            else:
+                try:
+                    choices = list(choices_raw)
+                except TypeError:
+                    choices = [choices_raw]
             for choice in choices[:4]:
-                msg = getattr(choice, "message", None)
+                choice = await _resolve_awaitable(choice)
+                msg = await _resolve_awaitable(getattr(choice, "message", None))
                 if msg is None:
                     continue
-                collect(getattr(msg, "images", None))
-                collect(getattr(msg, "content", None))
-                collect(getattr(msg, "tool_calls", None))
+                await collect(getattr(msg, "images", None))
+                await collect(getattr(msg, "content", None))
+                await collect(getattr(msg, "tool_calls", None))
         except Exception:
             pass
 
         # 2) Fallback: scan model dump (dict/list) for data:image / markdown / url.
         try:
-            dumped = resp.model_dump()  # type: ignore[attr-defined]
+            model_dump = getattr(resp, "model_dump", None)  # type: ignore[attr-defined]
+            dumped = await _resolve_awaitable(model_dump()) if callable(model_dump) else None
         except Exception:
             dumped = None
         if dumped is not None:
-            collect(dumped)
+            await collect(dumped)
 
         return refs
 
-    def _extract_image_ref_from_response(self, resp: object) -> str | None:
-        refs = self._extract_image_refs_from_response(resp)
+    async def _extract_image_ref_from_response(self, resp: object) -> str | None:
+        refs = await self._extract_image_refs_from_response(resp)
         return refs[0] if refs else None
 
-    def _extract_video_ref_from_response(self, resp: object) -> str | None:
+    async def _extract_video_ref_from_response(self, resp: object) -> str | None:
         try:
-            choices = list(getattr(resp, "choices", []) or [])  # type: ignore[attr-defined]
-            if not choices and hasattr(resp, "choices"):  # type: ignore[attr-defined]
-                choices = [resp.choices[0]]  # type: ignore[attr-defined]
+            choices_raw = await _resolve_awaitable(getattr(resp, "choices", []))  # type: ignore[attr-defined]
+            if choices_raw is None:
+                choices = []
+            else:
+                try:
+                    choices = list(choices_raw)
+                except TypeError:
+                    choices = [choices_raw]
             for choice in choices[:4]:
-                msg = getattr(choice, "message", None)
+                choice = await _resolve_awaitable(choice)
+                msg = await _resolve_awaitable(getattr(choice, "message", None))
                 if msg is None:
                     continue
-                url = _extract_video_ref_from_content(getattr(msg, "content", None))
+                content = await _resolve_awaitable(getattr(msg, "content", None))
+                url = _extract_video_ref_from_content(content)
                 if url:
                     return url
         except Exception:
             pass
 
         try:
-            dumped = resp.model_dump()  # type: ignore[attr-defined]
+            model_dump = getattr(resp, "model_dump", None)  # type: ignore[attr-defined]
+            dumped = await _resolve_awaitable(model_dump()) if callable(model_dump) else None
         except Exception:
             dumped = None
         if dumped is not None:
@@ -737,7 +755,7 @@ class OpenAIChatImageBackend:
                 )
                 raise
 
-        refs = self._extract_image_refs_from_response(resp)
+        refs = await self._extract_image_refs_from_response(resp)
         ref = refs[0] if refs else None
         debug_snippet = ""
         try:
@@ -751,7 +769,7 @@ class OpenAIChatImageBackend:
 
         logger.info("[OpenAIChatImage][generate] API 响应耗时: %.2fs", time.time() - t0)
         if not ref:
-            video_url = self._extract_video_ref_from_response(resp)
+            video_url = await self._extract_video_ref_from_response(resp)
             if video_url:
                 raise RuntimeError(
                     f"chat 返回了视频而不是图片：{video_url}（如果想要视频请用 /视频；如果想要图片请换模型或改用 images 接口）"
@@ -838,7 +856,7 @@ class OpenAIChatImageBackend:
                 )
                 raise
 
-        refs = self._extract_image_refs_from_response(resp)
+        refs = await self._extract_image_refs_from_response(resp)
         ref = refs[0] if refs else None
         debug_snippet = ""
         try:
@@ -852,7 +870,7 @@ class OpenAIChatImageBackend:
 
         logger.info("[OpenAIChatImage][edit] API 响应耗时: %.2fs", time.time() - t0)
         if not ref:
-            video_url = self._extract_video_ref_from_response(resp)
+            video_url = await self._extract_video_ref_from_response(resp)
             if video_url:
                 raise RuntimeError(
                     f"chat 返回了视频而不是图片：{video_url}（如果想要视频请用 /视频；如果想要图片请换模型或改用 images 接口）"

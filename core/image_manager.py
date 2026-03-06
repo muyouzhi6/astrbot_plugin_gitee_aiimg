@@ -23,6 +23,14 @@ class ImageManager:
         self.image_dir = data_dir / "images"
         self.image_dir.mkdir(parents=True, exist_ok=True)
         self.cleanup_batch_ratio = 0.5
+        self._session_lock = asyncio.Lock()
+
+        self._timeout_seconds = self._clamp_int(
+            config.get("timeout", 120) if isinstance(config, dict) else 120,
+            default=120,
+            min_value=10,
+            max_value=3600,
+        )
 
         net = read_network_policy(config)
         self._media_allow_private: bool = bool(net.get("media_allow_private", False))
@@ -55,12 +63,24 @@ class ImageManager:
 
     async def _session_get(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            async with self._session_lock:
+                if self._session is None or self._session.closed:
+                    timeout = aiohttp.ClientTimeout(
+                        total=float(self._timeout_seconds),
+                        connect=min(30.0, float(self._timeout_seconds)),
+                        sock_read=float(self._timeout_seconds),
+                    )
+                    connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
+                    self._session = aiohttp.ClientSession(
+                        timeout=timeout,
+                        connector=connector,
+                    )
         return self._session
 
     async def close(self):
         if self._session and not self._session.closed:
             await self._session.close()
+            self._session = None
 
     async def download_image(self, url: str) -> Path:
         """下载远程图片并保存到本地，返回文件路径"""
