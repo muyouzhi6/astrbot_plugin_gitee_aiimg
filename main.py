@@ -24,6 +24,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import At, AtAll, File, Image, Plain, Reply, Video
 from astrbot.api.star import Context, Star, StarTools
+from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
 from .core.debouncer import Debouncer
 from .core.draw_service import ImageDrawService
@@ -92,6 +93,8 @@ class GiteeAIImage(Star):
         self._video_inflight: dict[str, int] = {}
         self._video_tasks: set[asyncio.Task] = set()
 
+        self._patch_tool_image_cache_runtime()
+
         # 动态注册预设命令 (方案C: /手办化 直接触发)
         self._register_preset_commands()
 
@@ -134,6 +137,70 @@ class GiteeAIImage(Star):
             if v in {"0", "false", "no", "n", "off", "disable", "disabled", ""}:
                 return False
         return default
+
+    def _patch_tool_image_cache_runtime(self) -> None:
+        try:
+            from astrbot.core.agent import tool_image_cache as cache_module
+        except Exception as exc:
+            logger.debug("[GiteeAIImage] skip tool image cache runtime patch: %s", exc)
+            return
+
+        cache_cls = getattr(cache_module, "ToolImageCache", None)
+        cache_obj = getattr(cache_module, "tool_image_cache", None)
+        cached_image_cls = getattr(cache_module, "CachedImage", None)
+        if cache_cls is None or cache_obj is None or cached_image_cls is None:
+            return
+        if getattr(cache_cls, "_gitee_aiimg_runtime_patch", False):
+            return
+
+        def _patched_save_image(
+            cache_self,
+            base64_data: str,
+            tool_call_id: str,
+            tool_name: str,
+            index: int = 0,
+            mime_type: str = "image/png",
+        ):
+            ext = cache_self._get_file_extension(mime_type)
+            cache_dir_value = str(getattr(cache_self, "_cache_dir", "") or "").strip()
+            cache_dir = (
+                Path(cache_dir_value)
+                if cache_dir_value
+                else Path(get_astrbot_temp_path())
+                / getattr(cache_self, "CACHE_DIR_NAME", "tool_images")
+            )
+            file_path = cache_dir / f"{tool_call_id}_{index}{ext}"
+
+            try:
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                image_bytes = base64.b64decode(base64_data)
+                file_path.write_bytes(image_bytes)
+            except Exception as exc:
+                logger.error(f"Failed to save tool image: {exc}")
+                raise
+
+            cache_self._cache_dir = str(cache_dir)
+            logger.debug(
+                "[GiteeAIImage] tool image cache runtime patch wrote: %s", file_path
+            )
+            return cached_image_cls(
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                file_path=str(file_path),
+                mime_type=mime_type,
+            )
+
+        cache_cls.save_image = _patched_save_image
+        cache_cls._gitee_aiimg_runtime_patch = True
+        cache_obj._cache_dir = str(
+            Path(get_astrbot_temp_path())
+            / getattr(cache_cls, "CACHE_DIR_NAME", "tool_images")
+        )
+        Path(cache_obj._cache_dir).mkdir(parents=True, exist_ok=True)
+        logger.info(
+            "[GiteeAIImage] tool image cache runtime patch active: %s",
+            cache_obj._cache_dir,
+        )
 
     def _get_max_user_concurrency(self) -> int:
         v = self._as_int(self.config.get("max_user_concurrency", 2), default=2)
@@ -1881,6 +1948,10 @@ class GiteeAIImage(Star):
         conf = self._get_llm_tool_conf()
         return self._as_bool(conf.get("return_images_to_context", False), default=False)
 
+    async def _ensure_tool_image_cache_dir(self) -> None:
+        tool_image_dir = Path(get_astrbot_temp_path()) / "tool_images"
+        await asyncio.to_thread(tool_image_dir.mkdir, parents=True, exist_ok=True)
+
     async def _build_llm_tool_image_result(
         self, image_path: Path
     ) -> mcp.types.CallToolResult | None:
@@ -1921,6 +1992,7 @@ class GiteeAIImage(Star):
         self._remember_last_image(event, image_path)
 
         if self._is_llm_tool_image_context_enabled():
+            await self._ensure_tool_image_cache_dir()
             result = await self._build_llm_tool_image_result(image_path)
             if result is not None:
                 await mark_success(event)
