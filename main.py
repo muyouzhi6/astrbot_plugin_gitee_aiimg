@@ -1,4 +1,4 @@
-﻿"""
+"""
 Gitee AI 图像生成插件
 
 功能:
@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import mcp
+
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import At, AtAll, File, Image, Plain, Reply, Video
@@ -32,6 +34,7 @@ from .core.gitee_sizes import (
     normalize_size_text,
     resolve_ratio_size,
 )
+from .core.image_format import guess_image_mime_and_ext
 from .core.image_manager import ImageManager
 from .core.nanobanana import NanoBananaService
 from .core.provider_registry import ProviderRegistry
@@ -142,7 +145,9 @@ class GiteeAIImage(Star):
 
     def _debounce_key(self, event: AstrMessageEvent, prefix: str, user_id: str) -> str:
         """尽量用消息维度去重，避免同用户短时间内无法并发提交多条任务。"""
-        mid = str(getattr(getattr(event, "message_obj", None), "message_id", "") or "").strip()
+        mid = str(
+            getattr(getattr(event, "message_obj", None), "message_id", "") or ""
+        ).strip()
         origin = str(getattr(event, "unified_msg_origin", "") or "").strip()
         if mid and origin:
             return f"{prefix}:{origin}:{mid}"
@@ -347,9 +352,9 @@ class GiteeAIImage(Star):
                     return SendImageResult(ok=True, cached_path=p, used_fallback=True)
 
             # Extra fallback for repeated rich-media failures: compress and retry by bytes.
-            if self._is_rich_media_transfer_failed(fs_exc) or self._is_rich_media_transfer_failed(
-                bytes_exc
-            ):
+            if self._is_rich_media_transfer_failed(
+                fs_exc
+            ) or self._is_rich_media_transfer_failed(bytes_exc):
                 if not compact_prepared:
                     compact_prepared = True
                     compact_bytes = await asyncio.to_thread(
@@ -363,13 +368,17 @@ class GiteeAIImage(Star):
                         )
                 if compact_bytes:
                     try:
-                        await event.send(event.chain_result([Image.fromBytes(compact_bytes)]))
+                        await event.send(
+                            event.chain_result([Image.fromBytes(compact_bytes)])
+                        )
                         logger.info(
                             "[send_image] compact fromBytes fallback succeeded (attempt=%s/%s).",
                             attempt,
                             attempts,
                         )
-                        return SendImageResult(ok=True, cached_path=p, used_fallback=True)
+                        return SendImageResult(
+                            ok=True, cached_path=p, used_fallback=True
+                        )
                     except Exception as e:
                         compact_exc = e
                         last_exc = e
@@ -380,10 +389,10 @@ class GiteeAIImage(Star):
                             e,
                         )
 
-            attempt_has_rich_media = self._is_rich_media_transfer_failed(
-                fs_exc
-            ) or self._is_rich_media_transfer_failed(bytes_exc) or self._is_rich_media_transfer_failed(
-                compact_exc
+            attempt_has_rich_media = (
+                self._is_rich_media_transfer_failed(fs_exc)
+                or self._is_rich_media_transfer_failed(bytes_exc)
+                or self._is_rich_media_transfer_failed(compact_exc)
             )
             if attempt_has_rich_media:
                 rich_media_failures += 1
@@ -428,7 +437,9 @@ class GiteeAIImage(Star):
             if self._is_rich_media_transfer_failed(last_exc)
             else "send_failed"
         )
-        logger.error("[send_image] failed after retries: reason=%s, err=%s", reason, last_exc)
+        logger.error(
+            "[send_image] failed after retries: reason=%s, err=%s", reason, last_exc
+        )
         return SendImageResult(
             ok=False,
             reason=reason,
@@ -626,8 +637,7 @@ class GiteeAIImage(Star):
         if not first_plain:
             return False
         return any(
-            self._plain_starts_with_command(first_plain, name)
-            for name in command_names
+            self._plain_starts_with_command(first_plain, name) for name in command_names
         )
 
     @staticmethod
@@ -719,8 +729,10 @@ class GiteeAIImage(Star):
             self._remember_last_image(event, image_path)
             sent = await self._send_image_with_fallback(event, image_path)
             if not sent:
-                ok = await mark_failed(event)
-                logger.warning("[文生图] 图片发送失败，已仅使用表情标注: reason=%s", sent.reason)
+                await mark_failed(event)
+                logger.warning(
+                    "[文生图] 图片发送失败，已仅使用表情标注: reason=%s", sent.reason
+                )
                 return
 
             # 标记成功
@@ -781,7 +793,9 @@ class GiteeAIImage(Star):
         matched = False
         for name in command_names:
             prompt = self._extract_command_arg_anywhere(msg, name)
-            found_in_chain, chain_prompt = self._extract_command_arg_from_chain(event, name)
+            found_in_chain, chain_prompt = self._extract_command_arg_from_chain(
+                event, name
+            )
             if prompt or found_in_chain:
                 matched = True
                 if not prompt:
@@ -1242,7 +1256,9 @@ class GiteeAIImage(Star):
         m = (mode or "auto").strip().lower()
 
         # === TTL 去重检查（防止 ToolLoop 重复调用）===
-        message_id = getattr(getattr(event, "message_obj", None), "message_id", "") or ""
+        message_id = (
+            getattr(getattr(event, "message_obj", None), "message_id", "") or ""
+        )
         origin = getattr(event, "unified_msg_origin", "") or ""
         if message_id and origin:
             if self.debouncer.llm_tool_is_duplicate(message_id, origin):
@@ -1301,17 +1317,7 @@ class GiteeAIImage(Star):
                     size=size,
                     resolution=resolution,
                 )
-                self._remember_last_image(event, image_path)
-                sent = await self._send_image_with_fallback(event, image_path)
-                if not sent:
-                    ok = await mark_failed(event)
-                    logger.warning(
-                        "[aiimg_generate] 自拍图片发送失败，已仅使用表情标注: reason=%s",
-                        sent.reason,
-                    )
-                    return None
-                await mark_success(event)
-                return None
+                return await self._finalize_llm_tool_image(event, image_path)
 
             # 自动模式：优先识别"自拍"语义 + 已配置参考照
             if m == "auto" and await self._should_auto_selfie_ref(event, prompt):
@@ -1339,17 +1345,7 @@ class GiteeAIImage(Star):
                             e,
                         )
                     else:
-                        self._remember_last_image(event, image_path)
-                        sent = await self._send_image_with_fallback(event, image_path)
-                        if not sent:
-                            ok = await mark_failed(event)
-                            logger.warning(
-                                "[aiimg_generate] 自动自拍图片发送失败，已仅使用表情标注: reason=%s",
-                                sent.reason,
-                            )
-                            return None
-                        await mark_success(event)
-                        return None
+                        return await self._finalize_llm_tool_image(event, image_path)
 
             # 改图：用户消息中有图片（不含头像兜底）或显式指定
             has_msg_images = await self._has_message_images(event)
@@ -1393,17 +1389,7 @@ class GiteeAIImage(Star):
                     size=size,
                     resolution=resolution,
                 )
-                self._remember_last_image(event, image_path)
-                sent = await self._send_image_with_fallback(event, image_path)
-                if not sent:
-                    ok = await mark_failed(event)
-                    logger.warning(
-                        "[aiimg_generate] 改图结果发送失败，已仅使用表情标注: reason=%s",
-                        sent.reason,
-                    )
-                    return None
-                await mark_success(event)
-                return None
+                return await self._finalize_llm_tool_image(event, image_path)
 
             # 默认：文生图
             draw_conf = self._get_feature("draw")
@@ -1423,17 +1409,7 @@ class GiteeAIImage(Star):
                 size=size,
                 resolution=resolution,
             )
-            self._remember_last_image(event, image_path)
-            sent = await self._send_image_with_fallback(event, image_path)
-            if not sent:
-                ok = await mark_failed(event)
-                logger.warning(
-                    "[aiimg_generate] 文生图结果发送失败，已仅使用表情标注: reason=%s",
-                    sent.reason,
-                )
-                return None
-            await mark_success(event)
-            return None
+            return await self._finalize_llm_tool_image(event, image_path)
 
         except Exception as e:
             logger.error(f"[aiimg_generate] 失败: {e}", exc_info=True)
@@ -1777,7 +1753,7 @@ class GiteeAIImage(Star):
             self._remember_last_image(event, image_path)
             sent = await self._send_image_with_fallback(event, image_path)
             if not sent:
-                ok = await mark_failed(event)
+                await mark_failed(event)
                 logger.warning(
                     "[改图] 结果发送失败，已仅使用表情标注: reason=%s",
                     sent.reason,
@@ -1874,7 +1850,7 @@ class GiteeAIImage(Star):
             self._remember_last_image(event, image_path)
             sent = await self._send_image_with_fallback(event, image_path)
             if not sent:
-                ok = await mark_failed(event)
+                await mark_failed(event)
                 logger.warning(
                     "[改图] 结果发送失败，已仅使用表情标注: reason=%s",
                     sent.reason,
@@ -1896,6 +1872,74 @@ class GiteeAIImage(Star):
 
     def _get_selfie_conf(self) -> dict:
         return self._get_feature("selfie")
+
+    def _get_llm_tool_conf(self) -> dict:
+        conf = self.config.get("llm_tool", {}) if isinstance(self.config, dict) else {}
+        return conf if isinstance(conf, dict) else {}
+
+    def _is_llm_tool_image_context_enabled(self) -> bool:
+        conf = self._get_llm_tool_conf()
+        return self._as_bool(conf.get("return_images_to_context", False), default=False)
+
+    async def _build_llm_tool_image_result(
+        self, image_path: Path
+    ) -> mcp.types.CallToolResult | None:
+        try:
+            image_bytes = await asyncio.to_thread(Path(image_path).read_bytes)
+        except Exception as exc:
+            logger.warning(
+                "[aiimg_generate] failed to read image for LLM context: path=%s err=%s",
+                image_path,
+                exc,
+            )
+            return None
+
+        if not image_bytes:
+            logger.warning(
+                "[aiimg_generate] skip empty image for LLM context: path=%s",
+                image_path,
+            )
+            return None
+
+        mime_type, _ = guess_image_mime_and_ext(image_bytes)
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+        return mcp.types.CallToolResult(
+            content=[
+                mcp.types.ImageContent(
+                    type="image",
+                    data=image_b64,
+                    mimeType=mime_type,
+                )
+            ]
+        )
+
+    async def _finalize_llm_tool_image(
+        self,
+        event: AstrMessageEvent,
+        image_path: Path,
+    ) -> mcp.types.CallToolResult | None:
+        self._remember_last_image(event, image_path)
+
+        if self._is_llm_tool_image_context_enabled():
+            result = await self._build_llm_tool_image_result(image_path)
+            if result is not None:
+                await mark_success(event)
+                return result
+            logger.warning(
+                "[aiimg_generate] fallback to direct send after LLM image result build failed"
+            )
+
+        sent = await self._send_image_with_fallback(event, image_path)
+        if not sent:
+            await mark_failed(event)
+            logger.warning(
+                "[aiimg_generate] image send failed, emoji fallback only: reason=%s",
+                sent.reason,
+            )
+            return None
+
+        await mark_success(event)
+        return None
 
     def _get_selfie_ref_store_key(self, event: AstrMessageEvent) -> str:
         """用于 ReferenceStore 的固定 key（按 bot self_id 隔离）。"""
@@ -2052,7 +2096,9 @@ class GiteeAIImage(Star):
             )
         return f"{prefix}\n\n用户要求：{user_prompt}"
 
-    def _merge_selfie_chain_with_edit_chain(self, selfie_chain: list[object]) -> list[dict]:
+    def _merge_selfie_chain_with_edit_chain(
+        self, selfie_chain: list[object]
+    ) -> list[dict]:
         """将自拍链路与改图链路合并（自拍优先，去重 provider_id）。"""
         merged: list[dict] = []
         seen: set[str] = set()
@@ -2126,7 +2172,9 @@ class GiteeAIImage(Star):
                     )
             elif use_edit_chain:
                 # 自拍链路可作为主链，改图链路作为补充兜底，避免“自拍链仅一项导致无兜底”。
-                chain_override = self._merge_selfie_chain_with_edit_chain(chain_override)
+                chain_override = self._merge_selfie_chain_with_edit_chain(
+                    chain_override
+                )
 
         if chain_override:
             logger.debug(
@@ -2192,7 +2240,7 @@ class GiteeAIImage(Star):
             self._remember_last_image(event, image_path)
             sent = await self._send_image_with_fallback(event, image_path)
             if not sent:
-                ok = await mark_failed(event)
+                await mark_failed(event)
                 logger.warning(
                     "[自拍] 结果发送失败，已仅使用表情标注: reason=%s",
                     sent.reason,
@@ -2269,4 +2317,3 @@ class GiteeAIImage(Star):
             await mark_success(event)
         else:
             await mark_failed(event)
-

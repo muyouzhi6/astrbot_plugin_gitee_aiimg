@@ -294,6 +294,18 @@
       }
     }
   },
+  "llm_tool": {
+    "description": "LLM 工具调用行为",
+    "type": "object",
+    "items": {
+      "return_images_to_context": {
+        "type": "bool",
+        "description": "将自然语言生成的图片返回给 LLM 上下文",
+        "hint": "开启后，aiimg_generate 不再直接发图，而是把图片返回给 Agent 上下文，便于识别图片内容并保留本轮对话连续性。默认关闭。",
+        "default": false
+      }
+    }
+  },
   "storage": {
     "description": "缓存与存储",
     "type": "object",
