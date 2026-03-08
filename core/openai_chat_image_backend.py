@@ -202,7 +202,9 @@ def _extract_first_image_ref(text: str) -> str | None:
             return cand
 
     # Some gateways wrap full payload into JSON string.
-    if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+    if (s.startswith("{") and s.endswith("}")) or (
+        s.startswith("[") and s.endswith("]")
+    ):
         try:
             parsed = json.loads(s)
         except Exception:
@@ -413,6 +415,80 @@ def _extract_video_ref_from_content(content: object) -> str | None:
     return None
 
 
+def _extract_media_refs_from_sse_text(text: str) -> tuple[list[str], list[str]]:
+    image_refs: list[str] = []
+    video_refs: list[str] = []
+    full_text = ""
+
+    def add_image(ref: str | None) -> None:
+        if not ref or ref in image_refs:
+            return
+        if ref.startswith(("http://", "https://")) and _looks_like_video_url(ref):
+            return
+        image_refs.append(ref)
+
+    def add_video(ref: str | None) -> None:
+        if not ref or ref in video_refs:
+            return
+        video_refs.append(ref)
+
+    def content_to_text(value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return "".join(content_to_text(item) for item in value)
+        if isinstance(value, dict):
+            text_value = value.get("text")
+            if isinstance(text_value, str) and text_value:
+                return text_value
+            image_url = value.get("image_url")
+            if isinstance(image_url, dict):
+                url = image_url.get("url")
+                if isinstance(url, str) and url:
+                    return url
+            url = value.get("url")
+            if isinstance(url, str) and url:
+                return url
+            return str(value)
+        return str(value)
+
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("```") or not line.startswith("data:"):
+            continue
+        data_str = line[5:].strip()
+        if not data_str or data_str == "[DONE]":
+            continue
+        try:
+            obj = json.loads(data_str)
+        except Exception:
+            continue
+
+        add_image(_extract_image_ref_from_content(obj))
+        add_video(_extract_video_ref_from_content(obj))
+
+        choice0 = (obj.get("choices") or [{}])[0] if isinstance(obj, dict) else {}
+        if not isinstance(choice0, dict):
+            choice0 = {}
+        delta = choice0.get("delta") or {}
+        message = choice0.get("message") or {}
+        delta_content = (
+            delta.get("content") if "content" in delta else message.get("content")
+        )
+        if delta_content is None and "reasoning_content" in delta:
+            delta_content = delta.get("reasoning_content")
+        if delta_content is None and "reasoning_content" in message:
+            delta_content = message.get("reasoning_content")
+
+        full_text += content_to_text(delta_content)
+
+    add_image(_extract_first_image_ref(full_text))
+    add_video(_extract_first_video_url(full_text))
+    return image_refs, video_refs
+
+
 class OpenAIChatImageBackend:
     """Image generation/edit via chat.completions (gateway-style).
 
@@ -564,6 +640,9 @@ class OpenAIChatImageBackend:
                 return
             add_ref(_extract_image_ref_from_content(content))
             for s in _iter_strings(content):
+                image_refs, _video_refs = _extract_media_refs_from_sse_text(s)
+                for ref in image_refs:
+                    add_ref(ref)
                 add_ref(s)
 
         # 1) Preferred: all choices message blocks.
@@ -590,7 +669,9 @@ class OpenAIChatImageBackend:
         # 2) Fallback: scan model dump (dict/list) for data:image / markdown / url.
         try:
             model_dump = getattr(resp, "model_dump", None)  # type: ignore[attr-defined]
-            dumped = await _resolve_awaitable(model_dump()) if callable(model_dump) else None
+            dumped = (
+                await _resolve_awaitable(model_dump()) if callable(model_dump) else None
+            )
         except Exception:
             dumped = None
         if dumped is not None:
@@ -621,16 +702,28 @@ class OpenAIChatImageBackend:
                 url = _extract_video_ref_from_content(content)
                 if url:
                     return url
+                for s in _iter_strings(content):
+                    _image_refs, video_refs = _extract_media_refs_from_sse_text(s)
+                    if video_refs:
+                        return video_refs[0]
         except Exception:
             pass
 
         try:
             model_dump = getattr(resp, "model_dump", None)  # type: ignore[attr-defined]
-            dumped = await _resolve_awaitable(model_dump()) if callable(model_dump) else None
+            dumped = (
+                await _resolve_awaitable(model_dump()) if callable(model_dump) else None
+            )
         except Exception:
             dumped = None
         if dumped is not None:
-            return _extract_video_ref_from_content(dumped)
+            url = _extract_video_ref_from_content(dumped)
+            if url:
+                return url
+            for s in _iter_strings(dumped):
+                _image_refs, video_refs = _extract_media_refs_from_sse_text(s)
+                if video_refs:
+                    return video_refs[0]
         return None
 
     async def _save_single_ref(self, ref: str, *, debug_snippet: str = "") -> Path:
@@ -669,7 +762,11 @@ class OpenAIChatImageBackend:
         raise RuntimeError("chat 返回的图片引用格式不支持")
 
     async def _save_from_ref(
-        self, ref: str, *, debug_snippet: str = "", fallback_refs: list[str] | None = None
+        self,
+        ref: str,
+        *,
+        debug_snippet: str = "",
+        fallback_refs: list[str] | None = None,
     ) -> Path:
         candidates: list[str] = [str(ref or "").strip()]
         for extra in fallback_refs or []:

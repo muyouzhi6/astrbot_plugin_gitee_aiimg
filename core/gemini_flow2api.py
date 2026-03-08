@@ -153,7 +153,9 @@ def _extract_first_image_ref(text: str) -> str | None:
         if cand.startswith(("http://", "https://")) and not _looks_like_video_url(cand):
             return cand
 
-    if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+    if (s.startswith("{") and s.endswith("}")) or (
+        s.startswith("[") and s.endswith("]")
+    ):
         try:
             parsed = json.loads(s)
         except Exception:
@@ -609,7 +611,9 @@ class GeminiFlow2ApiBackend:
                             time.perf_counter() - t0,
                         )
                         return full
-                    if (image_ref and image_ref.startswith(("http://", "https://"))) or video_ref:
+                    if (
+                        image_ref and image_ref.startswith(("http://", "https://"))
+                    ) or video_ref:
                         logger.info(
                             "[GeminiFlow2API] 提前命中媒体引用, 耗时: %.2fs",
                             time.perf_counter() - t0,
@@ -625,6 +629,58 @@ class GeminiFlow2ApiBackend:
                 "[GeminiFlow2API] SSE 读完但无 [DONE], 耗时: %.2fs",
                 time.perf_counter() - t0,
             )
+            tail = buffer.strip()
+            if tail.startswith("data:"):
+                data_str = tail[5:].strip()
+                if data_str and data_str != "[DONE]":
+                    try:
+                        obj = json.loads(data_str)
+                    except Exception:
+                        pass
+                    else:
+                        chunk_image_ref = _extract_first_image_ref_from_obj(obj)
+                        if chunk_image_ref and chunk_image_ref not in full:
+                            full += f"\n{chunk_image_ref}"
+                        chunk_video_ref = _extract_first_video_ref_from_obj(obj)
+                        if chunk_video_ref and chunk_video_ref not in full:
+                            full += f"\n{chunk_video_ref}"
+
+                        choice0 = (obj.get("choices") or [{}])[0]
+                        delta = choice0.get("delta") or {}
+                        message = choice0.get("message") or {}
+                        delta_content = (
+                            delta.get("content")
+                            if "content" in delta
+                            else message.get("content")
+                        )
+                        if delta_content is None and "reasoning_content" in delta:
+                            delta_content = delta.get("reasoning_content")
+                        if delta_content is None and "reasoning_content" in message:
+                            delta_content = message.get("reasoning_content")
+
+                        def _content_to_text_tail(value: Any) -> str:
+                            if value is None:
+                                return ""
+                            if isinstance(value, str):
+                                return value
+                            if isinstance(value, list):
+                                return "".join(_content_to_text_tail(x) for x in value)
+                            if isinstance(value, dict):
+                                text = value.get("text")
+                                if isinstance(text, str) and text:
+                                    return text
+                                image_url = value.get("image_url")
+                                if isinstance(image_url, dict):
+                                    url = image_url.get("url")
+                                    if isinstance(url, str) and url:
+                                        return url
+                                url = value.get("url")
+                                if isinstance(url, str) and url:
+                                    return url
+                                return str(value)
+                            return str(value)
+
+                        full += _content_to_text_tail(delta_content)
             return full
 
     async def _save_from_content(self, content: str) -> Path:
@@ -895,7 +951,8 @@ class Flow2ApiVideoBackend:
                     video_ref = _extract_first_video_ref(full)
                     image_ref = _extract_first_image_ref(full)
                     if chunk_video_ref or (
-                        chunk_image_ref and chunk_image_ref.startswith(("http://", "https://"))
+                        chunk_image_ref
+                        and chunk_image_ref.startswith(("http://", "https://"))
                     ):
                         logger.info(
                             "[Flow2API-Video] 提前命中结构化媒体引用, 耗时: %.2fs",
@@ -915,6 +972,58 @@ class Flow2ApiVideoBackend:
                 "[Flow2API-Video] SSE 读完但无 [DONE], 耗时: %.2fs",
                 time.perf_counter() - t0,
             )
+            tail = buffer.strip()
+            if tail.startswith("data:"):
+                data_str = tail[5:].strip()
+                if data_str and data_str != "[DONE]":
+                    try:
+                        obj = json.loads(data_str)
+                    except Exception:
+                        pass
+                    else:
+                        chunk_video_ref = _extract_first_video_ref_from_obj(obj)
+                        if chunk_video_ref and chunk_video_ref not in full:
+                            full += f"\n{chunk_video_ref}"
+                        chunk_image_ref = _extract_first_image_ref_from_obj(obj)
+                        if chunk_image_ref and chunk_image_ref not in full:
+                            full += f"\n{chunk_image_ref}"
+
+                        choice0 = (obj.get("choices") or [{}])[0]
+                        delta = choice0.get("delta") or {}
+                        message = choice0.get("message") or {}
+                        delta_content = (
+                            delta.get("content")
+                            if "content" in delta
+                            else message.get("content")
+                        )
+                        if delta_content is None and "reasoning_content" in delta:
+                            delta_content = delta.get("reasoning_content")
+                        if delta_content is None and "reasoning_content" in message:
+                            delta_content = message.get("reasoning_content")
+
+                        def _content_to_text_tail(value: Any) -> str:
+                            if value is None:
+                                return ""
+                            if isinstance(value, str):
+                                return value
+                            if isinstance(value, list):
+                                return "".join(_content_to_text_tail(x) for x in value)
+                            if isinstance(value, dict):
+                                text = value.get("text")
+                                if isinstance(text, str) and text:
+                                    return text
+                                image_url = value.get("image_url")
+                                if isinstance(image_url, dict):
+                                    url = image_url.get("url")
+                                    if isinstance(url, str) and url:
+                                        return url
+                                url = value.get("url")
+                                if isinstance(url, str) and url:
+                                    return url
+                                return str(value)
+                            return str(value)
+
+                        full += _content_to_text_tail(delta_content)
             return full
 
     async def generate_video_url(
