@@ -11,6 +11,7 @@ from .gemini_flow2api import Flow2ApiVideoBackend, GeminiFlow2ApiBackend
 from .gitee_edit import GiteeEditBackend
 from .gitee_sizes import GITEE_SUPPORTED_SIZES, normalize_size_text
 from .grok2api_images_backend import Grok2ApiImagesBackend
+from .grok_images_backend import GrokImagesBackend
 from .grok_video_service import GrokVideoService
 from .jimeng_api_backend import JimengApiBackend
 from .openai_chat_image_backend import OpenAIChatImageBackend
@@ -312,7 +313,25 @@ class ProviderRegistry:
             }
             return GeminiFlow2ApiBackend(imgr=self._imgr, settings=settings)
 
-        if template_key in {"openai_images", "grok_images", "gemini_openai_images"}:
+        if template_key == "grok_images":
+            return GrokImagesBackend(
+                imgr=self._imgr,
+                base_url=str(conf.get("base_url") or "https://api.x.ai/v1").strip(),
+                api_keys=[
+                    str(x).strip()
+                    for x in _as_list(conf.get("api_keys"))
+                    if str(x).strip()
+                ],
+                timeout=int(conf.get("timeout") or 120),
+                max_retries=int(conf.get("max_retries") or 2),
+                default_model=str(conf.get("model") or "").strip(),
+                default_size=str(conf.get("default_size") or "4096x4096").strip(),
+                supports_edit=bool(conf.get("supports_edit", True)),
+                extra_body=_as_dict(conf.get("extra_body")) or None,
+                proxy_url=str(conf.get("proxy_url") or "").strip() or None,
+            )
+
+        if template_key in {"openai_images", "gemini_openai_images"}:
             return OpenAICompatBackend(
                 imgr=self._imgr,
                 base_url=str(conf.get("base_url") or "").strip(),
@@ -451,7 +470,9 @@ class ProviderRegistry:
                 proxy_url=str(conf.get("proxy_url") or "").strip() or None,
                 recaptcha_base_api=str(conf.get("recaptcha_base_api") or "").strip()
                 or "https://www.google.com",
-                vertex_base_api=str(conf.get("vertex_ai_anonymous_base_api") or "").strip()
+                vertex_base_api=str(
+                    conf.get("vertex_ai_anonymous_base_api") or ""
+                ).strip()
                 or "https://cloudconsole-pa.clients6.google.com",
                 system_prompt=str(conf.get("system_prompt") or "").strip() or None,
                 query_signature=str(conf.get("query_signature") or "").strip()
