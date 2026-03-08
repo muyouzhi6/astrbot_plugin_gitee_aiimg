@@ -28,11 +28,8 @@ from .vertex_ai_anonymous_utils import (
     RECAPTCHA_VH,
     TEMPERATURE,
     TOP_P,
-    NonRetryableError,
-    RecaptchaExpiredError,
     build_anchor_url,
     build_reload_url,
-    extract_images_from_graphql_payload,
     extract_query_params,
     parse_anchor_token,
     parse_rresp,
@@ -82,6 +79,9 @@ class VertexAIAnonymousBackend:
         closed = getattr(session, "closed", None)
         if isinstance(closed, bool):
             return closed
+        internal_closed = getattr(session, "_closed", None)
+        if isinstance(internal_closed, bool):
+            return internal_closed
         return False
 
     async def _get_session(self) -> object:
@@ -91,7 +91,7 @@ class VertexAIAnonymousBackend:
             if self._session is not None and not self._session_closed(self._session):
                 return self._session
             if CurlAsyncSession is not None:
-                self._session = CurlAsyncSession()
+                self._session = CurlAsyncSession(timeout=self.settings.timeout_seconds)
             else:
                 timeout = aiohttp.ClientTimeout(
                     total=self.settings.timeout_seconds,
@@ -120,7 +120,7 @@ class VertexAIAnonymousBackend:
     async def generate(self, prompt: str, **kwargs) -> Path:
         images = await self._generate_images(prompt, image_bytes_list=None, **kwargs)
         if not images:
-            raise RuntimeError("Vertex AI Anonymous 未返回图片数据")
+            raise RuntimeError("Vertex AI Anonymous did not return image data")
         mime, b64 = images[0]
         logger.info(
             "[VertexAIAnonymous] generate ok: images=%s mime=%s", len(images), mime
@@ -132,7 +132,7 @@ class VertexAIAnonymousBackend:
             raise ValueError("At least one image is required")
         out = await self._generate_images(prompt, image_bytes_list=images, **kwargs)
         if not out:
-            raise RuntimeError("Vertex AI Anonymous 未返回图片数据")
+            raise RuntimeError("Vertex AI Anonymous did not return image data")
         mime, b64 = out[0]
         logger.info("[VertexAIAnonymous] edit ok: images=%s mime=%s", len(out), mime)
         return await self.imgr.save_base64_image(b64)
@@ -147,33 +147,54 @@ class VertexAIAnonymousBackend:
     ) -> list[tuple[str, str]]:
         recaptcha_token = await self._get_recaptcha_token()
         if not recaptcha_token:
-            raise RuntimeError("Vertex AI Anonymous 获取 recaptcha_token 失败")
+            raise RuntimeError("Vertex AI Anonymous failed to get recaptcha_token")
 
-        last_error: Exception | None = None
+        last_error_message: str | None = None
+        captcha_try_count = 0
         body = self._build_body(
             prompt, image_bytes_list, size=size, resolution=resolution
         )
         for attempt in range(max(1, self.settings.max_retries)):
-            try:
-                body["variables"]["recaptchaToken"] = recaptcha_token
-                return await self._call_api(body)
-            except RecaptchaExpiredError:
+            body["variables"]["recaptchaToken"] = recaptcha_token
+            result, status, err_msg = await self._call_api(body)
+            if result is not None:
+                return result
+
+            last_error_message = err_msg or last_error_message
+
+            if status == 3:
+                if (
+                    err_msg
+                    and "Failed to verify action" in err_msg
+                    and captcha_try_count < 1
+                ):
+                    captcha_try_count += 1
+                    logger.info(
+                        "[VertexAIAnonymous] retry once with same recaptcha token"
+                    )
+                    continue
+
                 recaptcha_token = await self._get_recaptcha_token()
                 if not recaptcha_token:
-                    raise RuntimeError("Vertex AI Anonymous 刷新 recaptcha_token 失败")
-            except NonRetryableError:
-                raise
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    "[VertexAIAnonymous] call failed attempt=%s/%s: %s",
-                    attempt + 1,
-                    self.settings.max_retries,
-                    e,
-                )
+                    raise RuntimeError(
+                        "Vertex AI Anonymous failed to refresh recaptcha_token"
+                    )
+                captcha_try_count = 0
+                continue
+
+            if status == 999:
+                raise RuntimeError(err_msg or "Vertex AI Anonymous response rejected")
+
+            logger.warning(
+                "[VertexAIAnonymous] call failed attempt=%s/%s: %s",
+                attempt + 1,
+                self.settings.max_retries,
+                err_msg or "unknown error",
+            )
+
         raise RuntimeError(
-            f"Vertex AI Anonymous 请求失败: {last_error}"
-        ) from last_error
+            f"Vertex AI Anonymous request failed: {last_error_message or 'unknown error'}"
+        )
 
     def _build_body(
         self,
@@ -237,7 +258,9 @@ class VertexAIAnonymousBackend:
             "variables": context,
         }
 
-    async def _call_api(self, body: dict[str, Any]) -> list[tuple[str, str]]:
+    async def _call_api(
+        self, body: dict[str, Any]
+    ) -> tuple[list[tuple[str, str]] | None, int | None, str | None]:
         session = await self._get_session()
         url = (
             f"{self.settings.vertex_base_api}/v3/entityServices/AiplatformEntityService/"
@@ -249,34 +272,119 @@ class VertexAIAnonymousBackend:
             "referer": "https://console.cloud.google.com/",
             "content-type": "application/json",
         }
-        if CurlAsyncSession is not None and isinstance(session, CurlAsyncSession):
-            resp = await session.post(
-                url,
-                headers=headers,
-                json=body,
-                timeout=self.settings.timeout_seconds,
-                impersonate="chrome131",
-                proxy=self.settings.proxy_url,
-            )
-            text = resp.text
-            if resp.status_code != 200:
-                raise RuntimeError(f"HTTP {resp.status_code}: {text[:1024]}")
-            try:
-                payload = resp.json()
-            except Exception as e:
-                raise RuntimeError(f"Invalid JSON: {text[:1024]}") from e
-        else:
-            async with session.post(
-                url, headers=headers, json=body, proxy=self.settings.proxy_url
-            ) as resp:
-                text = await resp.text()
-                if resp.status != 200:
-                    raise RuntimeError(f"HTTP {resp.status}: {text[:1024]}")
+
+        try:
+            if CurlAsyncSession is not None and isinstance(session, CurlAsyncSession):
+                resp = await session.post(
+                    url,
+                    headers=headers,
+                    json=body,
+                    timeout=self.settings.timeout_seconds,
+                    impersonate="chrome131",
+                    proxy=self.settings.proxy_url,
+                )
+                text = resp.text
+                status_code = resp.status_code
+                if status_code != 200:
+                    logger.error(
+                        "[VertexAIAnonymous] request failed: status=%s body=%s",
+                        status_code,
+                        text[:1024],
+                    )
+                    return None, None, f"HTTP {status_code}"
                 try:
-                    payload = await resp.json()
-                except Exception as e:
-                    raise RuntimeError(f"Invalid JSON: {text[:1024]}") from e
-        return extract_images_from_graphql_payload(payload)
+                    payload = resp.json()
+                except Exception as exc:
+                    logger.error("[VertexAIAnonymous] invalid JSON: %s", exc)
+                    return None, None, f"Invalid JSON: {text[:1024]}"
+            else:
+                async with session.post(
+                    url, headers=headers, json=body, proxy=self.settings.proxy_url
+                ) as resp:
+                    text = await resp.text()
+                    status_code = resp.status
+                    if status_code != 200:
+                        logger.error(
+                            "[VertexAIAnonymous] request failed: status=%s body=%s",
+                            status_code,
+                            text[:1024],
+                        )
+                        return None, None, f"HTTP {status_code}"
+                    try:
+                        payload = await resp.json()
+                    except Exception as exc:
+                        logger.error("[VertexAIAnonymous] invalid JSON: %s", exc)
+                        return None, None, f"Invalid JSON: {text[:1024]}"
+        except Exception as exc:
+            logger.error("[VertexAIAnonymous] request error: %s", exc)
+            return None, None, f"request error: {exc}"
+
+        if not isinstance(payload, list):
+            logger.warning(
+                "[VertexAIAnonymous] unexpected response type: %s raw=%s",
+                type(payload).__name__,
+                text[:1024],
+            )
+            return None, 999, f"Unexpected response type: {type(payload).__name__}"
+
+        out: list[tuple[str, str]] = []
+        for elem in payload:
+            if not isinstance(elem, dict):
+                continue
+            for item in elem.get("results", []):
+                if not isinstance(item, dict):
+                    continue
+
+                errors = item.get("errors", [])
+                for err in errors:
+                    if not isinstance(err, dict):
+                        continue
+                    status = (
+                        err.get("extensions", {}).get("status", {}).get("code", None)
+                    )
+                    err_msg = str(err.get("message") or "").strip()
+                    if err_msg and "Failed to verify action" not in err_msg:
+                        logger.warning(
+                            "[VertexAIAnonymous] graphql error: status=%s msg=%s",
+                            status,
+                            err_msg,
+                        )
+                    return None, status, err_msg or "Vertex AI Anonymous error"
+
+                for candidate in item.get("data", {}).get("candidates", []):
+                    if not isinstance(candidate, dict):
+                        continue
+                    finish_reason = str(candidate.get("finishReason") or "").strip()
+                    if finish_reason != "STOP":
+                        logger.warning(
+                            "[VertexAIAnonymous] response rejected: finishReason=%s raw=%s",
+                            finish_reason,
+                            text[:1024],
+                        )
+                        return (
+                            None,
+                            999,
+                            f"Vertex AI Anonymous finishReason={finish_reason or 'UNKNOWN'}",
+                        )
+
+                    for part in candidate.get("content", {}).get("parts", []):
+                        if not isinstance(part, dict):
+                            continue
+                        inline = part.get("inlineData")
+                        if not isinstance(inline, dict):
+                            continue
+                        b64 = str(inline.get("data") or "").strip()
+                        mime = str(inline.get("mimeType") or "").strip() or "image/png"
+                        if b64:
+                            out.append((mime, b64))
+
+        if not out:
+            logger.warning(
+                "[VertexAIAnonymous] request succeeded but no images returned: %s",
+                text[:1024],
+            )
+            return None, 999, "响应中未包含图片数据"
+        return out, None, None
 
     async def _get_recaptcha_token(self) -> str | None:
         session = await self._get_session()
@@ -293,8 +401,8 @@ class VertexAIAnonymousBackend:
                 )
                 if recaptcha_token:
                     return recaptcha_token
-            except Exception as e:
-                logger.warning("[VertexAIAnonymous] recaptcha attempt failed: %s", e)
+            except Exception as exc:
+                logger.warning("[VertexAIAnonymous] recaptcha attempt failed: %s", exc)
         return None
 
     async def _fetch_anchor_token(self, session: object, anchor_url: str) -> str | None:

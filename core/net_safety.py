@@ -49,7 +49,7 @@ async def _resolve_host_ips(host: str, *, timeout_seconds: float = 2.0) -> list[
     if not host:
         return []
 
-    async def _call() -> list[str]:
+    def _call() -> list[str]:
         infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
         out: list[str] = []
         for _family, _socktype, _proto, _canonname, sockaddr in infos:
@@ -140,7 +140,9 @@ async def ensure_url_allowed(url: str, *, policy: URLFetchPolicy) -> None:
         raise RuntimeError("Disallowed IP address")
 
     # Hostname: resolve and ensure all IPs are public
-    ips = await _resolve_host_ips(host, timeout_seconds=float(policy.dns_timeout_seconds))
+    ips = await _resolve_host_ips(
+        host, timeout_seconds=float(policy.dns_timeout_seconds)
+    )
     if not ips:
         # Fail-closed for SSRF safety
         raise RuntimeError("DNS resolve failed")
@@ -159,4 +161,3 @@ def read_network_policy(config: dict) -> dict[str, Any]:
         return {}
     net = config.get("network", {})
     return net if isinstance(net, dict) else {}
-
