@@ -6,34 +6,8 @@ from pathlib import Path
 from astrbot.api import logger
 
 from .output_spec import parse_output
+from .provider_chain import as_dict, as_list, candidates_from_chain
 from .provider_registry import ProviderRegistry
-
-
-def _as_dict(value: object) -> dict:
-    return value if isinstance(value, dict) else {}
-
-
-def _as_list(value: object) -> list:
-    return value if isinstance(value, list) else []
-
-
-def _parse_chain_item(item: object) -> tuple[str, str] | None:
-    if isinstance(item, str):
-        pid = item.strip()
-        return (pid, "") if pid else None
-    if not isinstance(item, dict):
-        return None
-    pid = str(
-        item.get("provider_id")
-        or item.get("id")
-        or item.get("provider")
-        or item.get("backend")
-        or ""
-    ).strip()
-    if not pid:
-        return None
-    out_override = str(item.get("output") or item.get("default_output") or "").strip()
-    return pid, out_override
 
 
 class ImageDrawService:
@@ -55,25 +29,17 @@ class ImageDrawService:
         )
 
     def _feature_conf(self) -> dict:
-        feats = _as_dict(self.config.get("features"))
-        return _as_dict(feats.get("draw"))
+        feats = as_dict(self.config.get("features"))
+        return as_dict(feats.get("draw"))
 
     def _default_output(self) -> str:
         return str(self._feature_conf().get("default_output") or "").strip()
 
     def _chain(self) -> list:
-        return _as_list(self._feature_conf().get("chain"))
+        return as_list(self._feature_conf().get("chain"))
 
     def _candidate_ids(self) -> list[str]:
-        out: list[str] = []
-        for item in self._chain():
-            parsed = _parse_chain_item(item)
-            if not parsed:
-                continue
-            pid, _ = parsed
-            if pid and pid not in out:
-                out.append(pid)
-        return out
+        return [pid for pid, _ in candidates_from_chain(self._chain())]
 
     async def close(self) -> None:
         await self.registry.close()
@@ -96,16 +62,13 @@ class ImageDrawService:
         if provider_id:
             candidates = [(str(provider_id).strip(), "")]
         else:
-            for item in self._chain():
-                parsed = _parse_chain_item(item)
-                if not parsed:
-                    continue
-                candidates.append(parsed)
+            candidates = candidates_from_chain(self._chain())
 
         if not candidates:
             raise RuntimeError(
                 "No draw providers configured. Please add providers and set features.draw.chain."
             )
+        logger.debug("[draw] candidates=%s", [pid for pid, _ in candidates])
 
         default_output = self._default_output()
 

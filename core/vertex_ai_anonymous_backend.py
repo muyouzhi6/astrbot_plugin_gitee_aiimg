@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import aiohttp
+
+try:
+    from curl_cffi import AsyncSession as CurlAsyncSession
+except Exception:
+    CurlAsyncSession = None
 
 from astrbot.api import logger
 
@@ -22,8 +28,8 @@ from .vertex_ai_anonymous_utils import (
     RECAPTCHA_VH,
     TEMPERATURE,
     TOP_P,
-    RecaptchaExpiredError,
     NonRetryableError,
+    RecaptchaExpiredError,
     build_anchor_url,
     build_reload_url,
     extract_images_from_graphql_payload,
@@ -58,30 +64,47 @@ class VertexAIAnonymousBackend:
     def __init__(self, *, imgr, settings: VertexAIAnonymousSettings):
         self.imgr = imgr
         self.settings = settings
-        self._session: aiohttp.ClientSession | None = None
+        self._session: object | None = None
         self._session_lock = asyncio.Lock()
 
     async def close(self) -> None:
-        if self._session and not self._session.closed:
-            await self._session.close()
+        close = getattr(self._session, "close", None)
+        if callable(close):
+            result = close()
+            if inspect.isawaitable(result):
+                await result
         self._session = None
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is not None and not self._session.closed:
+    @staticmethod
+    def _session_closed(session: object | None) -> bool:
+        if session is None:
+            return True
+        closed = getattr(session, "closed", None)
+        if isinstance(closed, bool):
+            return closed
+        return False
+
+    async def _get_session(self) -> object:
+        if self._session is not None and not self._session_closed(self._session):
             return self._session
         async with self._session_lock:
-            if self._session is not None and not self._session.closed:
+            if self._session is not None and not self._session_closed(self._session):
                 return self._session
-            timeout = aiohttp.ClientTimeout(
-                total=self.settings.timeout_seconds,
-                connect=_AIOHTTP_CONNECT_TIMEOUT_SECONDS,
-            )
-            connector = aiohttp.TCPConnector(
-                limit=_AIOHTTP_LIMIT,
-                limit_per_host=_AIOHTTP_LIMIT_PER_HOST,
-                ttl_dns_cache=_AIOHTTP_DNS_CACHE_TTL_SECONDS,
-            )
-            self._session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+            if CurlAsyncSession is not None:
+                self._session = CurlAsyncSession()
+            else:
+                timeout = aiohttp.ClientTimeout(
+                    total=self.settings.timeout_seconds,
+                    connect=_AIOHTTP_CONNECT_TIMEOUT_SECONDS,
+                )
+                connector = aiohttp.TCPConnector(
+                    limit=_AIOHTTP_LIMIT,
+                    limit_per_host=_AIOHTTP_LIMIT_PER_HOST,
+                    ttl_dns_cache=_AIOHTTP_DNS_CACHE_TTL_SECONDS,
+                )
+                self._session = aiohttp.ClientSession(
+                    timeout=timeout, connector=connector
+                )
             return self._session
 
     @staticmethod
@@ -99,7 +122,9 @@ class VertexAIAnonymousBackend:
         if not images:
             raise RuntimeError("Vertex AI Anonymous 未返回图片数据")
         mime, b64 = images[0]
-        logger.info("[VertexAIAnonymous] generate ok: images=%s mime=%s", len(images), mime)
+        logger.info(
+            "[VertexAIAnonymous] generate ok: images=%s mime=%s", len(images), mime
+        )
         return await self.imgr.save_base64_image(b64)
 
     async def edit(self, prompt: str, images: list[bytes], **kwargs) -> Path:
@@ -125,7 +150,9 @@ class VertexAIAnonymousBackend:
             raise RuntimeError("Vertex AI Anonymous 获取 recaptcha_token 失败")
 
         last_error: Exception | None = None
-        body = self._build_body(prompt, image_bytes_list, size=size, resolution=resolution)
+        body = self._build_body(
+            prompt, image_bytes_list, size=size, resolution=resolution
+        )
         for attempt in range(max(1, self.settings.max_retries)):
             try:
                 body["variables"]["recaptchaToken"] = recaptcha_token
@@ -144,7 +171,9 @@ class VertexAIAnonymousBackend:
                     self.settings.max_retries,
                     e,
                 )
-        raise RuntimeError(f"Vertex AI Anonymous 请求失败: {last_error}") from last_error
+        raise RuntimeError(
+            f"Vertex AI Anonymous 请求失败: {last_error}"
+        ) from last_error
 
     def _build_body(
         self,
@@ -158,7 +187,12 @@ class VertexAIAnonymousBackend:
         for img in image_bytes_list or []:
             mime, _ext = guess_image_mime_and_ext(img)
             parts.append(
-                {"inlineData": {"mimeType": mime, "data": base64.b64encode(img).decode()}}
+                {
+                    "inlineData": {
+                        "mimeType": mime,
+                        "data": base64.b64encode(img).decode(),
+                    }
+                }
             )
 
         context: dict[str, Any] = {
@@ -193,7 +227,9 @@ class VertexAIAnonymousBackend:
         context["generationConfig"]["imageConfig"] = image_config
 
         if self.settings.system_prompt:
-            context["systemInstruction"] = {"parts": [{"text": self.settings.system_prompt}]}
+            context["systemInstruction"] = {
+                "parts": [{"text": self.settings.system_prompt}]
+            }
 
         return {
             "querySignature": self.settings.query_signature,
@@ -213,16 +249,33 @@ class VertexAIAnonymousBackend:
             "referer": "https://console.cloud.google.com/",
             "content-type": "application/json",
         }
-        async with session.post(
-            url, headers=headers, json=body, proxy=self.settings.proxy_url
-        ) as resp:
-            text = await resp.text()
-            if resp.status != 200:
-                raise RuntimeError(f"HTTP {resp.status}: {text[:1024]}")
+        if CurlAsyncSession is not None and isinstance(session, CurlAsyncSession):
+            resp = await session.post(
+                url,
+                headers=headers,
+                json=body,
+                timeout=self.settings.timeout_seconds,
+                impersonate="chrome131",
+                proxy=self.settings.proxy_url,
+            )
+            text = resp.text
+            if resp.status_code != 200:
+                raise RuntimeError(f"HTTP {resp.status_code}: {text[:1024]}")
             try:
-                payload = await resp.json()
+                payload = resp.json()
             except Exception as e:
                 raise RuntimeError(f"Invalid JSON: {text[:1024]}") from e
+        else:
+            async with session.post(
+                url, headers=headers, json=body, proxy=self.settings.proxy_url
+            ) as resp:
+                text = await resp.text()
+                if resp.status != 200:
+                    raise RuntimeError(f"HTTP {resp.status}: {text[:1024]}")
+                try:
+                    payload = await resp.json()
+                except Exception as e:
+                    raise RuntimeError(f"Invalid JSON: {text[:1024]}") from e
         return extract_images_from_graphql_payload(payload)
 
     async def _get_recaptcha_token(self) -> str | None:
@@ -244,20 +297,33 @@ class VertexAIAnonymousBackend:
                 logger.warning("[VertexAIAnonymous] recaptcha attempt failed: %s", e)
         return None
 
-    async def _fetch_anchor_token(
-        self, session: aiohttp.ClientSession, anchor_url: str
-    ) -> str | None:
-        async with session.get(
-            anchor_url, headers=self._ua_headers(), proxy=self.settings.proxy_url
-        ) as resp:
-            html = await resp.text()
-            if resp.status != 200:
-                raise RuntimeError(f"recaptcha anchor HTTP {resp.status}: {html[:512]}")
+    async def _fetch_anchor_token(self, session: object, anchor_url: str) -> str | None:
+        if CurlAsyncSession is not None and isinstance(session, CurlAsyncSession):
+            resp = await session.get(
+                anchor_url,
+                headers=self._ua_headers(),
+                proxy=self.settings.proxy_url,
+                impersonate="chrome131",
+            )
+            html = resp.text
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"recaptcha anchor HTTP {resp.status_code}: {html[:512]}"
+                )
+        else:
+            async with session.get(
+                anchor_url, headers=self._ua_headers(), proxy=self.settings.proxy_url
+            ) as resp:
+                html = await resp.text()
+                if resp.status != 200:
+                    raise RuntimeError(
+                        f"recaptcha anchor HTTP {resp.status}: {html[:512]}"
+                    )
         return parse_anchor_token(html)
 
     async def _fetch_reload_token(
         self,
-        session: aiohttp.ClientSession,
+        session: object,
         reload_url: str,
         anchor_url: str,
         base_token: str,
@@ -275,13 +341,33 @@ class VertexAIAnonymousBackend:
             "chr": "",
             "bg": "",
         }
-        async with session.post(
-            reload_url,
-            data=payload,
-            headers={**self._ua_headers(), "content-type": "application/x-www-form-urlencoded"},
-            proxy=self.settings.proxy_url,
-        ) as resp:
-            text = await resp.text()
-            if resp.status != 200:
-                raise RuntimeError(f"recaptcha reload HTTP {resp.status}: {text[:512]}")
+        headers = {
+            **self._ua_headers(),
+            "content-type": "application/x-www-form-urlencoded",
+        }
+        if CurlAsyncSession is not None and isinstance(session, CurlAsyncSession):
+            resp = await session.post(
+                reload_url,
+                data=payload,
+                headers=headers,
+                proxy=self.settings.proxy_url,
+                impersonate="chrome131",
+            )
+            text = resp.text
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"recaptcha reload HTTP {resp.status_code}: {text[:512]}"
+                )
+        else:
+            async with session.post(
+                reload_url,
+                data=payload,
+                headers=headers,
+                proxy=self.settings.proxy_url,
+            ) as resp:
+                text = await resp.text()
+                if resp.status != 200:
+                    raise RuntimeError(
+                        f"recaptcha reload HTTP {resp.status}: {text[:512]}"
+                    )
         return parse_rresp(text)

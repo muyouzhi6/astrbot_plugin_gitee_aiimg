@@ -9,34 +9,8 @@ from astrbot.api import logger
 
 from .gitee_edit import GiteeEditBackend
 from .output_spec import parse_output
+from .provider_chain import as_dict, as_list, candidates_from_chain
 from .provider_registry import ProviderRegistry
-
-
-def _as_dict(value: object) -> dict:
-    return value if isinstance(value, dict) else {}
-
-
-def _as_list(value: object) -> list:
-    return value if isinstance(value, list) else []
-
-
-def _parse_chain_item(item: object) -> tuple[str, str] | None:
-    if isinstance(item, str):
-        pid = item.strip()
-        return (pid, "") if pid else None
-    if not isinstance(item, dict):
-        return None
-    pid = str(
-        item.get("provider_id")
-        or item.get("id")
-        or item.get("provider")
-        or item.get("backend")
-        or ""
-    ).strip()
-    if not pid:
-        return None
-    out_override = str(item.get("output") or item.get("default_output") or "").strip()
-    return pid, out_override
 
 
 class EditRouter:
@@ -66,18 +40,18 @@ class EditRouter:
         )
 
     def _feature_conf(self) -> dict:
-        feats = _as_dict(self.config.get("features"))
-        return _as_dict(feats.get("edit"))
+        feats = as_dict(self.config.get("features"))
+        return as_dict(feats.get("edit"))
 
     def _default_output(self) -> str:
         return str(self._feature_conf().get("default_output") or "").strip()
 
     def _chain(self) -> list:
-        return _as_list(self._feature_conf().get("chain"))
+        return as_list(self._feature_conf().get("chain"))
 
     def _load_presets(self) -> dict[str, str]:
         presets: dict[str, str] = {}
-        for item in _as_list(self._feature_conf().get("presets")):
+        for item in as_list(self._feature_conf().get("presets")):
             if isinstance(item, str) and ":" in item:
                 key, val = item.split(":", 1)
                 key = key.strip()
@@ -106,18 +80,7 @@ class EditRouter:
 
     @staticmethod
     def _candidates_from_chain(raw_chain: list) -> list[tuple[str, str]]:
-        out: list[tuple[str, str]] = []
-        seen: set[str] = set()
-        for item in raw_chain:
-            parsed = _parse_chain_item(item)
-            if not parsed:
-                continue
-            pid, out_override = parsed
-            if pid in seen:
-                continue
-            seen.add(pid)
-            out.append((pid, out_override))
-        return out
+        return candidates_from_chain(raw_chain)
 
     def _candidate_chain(
         self, backend: str | None, chain_override: list | None
@@ -129,7 +92,7 @@ class EditRouter:
         return self._candidates_from_chain(self._chain())
 
     def _default_gitee_task_types(self) -> list[str]:
-        raw = _as_list(self._feature_conf().get("gitee_task_types"))
+        raw = as_list(self._feature_conf().get("gitee_task_types"))
         out = [str(x).strip() for x in raw if str(x).strip()]
         return out or ["id", "background", "style"]
 
