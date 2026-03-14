@@ -2,12 +2,16 @@
 视频缓存管理器
 
 用于在需要以本地文件方式发送时，下载 Grok 返回的视频并进行简单清理。
+
+注意：部分后端可能返回的是一个页面 URL（text/html），页面里再包含真正的 mp4 链接。
+本管理器会在下载前尝试把 HTML/JSON 解析成“直链 mp4”，避免最终发送的只是一个网页链接。
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -65,6 +69,53 @@ class VideoManager:
         )
         self.cleanup_batch_ratio = 0.5
 
+    async def _resolve_video_url(self, url: str, *, timeout: httpx.Timeout) -> str:
+        """Resolve a possibly indirect URL into a direct mp4 URL.
+
+        Some providers return an HTML page or JSON wrapper that contains the real mp4 link.
+        """
+        u = str(url or "").strip()
+        if not u:
+            return ""
+        if u.lower().endswith(".mp4"):
+            return u
+
+        # Try a lightweight GET and inspect content.
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                resp = await client.get(u, headers={"Accept": "text/html,application/json"})
+                ct = (resp.headers.get("content-type") or "").lower()
+                text = resp.text or ""
+
+                # JSON that contains url
+                if "application/json" in ct:
+                    try:
+                        data = resp.json()
+                        if isinstance(data, dict):
+                            for k in ("url", "video_url", "download_url"):
+                                v = str(data.get(k) or "").strip()
+                                if v.lower().endswith(".mp4"):
+                                    return v
+                            # OpenAI-like {data:[{url:...}]}
+                            d0 = (data.get("data") or [{}])[0]
+                            if isinstance(d0, dict):
+                                v = str(d0.get("url") or "").strip()
+                                if v.lower().endswith(".mp4"):
+                                    return v
+                    except Exception:
+                        pass
+
+                # HTML page that contains an mp4 link
+                if "text/html" in ct or text.lstrip().lower().startswith("<!doctype"):
+                    m = re.search(r"https?://[^\s\"']+?\.mp4", text)
+                    if m:
+                        return m.group(0)
+
+        except Exception:
+            pass
+
+        return u
+
     async def download_video(self, url: str, *, timeout_seconds: int = 300) -> Path:
         if not url:
             raise ValueError("缺少视频 URL")
@@ -89,7 +140,7 @@ class VideoManager:
         )
 
         t0 = time.perf_counter()
-        current = str(url or "").strip()
+        current = await self._resolve_video_url(str(url or "").strip(), timeout=timeout)
         redirects = 0
         try:
             while True:
