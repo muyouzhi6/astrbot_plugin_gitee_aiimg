@@ -439,11 +439,11 @@ class GrokVideoService:
                     ]
                     chunks: list[dict[str, Any]] = []
                     for ln in lines:
-                        payload = ln[5:].strip()
-                        if not payload or payload == "[DONE]":
+                        data_str = ln[5:].strip()
+                        if not data_str or data_str == "[DONE]":
                             continue
                         try:
-                            chunks.append(json.loads(payload))
+                            chunks.append(json.loads(data_str))
                         except Exception:
                             continue
                     if chunks:
