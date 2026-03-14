@@ -1688,7 +1688,7 @@ class GiteeAIImage(Star):
             return
         await event.send(event.plain_result(video_url))
 
-async def _async_generate_video(
+    async def _async_generate_video(
         self,
         event: AstrMessageEvent,
         prompt: str,
