@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import random
 import re
 import time
@@ -426,6 +427,47 @@ class GrokVideoService:
             try:
                 return resp.json()
             except Exception as e:
+                # Some gateways return SSE-ish payload even when stream=false, e.g.
+                # "data: {...}\n\n" or multiple "data:" lines.
+                text = (resp.text or "").strip()
+                if text.startswith("data:"):
+                    # keep only data lines, drop [DONE]
+                    lines = [
+                        ln.strip()
+                        for ln in text.splitlines()
+                        if ln.strip().startswith("data:")
+                    ]
+                    chunks: list[dict[str, Any]] = []
+                    for ln in lines:
+                        payload = ln[5:].strip()
+                        if not payload or payload == "[DONE]":
+                            continue
+                        try:
+                            chunks.append(json.loads(payload))
+                        except Exception:
+                            continue
+                    if chunks:
+                        # If it's chat.completion.chunk, reconstruct into a non-stream response-like dict
+                        # so downstream extractor can work.
+                        if all(
+                            isinstance(c, dict)
+                            and str(c.get("object", "")).endswith(".chunk")
+                            for c in chunks
+                        ):
+                            content_parts: list[str] = []
+                            for c in chunks:
+                                for ch in c.get("choices", []) or []:
+                                    delta = ch.get("delta") or {}
+                                    part = delta.get("content")
+                                    if isinstance(part, str) and part:
+                                        content_parts.append(part)
+                            content = "".join(content_parts)
+                            return {
+                                "choices": [
+                                    {"message": {"content": content}}
+                                ]
+                            }
+                        return chunks[-1]
                 raise RuntimeError(
                     f"API 响应 JSON 解析失败: {e}, body={resp.text[:200]}"
                 ) from e
