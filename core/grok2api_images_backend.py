@@ -406,58 +406,77 @@ class Grok2ApiImagesBackend:
 
             last_resp: httpx.Response | None = None
 
-            # 1) JSON variants
-            json_payloads: list[dict[str, Any]] = [
-                dict(base_payload, image=image_data_url),
-                dict(base_payload, images=[image_data_url]),
-                dict(base_payload, image_url=image_data_url),
-            ]
-            for p in json_payloads:
-                resp = await client.post(
-                    self._endpoint_edit, headers=self._headers(), json=p
-                )
-                last_resp = resp
-                if resp.status_code == 200:
-                    break
-                # 仅在“参数/格式”类错误下继续尝试；其余错误直接终止，留给外层降级。
-                if resp.status_code not in {400, 415, 422}:
-                    break
+            # Prefer multipart first: /v1/images/edits (newer Grok2API) only supports multipart.
+            resp: httpx.Response | None = None
 
-            resp = last_resp or resp
+            data_fields: dict[str, str] = {
+                "model": final_model,
+                "prompt": (prompt or "").strip() or "Edit this image",
+                "n": "1",
+            }
+            if final_size:
+                data_fields["size"] = final_size
 
-            # 2) multipart fallback (image / images)
-            if resp.status_code in {400, 415, 422}:
-                data_fields: dict[str, str] = {
-                    "model": final_model,
-                    "prompt": (prompt or "").strip() or "Edit this image",
-                    "n": "1",
+            eb = self.extra_body if isinstance(self.extra_body, dict) else {}
+            for k, v in eb.items():
+                if k not in data_fields:
+                    data_fields[str(k)] = self._coerce_form_value(v)
+            if isinstance(extra_body, dict) and extra_body:
+                for k, v in extra_body.items():
+                    data_fields[str(k)] = self._coerce_form_value(v)
+
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            for field_name in ("image", "images"):
+                files = {
+                    field_name: (f"image.{ext}", merged_img, mime),
                 }
-                if final_size:
-                    data_fields["size"] = final_size
-
-                eb = self.extra_body if isinstance(self.extra_body, dict) else {}
-                for k, v in eb.items():
-                    if k not in data_fields:
-                        data_fields[str(k)] = self._coerce_form_value(v)
-                if isinstance(extra_body, dict) and extra_body:
-                    for k, v in extra_body.items():
-                        data_fields[str(k)] = self._coerce_form_value(v)
-
-                headers = {"Authorization": f"Bearer {self.api_key}"}
-                for field_name in ("image", "images"):
-                    files = {
-                        field_name: (f"image.{ext}", merged_img, mime),
-                    }
-                    for endpoint in (self._endpoint_edit, self._endpoint_generate):
-                        if not endpoint:
-                            continue
-                        resp = await client.post(
-                            endpoint, headers=headers, data=data_fields, files=files
-                        )
-                        if resp.status_code == 200:
-                            break
+                for endpoint in (self._endpoint_edit, self._endpoint_generate):
+                    if not endpoint:
+                        continue
+                    resp = await client.post(
+                        endpoint, headers=headers, data=data_fields, files=files
+                    )
+                    last_resp = resp
                     if resp.status_code == 200:
                         break
+                if resp is not None and resp.status_code == 200:
+                    break
+
+            # Fallback for older forks that (incorrectly) accept JSON edit payloads.
+            if resp is None or resp.status_code in {400, 415, 422}:
+                image_b64 = base64.b64encode(merged_img).decode("utf-8")
+                image_data_url = f"data:{mime};base64,{image_b64}"
+
+                base_payload: dict[str, Any] = {
+                    "model": final_model,
+                    "prompt": (prompt or "").strip() or "Edit this image",
+                    "n": 1,
+                }
+                if final_size:
+                    base_payload["size"] = final_size
+
+                base_payload = self._merge_extra(base_payload)
+                if isinstance(extra_body, dict) and extra_body:
+                    base_payload.update(extra_body)
+
+                # 1) JSON variants (try generations only)
+                if self._endpoint_generate:
+                    json_payloads: list[dict[str, Any]] = [
+                        dict(base_payload, image=image_data_url),
+                        dict(base_payload, images=[image_data_url]),
+                        dict(base_payload, image_url=image_data_url),
+                    ]
+                    for p in json_payloads:
+                        resp = await client.post(
+                            self._endpoint_generate,
+                            headers=self._headers(),
+                            json=p,
+                        )
+                        last_resp = resp
+                        if resp.status_code == 200:
+                            break
+                        if resp.status_code not in {400, 415, 422}:
+                            break
         if resp is None or resp.status_code != 200:
             status = resp.status_code if resp is not None else 0
             text = resp.text[:300] if resp is not None else "no response"
