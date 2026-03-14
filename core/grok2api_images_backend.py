@@ -48,6 +48,13 @@ def _normalize_images_generations_url(base_url: str) -> str:
     return f"{b}/images/generations"
 
 
+def _normalize_images_edits_url(base_url: str) -> str:
+    b = normalize_openai_compat_base_url(base_url).rstrip("/")
+    if not b:
+        return ""
+    return f"{b}/images/edits"
+
+
 def _pick_first_api_key(api_keys: list[str]) -> str:
     keys = [str(k).strip() for k in (api_keys or []) if str(k).strip()]
     if not keys:
@@ -238,7 +245,7 @@ class Grok2ApiImagesBackend:
         api_keys: list[str],
         timeout: int = 120,
         default_model: str = "",
-        default_size: str = "4096x4096",
+        default_size: str = "1024x1024",
         extra_body: dict | None = None,
     ):
         self.imgr = imgr
@@ -249,8 +256,9 @@ class Grok2ApiImagesBackend:
         self.default_size = str(default_size or "4096x4096").strip()
         self.extra_body = extra_body or {}
 
-        self._endpoint = _normalize_images_generations_url(self.base_url)
-        self._origin = _origin(self._endpoint)
+        self._endpoint_generate = _normalize_images_generations_url(self.base_url)
+        self._endpoint_edit = _normalize_images_edits_url(self.base_url)
+        self._origin = _origin(self._endpoint_generate or self._endpoint_edit)
 
     async def close(self) -> None:
         return None
@@ -293,7 +301,7 @@ class Grok2ApiImagesBackend:
         resolution: str | None = None,
         extra_body: dict | None = None,
     ) -> Path:
-        if not self._endpoint:
+        if not self._endpoint_generate:
             raise RuntimeError("未配置 base_url")
 
         final_model = str(model or self.default_model or "").strip()
@@ -325,7 +333,7 @@ class Grok2ApiImagesBackend:
             timeout=float(self.timeout), follow_redirects=True
         ) as client:
             resp = await client.post(
-                self._endpoint, headers=self._headers(), json=payload
+                self._endpoint_generate, headers=self._headers(), json=payload
             )
         if resp.status_code != 200:
             raise RuntimeError(
@@ -356,7 +364,7 @@ class Grok2ApiImagesBackend:
     ) -> Path:
         if not images:
             raise ValueError("至少需要一张图片")
-        if not self._endpoint:
+        if not self._endpoint_edit:
             raise RuntimeError("未配置 base_url")
 
         final_model = str(model or self.default_model or "").strip()
@@ -406,7 +414,7 @@ class Grok2ApiImagesBackend:
             ]
             for p in json_payloads:
                 resp = await client.post(
-                    self._endpoint, headers=self._headers(), json=p
+                    self._endpoint_edit, headers=self._headers(), json=p
                 )
                 last_resp = resp
                 if resp.status_code == 200:
@@ -440,14 +448,21 @@ class Grok2ApiImagesBackend:
                     files = {
                         field_name: (f"image.{ext}", merged_img, mime),
                     }
-                    resp = await client.post(
-                        self._endpoint, headers=headers, data=data_fields, files=files
-                    )
+                    for endpoint in (self._endpoint_edit, self._endpoint_generate):
+                        if not endpoint:
+                            continue
+                        resp = await client.post(
+                            endpoint, headers=headers, data=data_fields, files=files
+                        )
+                        if resp.status_code == 200:
+                            break
                     if resp.status_code == 200:
                         break
-        if resp.status_code != 200:
+        if resp is None or resp.status_code != 200:
+            status = resp.status_code if resp is not None else 0
+            text = resp.text[:300] if resp is not None else "no response"
             raise RuntimeError(
-                f"Grok2API images.edit 失败 HTTP {resp.status_code}: {resp.text[:300]}"
+                f"Grok2API images.edit 失败 HTTP {status}: {text}"
             )
 
         data = resp.json()
