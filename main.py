@@ -1638,27 +1638,13 @@ class GiteeAIImage(Star):
         send_timeout = int(vconf.get("send_timeout_seconds", 90) or 90)
         send_timeout = max(10, min(send_timeout, 300))
 
-        # 1) URL 发送（优先）
-        if mode in {"auto", "url"}:
-            try:
-                await asyncio.wait_for(
-                    event.send(event.chain_result([Video.fromURL(video_url)])),
-                    timeout=float(send_timeout),
-                )
-                return
-            except Exception as e:
-                if mode == "url":
-                    raise
-                logger.warning(f"[视频] URL 发送失败，尝试本地文件降级: {e}")
-
-        # 2) 下载 + 本地文件发送
         download_timeout = int(vconf.get("download_timeout_seconds", 300) or 300)
         download_timeout = max(1, min(download_timeout, 3600))
 
-        if mode in {"auto", "file"}:
+        async def _send_file(url: str) -> bool:
             try:
                 video_path = await self.videomgr.download_video(
-                    video_url, timeout_seconds=download_timeout
+                    url, timeout_seconds=download_timeout
                 )
                 await asyncio.wait_for(
                     event.send(
@@ -1666,16 +1652,43 @@ class GiteeAIImage(Star):
                     ),
                     timeout=float(send_timeout),
                 )
-                return
+                return True
             except Exception as e:
-                if mode == "file":
-                    raise
-                logger.warning(f"[视频] 本地文件发送失败，回退为文本链接: {e}")
+                logger.warning(f"[视频] 本地文件发送失败: {e}")
+                return False
 
-        # 3) 最终兜底：发出可点击链接
+        async def _send_url(url: str) -> bool:
+            try:
+                await asyncio.wait_for(
+                    event.send(event.chain_result([Video.fromURL(url)])),
+                    timeout=float(send_timeout),
+                )
+                return True
+            except Exception as e:
+                logger.warning(f"[视频] URL 发送失败: {e}")
+                return False
+
+        # file/url forced
+        if mode == "file":
+            if await _send_file(video_url):
+                return
+            await event.send(event.plain_result(video_url))
+            return
+
+        if mode == "url":
+            if await _send_url(video_url):
+                return
+            await event.send(event.plain_result(video_url))
+            return
+
+        # auto: prefer file first (most platforms won't render URL as playable video)
+        if await _send_file(video_url):
+            return
+        if await _send_url(video_url):
+            return
         await event.send(event.plain_result(video_url))
 
-    async def _async_generate_video(
+async def _async_generate_video(
         self,
         event: AstrMessageEvent,
         prompt: str,

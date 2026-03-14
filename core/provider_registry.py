@@ -46,6 +46,7 @@ _TEMPLATE_KEY_ALIASES: dict[str, str] = {
     "gitee": "gitee_images",
     "grok": "grok_images",
     "grok2api": "grok2api_images",
+    "grok2api_video": "grok2api_video",
     "openai": "openai_images",
     "openai_compat": "openai_images",
     "openai_full_url": "openai_full_url_images",
