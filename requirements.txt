@@ -2,4 +2,4 @@ aiofiles>=23
 aiohttp>=3.9,<4
 curl_cffi>=0.14.0,<1
 httpx>=0.24,<1
-openai>=1.97,<2
+openai>=1.97
