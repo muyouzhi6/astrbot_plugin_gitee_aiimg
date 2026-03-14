@@ -15,7 +15,7 @@ from astrbot.api import logger
 from .image_format import guess_image_mime_and_ext
 from .openai_compat_backend import _build_collage, resolution_to_size
 
-_IMAGE_RESPONSE_FORMAT_CANDIDATES = ("url", "b64_json", None)
+_IMAGE_RESPONSE_FORMAT_CANDIDATES = ("b64_json", "url", None)
 _RETRYABLE_HTTP_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 _BASE64_PREFIX_RE = re.compile(r"^(?:b64|base64)\s*:\s*", re.IGNORECASE)
 
