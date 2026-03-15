@@ -462,36 +462,32 @@ class GrokVideoService:
                                     if isinstance(part, str) and part:
                                         content_parts.append(part)
                             content = "".join(content_parts)
-                            return {"choices": [{"message": {"content": content}}]}
+                            return {
+                                "choices": [
+                                    {"message": {"content": content}}
+                                ]
+                            }
                         return chunks[-1]
                 raise RuntimeError(
                     f"API 响应 JSON 解析失败: {e}, body={resp.text[:200]}"
                 ) from e
 
-        parse_total = self.empty_response_retry + 1
-        request_total = self.max_retries + 1
-
-        async def _request_with_retries(parse_attempt: int) -> Any:
+        async def _request_with_retries() -> Any:
             last_exc: Exception | None = None
-            for request_attempt in range(request_total):
+            for attempt in range(self.max_retries + 1):
                 try:
-                    overall_attempt = (
-                        parse_attempt * request_total + request_attempt + 1
-                    )
-                    overall_total = parse_total * request_total
                     logger.info(
-                        f"[GrokVideo] 调用 API attempt={overall_attempt}/{overall_total} "
-                        f"(parse={parse_attempt + 1}/{parse_total}, request={request_attempt + 1}/{request_total}), "
+                        f"[GrokVideo] 调用 API attempt={attempt + 1}/{self.max_retries + 1}, "
                         f"prompt={final_prompt[:60]}..."
                     )
                     return await _request_once()
                 except Exception as e:
                     last_exc = e
-                    if request_attempt >= self.max_retries:
+                    if attempt >= self.max_retries:
                         break
-                    delay = max(0, self.retry_delay) * (
-                        2**request_attempt
-                    ) + random.uniform(0, 0.5)
+                    delay = max(0, self.retry_delay) * (2**attempt) + random.uniform(
+                        0, 0.5
+                    )
                     logger.warning(f"[GrokVideo] 请求失败: {e}，{delay:.1f}s 后重试...")
                     await asyncio.sleep(delay)
             raise last_exc or RuntimeError("请求失败")
@@ -500,8 +496,8 @@ class GrokVideoService:
         last_parse_error: str | None = None
 
         # 对「200但没有视频 URL」做额外重试（与网络重试分离，提升成功率）
-        for parse_attempt in range(parse_total):
-            data = await _request_with_retries(parse_attempt)
+        for attempt in range(self.empty_response_retry + 1):
+            data = await _request_with_retries()
             video_url, parse_error = _extract_video_url_from_response(data)
             if video_url:
                 t_end = time.perf_counter()
@@ -511,14 +507,12 @@ class GrokVideoService:
                 return video_url
 
             last_parse_error = parse_error or "API 响应未包含视频 URL"
-            if parse_attempt >= self.empty_response_retry:
+            if attempt >= self.empty_response_retry:
                 break
 
-            delay = max(0, self.retry_delay) * (2**parse_attempt) + random.uniform(
-                0, 0.5
-            )
+            delay = max(0, self.retry_delay) * (2**attempt) + random.uniform(0, 0.5)
             logger.warning(
-                f"[GrokVideo] 响应无视频URL (parse={parse_attempt + 1}/{parse_total}): {last_parse_error}，{delay:.1f}s 后重试..."
+                f"[GrokVideo] 响应无视频URL: {last_parse_error}，{delay:.1f}s 后重试..."
             )
             await asyncio.sleep(delay)
 

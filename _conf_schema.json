@@ -367,12 +367,6 @@
     },
     "default": 1
   },
-  "private_text_notice_in_private": {
-    "type": "bool",
-    "description": "私聊文字提示",
-    "hint": "仅对私聊生效。群聊永远不会发送这类开始/失败文字提示。默认关闭，且提示发送失败不会影响生图、改图或视频生成本身。",
-    "default": false
-  },
   "network": {
     "description": "网络/下载安全配置",
     "hint": "用于图片/视频下载（服务商返回 URL -> 本地缓存/发送）的安全策略。默认阻止本地/LAN/无法解析的地址，以防止 SSRF。",

@@ -1,7 +1,18 @@
 ﻿name: astrbot_plugin_gitee_aiimg
-display_name: Gitee AI 图片生成
+display_name: Gitee AI Image
 desc: >
-  接入多服务商的文生图、改图、自拍参考图与视频生成，支持 LLM 调用、预设、重试和多 Key 轮换。
+  鎺ュ叆澶氭湇鍔″晢鐨勬枃鐢熷浘/鍥剧敓鍥撅紙鏀瑰浘锛夛紝骞舵敮鎸?Bot 鑷媿鍙傝€冪収涓?Grok 瑙嗛鐢熸垚锛涙敮鎸?LLM 璋冪敤銆佹寚浠よ皟鐢ㄣ€侀璁炬彁绀鸿瘝銆佸 Key 杞銆佸け璐ラ噸璇曚笌瓒呮椂閰嶇疆銆?
 version: v4.2.12
-author: 木有知,jhalslar
+author: 鏈ㄦ湁鐭ャ€乑halslar
 repo: https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg
+
+
+
+
+
+
+
+
+
+
+

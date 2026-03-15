@@ -22,12 +22,7 @@ import httpx
 
 from astrbot.api import logger
 
-from .net_safety import (
-    URLFetchPolicy,
-    collect_trusted_origins,
-    ensure_url_allowed,
-    read_network_policy,
-)
+from .net_safety import URLFetchPolicy, collect_trusted_origins, ensure_url_allowed, read_network_policy
 
 
 def _clamp_int(value: Any, *, default: int, min_value: int, max_value: int) -> int:
@@ -63,9 +58,7 @@ class VideoManager:
             min_value=1,
             max_value=10,
         )
-        self._trusted_origins: frozenset[str] = frozenset(
-            collect_trusted_origins(config)
-        )
+        self._trusted_origins: frozenset[str] = frozenset(collect_trusted_origins(config))
 
         self.max_cached_videos: int = _clamp_int(
             (storage.get("max_cached_videos") if isinstance(storage, dict) else None)
@@ -89,12 +82,8 @@ class VideoManager:
 
         # Try a lightweight GET and inspect content.
         try:
-            async with httpx.AsyncClient(
-                timeout=timeout, follow_redirects=True
-            ) as client:
-                resp = await client.get(
-                    u, headers={"Accept": "text/html,application/json"}
-                )
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                resp = await client.get(u, headers={"Accept": "text/html,application/json"})
                 ct = (resp.headers.get("content-type") or "").lower()
                 text = resp.text or ""
 
@@ -156,15 +145,8 @@ class VideoManager:
         try:
             while True:
                 await ensure_url_allowed(current, policy=policy)
-                async with httpx.AsyncClient(
-                    timeout=timeout, follow_redirects=False
-                ) as client:
+                async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
                     async with client.stream("GET", current) as resp:
-                        if resp.status_code == 403 and "assets.grok.com" in current:
-                            raise RuntimeError(
-                                "视频链接受限(403)。如果你用的是 grok2api/newapi 中转，需要在 grok2api 配置 app_url，并把 /v1/files 反代到 grok2api，才能对外可访问。"
-                            )
-
                         if resp.status_code in {301, 302, 303, 307, 308}:
                             if redirects >= self._media_max_redirects:
                                 raise RuntimeError("Too many redirects")

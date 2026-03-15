@@ -5,7 +5,6 @@ Utility helpers for image extraction and downloads.
 import asyncio
 import base64
 import io
-from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -204,10 +203,7 @@ async def _fetch_reply_message_images(
             logger.debug(f"[get_images] quoted parser fallback failed: {e}")
         else:
             images = [
-                image
-                for ref in refs
-                for image in [_image_from_ref(ref)]
-                if image is not None
+                image for ref in refs for image in [_image_from_ref(ref)] if image is not None
             ]
             if images:
                 logger.debug(
@@ -226,9 +222,7 @@ async def _fetch_reply_message_images(
     try:
         target_msg = await bot.get_message(reply_id)
     except Exception as e:
-        logger.warning(
-            f"[get_images] failed to fetch replied message id={reply_id}: {e}"
-        )
+        logger.warning(f"[get_images] failed to fetch replied message id={reply_id}: {e}")
         return []
 
     images: list[Image] = []
@@ -237,9 +231,7 @@ async def _fetch_reply_message_images(
             images.append(comp)
 
     if images:
-        logger.debug(
-            f"[get_images] fetched {len(images)} image(s) from reply id={reply_id}"
-        )
+        logger.debug(f"[get_images] fetched {len(images)} image(s) from reply id={reply_id}")
     return images
 
 
@@ -316,9 +308,7 @@ async def get_images_from_event(
                 if avatar_bytes:
                     b64 = base64.b64encode(avatar_bytes).decode()
                     image_segs.append(Image.fromBase64(b64))
-                    logger.debug(
-                        f"[get_images] sender avatar fallback loaded: {sender_id}"
-                    )
+                    logger.debug(f"[get_images] sender avatar fallback loaded: {sender_id}")
 
     logger.debug(f"[get_images] final_count={len(image_segs)}")
     return image_segs

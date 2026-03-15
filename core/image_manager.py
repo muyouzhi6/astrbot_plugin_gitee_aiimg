@@ -10,12 +10,7 @@ import aiohttp
 from astrbot.api import logger
 
 from .image_format import guess_image_mime_and_ext
-from .net_safety import (
-    URLFetchPolicy,
-    collect_trusted_origins,
-    ensure_url_allowed,
-    read_network_policy,
-)
+from .net_safety import URLFetchPolicy, collect_trusted_origins, ensure_url_allowed, read_network_policy
 
 
 class ImageManager:
@@ -54,9 +49,7 @@ class ImageManager:
             min_value=1,
             max_value=10,
         )
-        self._trusted_origins: frozenset[str] = frozenset(
-            collect_trusted_origins(config)
-        )
+        self._trusted_origins: frozenset[str] = frozenset(collect_trusted_origins(config))
 
         self._session: aiohttp.ClientSession | None = None
 

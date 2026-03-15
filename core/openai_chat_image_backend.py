@@ -260,75 +260,6 @@ async def _resolve_awaitable(value: object) -> object:
     return value
 
 
-def _extract_balanced_json_prefix(text: str) -> str | None:
-    s = str(text or "").strip()
-    if not s:
-        return None
-    start = -1
-    opener = ""
-    closer = ""
-    for candidate_opener, candidate_closer in (("{", "}"), ("[", "]")):
-        idx = s.find(candidate_opener)
-        if idx != -1 and (start == -1 or idx < start):
-            start = idx
-            opener = candidate_opener
-            closer = candidate_closer
-    if start == -1:
-        return None
-
-    depth = 0
-    in_string = False
-    escaped = False
-    for pos in range(start, len(s)):
-        ch = s[pos]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-            continue
-        if ch == opener:
-            depth += 1
-            continue
-        if ch == closer:
-            depth -= 1
-            if depth == 0:
-                return s[start : pos + 1]
-    return None
-
-
-def _iter_sse_data_segments(text: str) -> list[str]:
-    segments: list[str] = []
-    raw = str(text or "")
-    if not raw:
-        return segments
-
-    candidates: list[str] = []
-    for raw_line in raw.splitlines():
-        parts = re.split(r"(?=data:\s*)", raw_line)
-        candidates.extend(parts if parts else [raw_line])
-
-    if "data:" in raw and not candidates:
-        candidates = re.split(r"(?=data:\s*)", raw)
-
-    for candidate in candidates:
-        line = str(candidate or "").strip()
-        if not line:
-            continue
-        if "data:" not in line:
-            continue
-        data_str = line[line.find("data:") + 5 :].strip()
-        if not data_str or data_str == "[DONE]":
-            continue
-        segments.append(data_str)
-    return segments
-
-
 def _iter_strings(obj: object) -> list[str]:
     out: list[str] = []
     seen: set[int] = set()
@@ -523,17 +454,17 @@ def _extract_media_refs_from_sse_text(text: str) -> tuple[list[str], list[str]]:
             return str(value)
         return str(value)
 
-    for data_str in _iter_sse_data_segments(text):
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("```") or not line.startswith("data:"):
+            continue
+        data_str = line[5:].strip()
+        if not data_str or data_str == "[DONE]":
+            continue
         try:
             obj = json.loads(data_str)
         except Exception:
-            prefix = _extract_balanced_json_prefix(data_str)
-            if not prefix:
-                continue
-            try:
-                obj = json.loads(prefix)
-            except Exception:
-                continue
+            continue
 
         add_image(_extract_image_ref_from_content(obj))
         add_video(_extract_video_ref_from_content(obj))

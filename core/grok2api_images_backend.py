@@ -1,7 +1,12 @@
 """
-Grok2API Images 鍚庣锛?v1/images/generations锛?
-鏍规嵁浣犺创鐨?Grok2API 鏂囨。锛?- POST /v1/images/generations锛氬浘鍍忔帴鍙ｏ紝鏀寔鍥惧儚鐢熸垚銆佸浘鍍忕紪杈?
-寰堝 Grok2API 閮ㄧ讲浼氬湪 chat.completions + grok-imagine-0.9 鐨勨€滃甫鍥捐緭鍏モ€濆満鏅紭鍏堣緭鍑?video(mp4)銆?涓洪伩鍏嶆贩娣嗭紝鏈悗绔己鍒惰蛋 images 鎺ュ彛鐢熸垚/缂栬緫鍥剧墖銆?"""
+Grok2API Images 后端（/v1/images/generations）
+
+根据你贴的 Grok2API 文档：
+- POST /v1/images/generations：图像接口，支持图像生成、图像编辑
+
+很多 Grok2API 部署会在 chat.completions + grok-imagine-0.9 的“带图输入”场景优先输出 video(mp4)。
+为避免混淆，本后端强制走 images 接口生成/编辑图片。
+"""
 
 from __future__ import annotations
 
@@ -53,7 +58,7 @@ def _normalize_images_edits_url(base_url: str) -> str:
 def _pick_first_api_key(api_keys: list[str]) -> str:
     keys = [str(k).strip() for k in (api_keys or []) if str(k).strip()]
     if not keys:
-        raise RuntimeError("鏈厤缃?API Key")
+        raise RuntimeError("未配置 API Key")
     return keys[0]
 
 
@@ -152,9 +157,7 @@ def _extract_ref_from_text(text: str) -> str | None:
     if s.startswith(("http://", "https://", "/")):
         return s
 
-    if (s.startswith("{") and s.endswith("}")) or (
-        s.startswith("[") and s.endswith("]")
-    ):
+    if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
         try:
             parsed = json.loads(s)
         except Exception:
@@ -204,14 +207,7 @@ def _extract_image_ref(data: Any) -> str | None:
             if ref:
                 return ref
 
-        for key in (
-            "images",
-            "image_urls",
-            "attachments",
-            "media",
-            "result",
-            "response",
-        ):
+        for key in ("images", "image_urls", "attachments", "media", "result", "response"):
             ref = _extract_image_ref(data.get(key))
             if ref:
                 return ref
@@ -239,7 +235,7 @@ def _looks_like_video_url(url: str) -> bool:
 
 
 class Grok2ApiImagesBackend:
-    """Grok2API images backend (generate + edit)."""
+    """Grok2API 的 /v1/images/generations 后端（generate + edit）。"""
 
     def __init__(
         self,
@@ -306,11 +302,11 @@ class Grok2ApiImagesBackend:
         extra_body: dict | None = None,
     ) -> Path:
         if not self._endpoint_generate:
-            raise RuntimeError("鏈厤缃?base_url")
+            raise RuntimeError("未配置 base_url")
 
         final_model = str(model or self.default_model or "").strip()
         if not final_model:
-            raise RuntimeError("鏈厤缃?model")
+            raise RuntimeError("未配置 model")
 
         final_size = (
             str(size or "").strip()
@@ -324,6 +320,7 @@ class Grok2ApiImagesBackend:
             "prompt": (prompt or "").strip() or "a high quality image",
             "n": 1,
         }
+        # Grok2API 文档未明确 size 字段，但很多兼容实现支持；传了也不会影响不支持的实现（通常会忽略/报错）
         if final_size:
             payload["size"] = final_size
 
@@ -340,23 +337,19 @@ class Grok2ApiImagesBackend:
             )
         if resp.status_code != 200:
             raise RuntimeError(
-                f"Grok2API images.generate 澶辫触 HTTP {resp.status_code}: {resp.text[:300]}"
+                f"Grok2API images.generate 失败 HTTP {resp.status_code}: {resp.text[:300]}"
             )
 
         data = resp.json()
         ref = _extract_image_ref(data)
         if ref and _looks_like_video_url(ref):
-            raise RuntimeError(
-                f"Grok2API images.generate 杩斿洖浜嗚棰戣€屼笉鏄浘鐗? {ref}"
-            )
+            raise RuntimeError(f"Grok2API images.generate 返回了视频而不是图片: {ref}")
         if not ref:
             raise RuntimeError(
-                f"Grok2API images.generate 鏈繑鍥炲浘鐗? {str(data)[:200]}"
+                f"Grok2API images.generate 未返回图片: {str(data)[:200]}"
             )
 
-        logger.info(
-            "[Grok2APIImages][generate] 鑰楁椂: %.2fs", time.perf_counter() - t0
-        )
+        logger.info("[Grok2APIImages][generate] 耗时: %.2fs", time.perf_counter() - t0)
         return await self._save_ref(ref)
 
     async def edit(
@@ -370,13 +363,13 @@ class Grok2ApiImagesBackend:
         extra_body: dict | None = None,
     ) -> Path:
         if not images:
-            raise ValueError("At least one image is required")
+            raise ValueError("至少需要一张图片")
         if not self._endpoint_edit:
-            raise RuntimeError("鏈厤缃?base_url")
+            raise RuntimeError("未配置 base_url")
 
         final_model = str(model or self.default_model or "").strip()
         if not final_model:
-            raise RuntimeError("鏈厤缃?model")
+            raise RuntimeError("未配置 model")
 
         final_size = (
             str(size or "").strip()
@@ -385,10 +378,10 @@ class Grok2ApiImagesBackend:
             or self.default_size
         )
 
-        # Grok2API 鏂囨。璇存槑 /v1/images/generations 鍚屾椂鏀寔鈥滃浘鍍忕敓鎴?缂栬緫鈥濓紝浣嗕笉鍚屽疄鐜板缂栬緫鍏ュ弬骞朵笉涓€鑷达細
-        # - 鏈夌殑瀹炵幇鎺ュ彈 JSON锛坕mage=data:... 鎴?images=[data:...] 绛夛級
-        # - 鏈夌殑瀹炵幇娌跨敤 OpenAI 瀹樻柟鍥剧墖缂栬緫鎺ュ彛锛岃姹?multipart 涓婁紶鏂囦欢
-        # 鍥犳杩欓噷鍋氣€滃褰㈡€佸厹搴曗€濓細JSON 澶氱瀛楁灏濊瘯 -> multipart 鍏滃簳銆?        merged_img = _build_collage(images)
+        # Grok2API 文档说明 /v1/images/generations 同时支持“图像生成/编辑”，但不同实现对编辑入参并不一致：
+        # - 有的实现接受 JSON（image=data:... 或 images=[data:...] 等）
+        # - 有的实现沿用 OpenAI 官方图片编辑接口，要求 multipart 上传文件
+        # 因此这里做“多形态兜底”：JSON 多种字段尝试 -> multipart 兜底。
         merged_img = _build_collage(images)
         mime, ext = guess_image_mime_and_ext(merged_img)
 
@@ -410,6 +403,8 @@ class Grok2ApiImagesBackend:
             base_payload = self._merge_extra(base_payload)
             if isinstance(extra_body, dict) and extra_body:
                 base_payload.update(extra_body)
+
+            last_resp: httpx.Response | None = None
 
             # Prefer multipart first: /v1/images/edits (newer Grok2API) only supports multipart.
             resp: httpx.Response | None = None
@@ -441,6 +436,7 @@ class Grok2ApiImagesBackend:
                     resp = await client.post(
                         endpoint, headers=headers, data=data_fields, files=files
                     )
+                    last_resp = resp
                     if resp.status_code == 200:
                         break
                 if resp is not None and resp.status_code == 200:
@@ -476,6 +472,7 @@ class Grok2ApiImagesBackend:
                             headers=self._headers(),
                             json=p,
                         )
+                        last_resp = resp
                         if resp.status_code == 200:
                             break
                         if resp.status_code not in {400, 415, 422}:
@@ -483,34 +480,34 @@ class Grok2ApiImagesBackend:
         if resp is None or resp.status_code != 200:
             status = resp.status_code if resp is not None else 0
             text = resp.text[:300] if resp is not None else "no response"
-            raise RuntimeError(f"Grok2API images.edit 澶辫触 HTTP {status}: {text}")
+            raise RuntimeError(
+                f"Grok2API images.edit 失败 HTTP {status}: {text}"
+            )
 
         data = resp.json()
         ref = _extract_image_ref(data)
         if ref and _looks_like_video_url(ref):
-            raise RuntimeError(
-                f"Grok2API images.edit 杩斿洖浜嗚棰戣€屼笉鏄浘鐗? {ref}"
-            )
+            raise RuntimeError(f"Grok2API images.edit 返回了视频而不是图片: {ref}")
         if not ref:
-            raise RuntimeError(f"Grok2API images.edit 鏈繑鍥炲浘鐗? {str(data)[:200]}")
+            raise RuntimeError(f"Grok2API images.edit 未返回图片: {str(data)[:200]}")
 
-        logger.info("[Grok2APIImages][edit] 鑰楁椂: %.2fs", time.perf_counter() - t0)
+        logger.info("[Grok2APIImages][edit] 耗时: %.2fs", time.perf_counter() - t0)
         return await self._save_ref(ref)
 
     async def _save_ref(self, ref: str) -> Path:
         ref = (ref or "").strip()
         if not ref:
-            raise RuntimeError("Empty image reference")
+            raise RuntimeError("空图片引用")
 
         if ref.startswith("data:image/"):
             ref = re.sub(r"\s+", "", ref)
             try:
                 _header, b64_data = ref.split(",", 1)
             except ValueError:
-                raise RuntimeError("data:image 缂哄皯 base64 鏁版嵁") from None
+                raise RuntimeError("data:image 缺少 base64 数据") from None
             image_bytes = _decode_base64_bytes((b64_data or "").strip())
             if not image_bytes:
-                raise RuntimeError("data:image base64 瑙ｇ爜澶辫触")
+                raise RuntimeError("data:image base64 解码失败")
             return await self.imgr.save_image(image_bytes)
 
         if ref.startswith(("http://", "https://")):
@@ -526,4 +523,4 @@ class Grok2ApiImagesBackend:
         if self._origin:
             return await self.imgr.download_image(urljoin(self._origin + "/", ref))
 
-        raise RuntimeError(f"涓嶆敮鎸佺殑鍥剧墖 URL: {ref}")
+        raise RuntimeError(f"不支持的图片 URL: {ref}")
