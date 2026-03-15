@@ -367,6 +367,12 @@
     },
     "default": 1
   },
+  "private_text_notice_in_private": {
+    "type": "bool",
+    "description": "Enable private-chat text notices",
+    "hint": "Only affects private chats. Group chats never send these start/failure text notices. Disabled by default and failures here never affect image/video generation.",
+    "default": false
+  },
   "network": {
     "description": "网络/下载安全配置",
     "hint": "用于图片/视频下载（服务商返回 URL -> 本地缓存/发送）的安全策略。默认阻止本地/LAN/无法解析的地址，以防止 SSRF。",

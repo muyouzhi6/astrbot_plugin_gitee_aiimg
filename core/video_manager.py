@@ -22,7 +22,12 @@ import httpx
 
 from astrbot.api import logger
 
-from .net_safety import URLFetchPolicy, collect_trusted_origins, ensure_url_allowed, read_network_policy
+from .net_safety import (
+    URLFetchPolicy,
+    collect_trusted_origins,
+    ensure_url_allowed,
+    read_network_policy,
+)
 
 
 def _clamp_int(value: Any, *, default: int, min_value: int, max_value: int) -> int:
@@ -58,7 +63,9 @@ class VideoManager:
             min_value=1,
             max_value=10,
         )
-        self._trusted_origins: frozenset[str] = frozenset(collect_trusted_origins(config))
+        self._trusted_origins: frozenset[str] = frozenset(
+            collect_trusted_origins(config)
+        )
 
         self.max_cached_videos: int = _clamp_int(
             (storage.get("max_cached_videos") if isinstance(storage, dict) else None)
@@ -82,8 +89,12 @@ class VideoManager:
 
         # Try a lightweight GET and inspect content.
         try:
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                resp = await client.get(u, headers={"Accept": "text/html,application/json"})
+            async with httpx.AsyncClient(
+                timeout=timeout, follow_redirects=True
+            ) as client:
+                resp = await client.get(
+                    u, headers={"Accept": "text/html,application/json"}
+                )
                 ct = (resp.headers.get("content-type") or "").lower()
                 text = resp.text or ""
 
@@ -145,7 +156,9 @@ class VideoManager:
         try:
             while True:
                 await ensure_url_allowed(current, policy=policy)
-                async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+                async with httpx.AsyncClient(
+                    timeout=timeout, follow_redirects=False
+                ) as client:
                     async with client.stream("GET", current) as resp:
                         if resp.status_code == 403 and "assets.grok.com" in current:
                             raise RuntimeError(

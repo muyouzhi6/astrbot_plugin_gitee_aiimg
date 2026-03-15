@@ -116,6 +116,49 @@ class GiteeAIImage(Star):
         self._last_image_by_user[user_id] = Path(image_path)
 
     @staticmethod
+    def _brief_error_message(exc: Exception | None, *, limit: int = 240) -> str:
+        if exc is None:
+            return "unknown error"
+        text = str(exc or "").replace("\r", " ").replace("\n", " ").strip()
+        text = " ".join(text.split())
+        if not text:
+            text = exc.__class__.__name__
+        if len(text) > limit:
+            return f"{text[: limit - 3]}..."
+        return text
+
+    async def _safe_send_text(self, event: AstrMessageEvent, text: str) -> bool:
+        message = str(text or "").strip()
+        if not message:
+            return False
+        try:
+            await event.send(event.plain_result(message))
+            return True
+        except Exception as e:
+            logger.debug("[notice] failed to send text notice: %s", e)
+            return False
+
+    async def _maybe_send_private_notice(
+        self, event: AstrMessageEvent, text: str
+    ) -> bool:
+        if not self._private_text_notice_enabled():
+            return False
+        try:
+            if event.is_private_chat():
+                return await self._safe_send_text(event, text)
+        except Exception as e:
+            logger.debug("[notice] failed to inspect chat type: %s", e)
+        return False
+
+    def _private_text_notice_enabled(self) -> bool:
+        if not isinstance(self.config, dict):
+            return False
+        return self._as_bool(
+            self.config.get("private_text_notice_in_private", False),
+            default=False,
+        )
+
+    @staticmethod
     def _as_int(value: Any, *, default: int) -> int:
         try:
             return int(value)
@@ -787,6 +830,7 @@ class GiteeAIImage(Star):
         try:
             # 标记处理中
             await mark_processing(event)
+            await self._maybe_send_private_notice(event, "🎨 已开始生成图片，请稍候…")
             t_start = time.perf_counter()
             image_path = await self.draw.generate(
                 prompt, size=size, provider_id=provider_override
@@ -797,6 +841,10 @@ class GiteeAIImage(Star):
             sent = await self._send_image_with_fallback(event, image_path)
             if not sent:
                 await mark_failed(event)
+                await self._maybe_send_private_notice(
+                    event,
+                    "⚠️ 图片已生成，但私聊发送失败，可稍后发送 /重发图片 再试一次。",
+                )
                 logger.warning(
                     "[文生图] 图片发送失败，已仅使用表情标注: reason=%s", sent.reason
                 )
@@ -811,6 +859,9 @@ class GiteeAIImage(Star):
         except Exception as e:
             logger.error(f"[文生图] 失败: {e}")
             await mark_failed(event)
+            await self._maybe_send_private_notice(
+                event, f"❌ 生图失败：{self._brief_error_message(e)}"
+            )
         finally:
             await self._end_user_job(user_id, kind="image")
 
@@ -1081,6 +1132,7 @@ class GiteeAIImage(Star):
 
         try:
             await mark_processing(event)
+            await self._maybe_send_private_notice(event, "🎬 视频生成已开始，请稍候…")
         except Exception:
             await self._video_end(user_id)
             await mark_failed(event)
@@ -1149,6 +1201,7 @@ class GiteeAIImage(Star):
 
         try:
             await mark_processing(event)
+            await self._maybe_send_private_notice(event, "🎬 视频生成已开始，请稍候…")
         except Exception:
             await self._video_end(user_id)
             await mark_failed(event)
@@ -1531,6 +1584,7 @@ class GiteeAIImage(Star):
 
         try:
             await mark_processing(event)
+            await self._maybe_send_private_notice(event, "🎬 视频生成已开始，请稍候…")
             task = asyncio.create_task(
                 self._async_generate_video(
                     event, extra_prompt, user_id, provider_id=provider_override
@@ -1730,7 +1784,9 @@ class GiteeAIImage(Star):
             last_error: Exception | None = None
             video_url: str | None = None
             used_pid: str | None = None
-            for pid in candidates:
+            provider_errors: list[str] = []
+            total_candidates = len(candidates)
+            for index, pid in enumerate(candidates, start=1):
                 try:
                     backend = self.registry.get_video_backend(pid)
                     candidate_url = await backend.generate_video_url(
@@ -1744,10 +1800,30 @@ class GiteeAIImage(Star):
                     break
                 except Exception as e:
                     last_error = e
-                    logger.warning("[视频] Provider=%s 失败: %s", pid, e)
+                    brief_error = self._brief_error_message(e)
+                    provider_errors.append(f"{pid}: {brief_error}")
+                    if index < total_candidates:
+                        logger.info(
+                            "[视频] Provider=%s failed (%s/%s), trying next: %s",
+                            pid,
+                            index,
+                            total_candidates,
+                            brief_error,
+                        )
+                    else:
+                        logger.warning(
+                            "[视频] Provider=%s failed (%s/%s): %s",
+                            pid,
+                            index,
+                            total_candidates,
+                            brief_error,
+                        )
 
             if not video_url:
-                raise RuntimeError(f"视频生成失败: {last_error}") from last_error
+                summary = "; ".join(provider_errors) or self._brief_error_message(
+                    last_error
+                )
+                raise RuntimeError(f"视频生成失败: {summary}") from last_error
 
             await self._send_video_result(event, video_url)
             await mark_success(event)
@@ -1759,6 +1835,9 @@ class GiteeAIImage(Star):
         except Exception as e:
             logger.error(f"[视频] 失败: {e}", exc_info=True)
             await mark_failed(event)
+            await self._maybe_send_private_notice(
+                event, f"❌ 视频生成失败：{self._brief_error_message(e)}"
+            )
         finally:
             await self._video_end(user_id)
 
@@ -1821,6 +1900,7 @@ class GiteeAIImage(Star):
         try:
             # 标记处理中
             await mark_processing(event)
+            await self._maybe_send_private_notice(event, "🖼️ 已开始处理图片，请稍候…")
             t_start = time.perf_counter()
             image_path = await self.edit.edit(
                 prompt=prompt,
@@ -1834,6 +1914,10 @@ class GiteeAIImage(Star):
             sent = await self._send_image_with_fallback(event, image_path)
             if not sent:
                 await mark_failed(event)
+                await self._maybe_send_private_notice(
+                    event,
+                    "⚠️ 图片已生成，但私聊发送失败，可稍后发送 /重发图片 再试一次。",
+                )
                 logger.warning(
                     "[改图] 结果发送失败，已仅使用表情标注: reason=%s",
                     sent.reason,
@@ -1848,6 +1932,9 @@ class GiteeAIImage(Star):
         except Exception as e:
             logger.error(f"[改图] 失败: {e}", exc_info=True)
             await mark_failed(event)
+            await self._maybe_send_private_notice(
+                event, f"❌ 改图失败：{self._brief_error_message(e)}"
+            )
         finally:
             await self._end_user_job(user_id, kind="image")
 
