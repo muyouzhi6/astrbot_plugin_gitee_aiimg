@@ -56,7 +56,7 @@ class SendImageResult:
         return self.ok
 
 
-class GiteeAIImage(Star):
+class GiteeAIImagePlugin(Star):
     """Gitee AI 图像生成插件"""
 
     # Gitee AI 支持的图片比例
@@ -76,7 +76,7 @@ class GiteeAIImage(Star):
             self.config, imgr=self.imgr, data_dir=self.data_dir
         )
         for err in self.registry.validate():
-            logger.warning("[GiteeAIImage][config] %s", err)
+            logger.warning("[GiteeAIImagePlugin][config] %s", err)
 
         self.draw = ImageDrawService(
             self.config, self.imgr, self.data_dir, registry=self.registry
@@ -99,7 +99,7 @@ class GiteeAIImage(Star):
         self._register_preset_commands()
 
         logger.info(
-            f"[GiteeAIImage] 插件初始化完成: "
+            f"[GiteeAIImagePlugin] 插件初始化完成: "
             f"改图后端={self.edit.get_available_backends()}, "
             f"改图预设={len(self.edit.get_preset_names())}个, "
             f"视频启用={bool(self._get_feature('video').get('enabled', False))}, "
@@ -142,7 +142,7 @@ class GiteeAIImage(Star):
         try:
             from astrbot.core.agent import tool_image_cache as cache_module
         except Exception as exc:
-            logger.debug("[GiteeAIImage] skip tool image cache runtime patch: %s", exc)
+            logger.debug("[GiteeAIImagePlugin] skip tool image cache runtime patch: %s", exc)
             return
 
         cache_cls = getattr(cache_module, "ToolImageCache", None)
@@ -181,7 +181,7 @@ class GiteeAIImage(Star):
 
             cache_self._cache_dir = str(cache_dir)
             logger.debug(
-                "[GiteeAIImage] tool image cache runtime patch wrote: %s", file_path
+                "[GiteeAIImagePlugin] tool image cache runtime patch wrote: %s", file_path
             )
             return cached_image_cls(
                 tool_call_id=tool_call_id,
@@ -198,7 +198,7 @@ class GiteeAIImage(Star):
         )
         Path(cache_obj._cache_dir).mkdir(parents=True, exist_ok=True)
         logger.info(
-            "[GiteeAIImage] tool image cache runtime patch active: %s",
+            "[GiteeAIImagePlugin] tool image cache runtime patch active: %s",
             cache_obj._cache_dir,
         )
 
@@ -527,7 +527,7 @@ class GiteeAIImage(Star):
             # 创建闭包捕获 preset_name
             self._create_and_register_preset_handler(preset_name)
 
-        logger.info(f"[GiteeAIImage] 已注册 {len(preset_names)} 个预设命令")
+        logger.info(f"[GiteeAIImagePlugin] 已注册 {len(preset_names)} 个预设命令")
 
     def _create_and_register_preset_handler(self, preset_name: str):
         """为单个预设创建并注册命令处理器
