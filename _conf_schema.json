@@ -369,8 +369,8 @@
   },
   "private_text_notice_in_private": {
     "type": "bool",
-    "description": "Enable private-chat text notices",
-    "hint": "Only affects private chats. Group chats never send these start/failure text notices. Disabled by default and failures here never affect image/video generation.",
+    "description": "私聊文字提示",
+    "hint": "仅对私聊生效。群聊永远不会发送这类开始/失败文字提示。默认关闭，且提示发送失败不会影响生图、改图或视频生成本身。",
     "default": false
   },
   "network": {
