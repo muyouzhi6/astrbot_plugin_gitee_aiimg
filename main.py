@@ -66,7 +66,7 @@ class GiteeAIImagePlugin(Star):
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
         self.config = config
-        self.data_dir = StarTools.get_data_dir()
+        self.data_dir = StarTools.get_data_dir("astrbot_plugin_gitee_aiimg")
         self._last_image_by_user: dict[str, Path] = {}
 
     async def initialize(self):
