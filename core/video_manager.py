@@ -147,6 +147,11 @@ class VideoManager:
                 await ensure_url_allowed(current, policy=policy)
                 async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
                     async with client.stream("GET", current) as resp:
+                        if resp.status_code == 403 and "assets.grok.com" in current:
+                            raise RuntimeError(
+                                "视频链接受限(403)。如果你用的是 grok2api/newapi 中转，需要在 grok2api 配置 app_url，并把 /v1/files 反代到 grok2api，才能对外可访问。"
+                            )
+
                         if resp.status_code in {301, 302, 303, 307, 308}:
                             if redirects >= self._media_max_redirects:
                                 raise RuntimeError("Too many redirects")
