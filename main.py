@@ -22,7 +22,15 @@ import mcp
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import At, AtAll, File, Image, Plain, Reply, Video
+from astrbot.api.message_components import (
+    At,
+    AtAll,
+    File,
+    Image,
+    Plain,
+    Reply,
+    Video,
+)
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
@@ -68,6 +76,41 @@ class GiteeAIImagePlugin(Star):
         self.config = config
         self.data_dir = StarTools.get_data_dir("astrbot_plugin_gitee_aiimg")
         self._last_image_by_user: dict[str, Path] = {}
+
+    async def _call_native_poke(self, event: AstrMessageEvent, target_id: str) -> bool:
+        bot = getattr(event, "bot", None)
+        if bot is None or not hasattr(bot, "call_action"):
+            return False
+
+        user_id: int | str = int(target_id) if target_id.isdigit() else target_id
+        try:
+            await bot.call_action("friend_poke", user_id=user_id)
+            return True
+        except Exception as exc:
+            logger.warning(
+                "[GiteeAIImagePlugin] friend_poke failed: target=%s err=%s",
+                target_id,
+                exc,
+            )
+
+        try:
+            await bot.call_action("send_poke", user_id=user_id)
+            return True
+        except Exception as exc:
+            logger.warning(
+                "[GiteeAIImagePlugin] send_poke failed: target=%s err=%s",
+                target_id,
+                exc,
+            )
+            return False
+
+    async def _signal_llm_tool_failure(self, event: AstrMessageEvent) -> None:
+        if event.is_private_chat():
+            target_id = str(event.get_sender_id() or "").strip()
+            if target_id:
+                if await self._call_native_poke(event, target_id):
+                    return
+        await mark_failed(event)
 
     async def initialize(self):
         self.debouncer = Debouncer(self.config)
@@ -1291,7 +1334,7 @@ class GiteeAIImagePlugin(Star):
             backend(string): auto=自动选择；也可填 provider_id（你在 WebUI providers 里配置的 id）
         """
         if not use_message_images:
-            await mark_failed(event)
+            await self._signal_llm_tool_failure(event)
             return None
         return await self.aiimg_generate(
             event, prompt=prompt, mode="edit", backend=backend
@@ -1336,11 +1379,11 @@ class GiteeAIImagePlugin(Star):
         user_id = str(event.get_sender_id() or "")
         request_id = self._debounce_key(event, "aiimg", user_id)
         if self.debouncer.hit(request_id):
-            await mark_failed(event)
+            await self._signal_llm_tool_failure(event)
             return None
 
         if not await self._begin_user_job(user_id, kind="image"):
-            await mark_failed(event)
+            await self._signal_llm_tool_failure(event)
             return None
 
         b_raw = (backend or "auto").strip()
@@ -1369,13 +1412,13 @@ class GiteeAIImagePlugin(Star):
                     logger.warning(
                         "[aiimg_generate] selfie blocked: features.selfie.enabled=false"
                     )
-                    await mark_failed(event)
+                    await self._signal_llm_tool_failure(event)
                     return None
                 if not self._is_selfie_llm_enabled():
                     logger.warning(
                         "[aiimg_generate] selfie blocked: features.selfie.llm_tool_enabled=false"
                     )
-                    await mark_failed(event)
+                    await self._signal_llm_tool_failure(event)
                     return None
                 image_path = await self._generate_selfie_image(
                     event,
@@ -1432,10 +1475,10 @@ class GiteeAIImagePlugin(Star):
                 logger.info("[aiimg_generate] route=edit")
                 edit_conf = self._get_feature("edit")
                 if not bool(edit_conf.get("enabled", True)):
-                    await mark_failed(event)
+                    await self._signal_llm_tool_failure(event)
                     return None
                 if not bool(edit_conf.get("llm_tool_enabled", True)):
-                    await mark_failed(event)
+                    await self._signal_llm_tool_failure(event)
                     return None
                 image_segs = prefetched_edit_image_segs
                 if image_segs is None:
@@ -1446,7 +1489,7 @@ class GiteeAIImagePlugin(Star):
                     )
                 bytes_images = await self._image_segs_to_bytes(image_segs)
                 if not bytes_images:
-                    await mark_failed(event)
+                    await self._signal_llm_tool_failure(event)
                     return None
 
                 image_path = await self.edit.edit(
@@ -1461,10 +1504,10 @@ class GiteeAIImagePlugin(Star):
             # 默认：文生图
             draw_conf = self._get_feature("draw")
             if not bool(draw_conf.get("enabled", True)):
-                await mark_failed(event)
+                await self._signal_llm_tool_failure(event)
                 return None
             if not bool(draw_conf.get("llm_tool_enabled", True)):
-                await mark_failed(event)
+                await self._signal_llm_tool_failure(event)
                 return None
             if not prompt:
                 prompt = "a selfie photo"
@@ -1480,7 +1523,7 @@ class GiteeAIImagePlugin(Star):
 
         except Exception as e:
             logger.error(f"[aiimg_generate] 失败: {e}", exc_info=True)
-            await mark_failed(event)
+            await self._signal_llm_tool_failure(event)
             return None
         finally:
             await self._end_user_job(user_id, kind="image")
@@ -1494,20 +1537,20 @@ class GiteeAIImagePlugin(Star):
         """
         vconf = self._get_feature("video")
         if not bool(vconf.get("enabled", False)):
-            await mark_failed(event)
+            await self._signal_llm_tool_failure(event)
             return None
         if not bool(vconf.get("llm_tool_enabled", True)):
-            await mark_failed(event)
+            await self._signal_llm_tool_failure(event)
             return None
 
         arg = (prompt or "").strip()
         if not arg:
-            await mark_failed(event)
+            await self._signal_llm_tool_failure(event)
             return None
 
         provider_override, arg = self._parse_provider_override_prefix(arg)
         if not arg:
-            await mark_failed(event)
+            await self._signal_llm_tool_failure(event)
             return None
 
         preset, extra_prompt = self._parse_video_args(arg)
@@ -1522,23 +1565,27 @@ class GiteeAIImagePlugin(Star):
         request_id = self._debounce_key(event, "video", user_id)
 
         if self.debouncer.hit(request_id):
-            await mark_failed(event)
+            await self._signal_llm_tool_failure(event)
             return None
 
         if not await self._video_begin(user_id):
-            await mark_failed(event)
+            await self._signal_llm_tool_failure(event)
             return None
 
         try:
             await mark_processing(event)
             task = asyncio.create_task(
                 self._async_generate_video(
-                    event, extra_prompt, user_id, provider_id=provider_override
+                    event,
+                    extra_prompt,
+                    user_id,
+                    provider_id=provider_override,
+                    llm_tool_failure=True,
                 )
             )
         except Exception:
             await self._video_end(user_id)
-            await mark_failed(event)
+            await self._signal_llm_tool_failure(event)
             return None
 
         self._video_tasks.add(task)
@@ -1695,6 +1742,7 @@ class GiteeAIImagePlugin(Star):
         user_id: str,
         *,
         provider_id: str | None = None,
+        llm_tool_failure: bool = False,
     ) -> None:
         try:
             image_segs = await get_images_from_event(
@@ -1714,7 +1762,10 @@ class GiteeAIImagePlugin(Star):
 
             # 允许文生视频（无图）走支持的后端；但若用户确实发了图却读不到，则直接失败
             if had_image and not image_bytes:
-                await mark_failed(event)
+                if llm_tool_failure:
+                    await self._signal_llm_tool_failure(event)
+                else:
+                    await mark_failed(event)
                 return
 
             t_start = time.perf_counter()
@@ -1758,7 +1809,10 @@ class GiteeAIImagePlugin(Star):
 
         except Exception as e:
             logger.error(f"[视频] 失败: {e}", exc_info=True)
-            await mark_failed(event)
+            if llm_tool_failure:
+                await self._signal_llm_tool_failure(event)
+            else:
+                await mark_failed(event)
         finally:
             await self._video_end(user_id)
 
@@ -2016,7 +2070,7 @@ class GiteeAIImagePlugin(Star):
 
         sent = await self._send_image_with_fallback(event, image_path)
         if not sent:
-            await mark_failed(event)
+            await self._signal_llm_tool_failure(event)
             logger.warning(
                 "[aiimg_generate] image send failed, emoji fallback only: reason=%s",
                 sent.reason,
