@@ -76,6 +76,12 @@
 - `features.<mode>.enabled`：是否启用该功能（命令也会受影响）
 - `features.<mode>.llm_tool_enabled`：是否允许 LLM 调用该功能（命令不受影响）
 
+### 4) LLM tool 返回语义
+
+- `aiimg_generate()`、`gitee_draw_image()`、`gitee_edit_image()` 成功后会先把图片直接发送给用户。
+- tool result 返回文本摘要，不再把 `ImageContent` 回传给 Agent。摘要里会记录本次 `mode`、实际 `prompt`、follow-up 提示，以及自拍链路的参考图来源与数量。
+- 这样可以避免生成完成后再触发一次多模态识图，缩短整体耗时，同时保留后续“不满意”“重来一张”“换个姿势”继续改图所需的上下文。
+
 ---
 
 ## 指令用法（v4）
