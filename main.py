@@ -45,7 +45,7 @@ from .core.gitee_sizes import (
     normalize_size_text,
     resolve_ratio_size,
 )
-from .core.image_format import guess_image_mime_and_ext
+from .core.image_format import decode_base64_image_payload, guess_image_mime_and_ext
 from .core.image_manager import ImageManager
 from .core.nanobanana import NanoBananaService
 from .core.provider_registry import ProviderRegistry
@@ -2233,7 +2233,7 @@ class GiteeAIImagePlugin(Star):
             for i, seg in enumerate(image_segs):
                 try:
                     b64 = await seg.convert_to_base64()
-                    image_bytes = base64.b64decode(b64)
+                    image_bytes = decode_base64_image_payload(b64)
                     break
                 except Exception as e:
                     logger.warning(f"[视频] 图片 {i + 1} 转换失败，跳过: {e}")
@@ -2355,7 +2355,7 @@ class GiteeAIImagePlugin(Star):
             try:
                 logger.debug(f"[改图] 转换图片 {i + 1}/{len(image_segs)}...")
                 b64 = await seg.convert_to_base64()
-                bytes_images.append(base64.b64decode(b64))
+                bytes_images.append(decode_base64_image_payload(b64))
                 logger.debug(
                     f"[改图] 图片 {i + 1} 转换成功, 大小={len(bytes_images[-1])} bytes"
                 )
@@ -2455,7 +2455,7 @@ class GiteeAIImagePlugin(Star):
         for seg in image_segs:
             try:
                 b64 = await seg.convert_to_base64()
-                bytes_images.append(base64.b64decode(b64))
+                bytes_images.append(decode_base64_image_payload(b64))
             except Exception as e:
                 logger.warning(f"[改图] 图片转换失败，跳过: {e}")
 
@@ -2639,7 +2639,7 @@ class GiteeAIImagePlugin(Star):
         for seg in image_segs:
             try:
                 b64 = await seg.convert_to_base64()
-                out.append(base64.b64decode(b64))
+                out.append(decode_base64_image_payload(b64))
             except Exception as e:
                 logger.warning(f"[图片] 转换失败，跳过: {e}")
         return out
