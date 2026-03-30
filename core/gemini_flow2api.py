@@ -19,7 +19,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import aiohttp
 
@@ -42,6 +42,8 @@ _VIDEO_URL_RE = re.compile(
     r"(https?://[^\s<>\"')\]]+?\.(?:mp4|webm|mov)(?:\?[^\s<>\"')\]]*)?)",
     re.IGNORECASE,
 )
+_BASE64_PREFIX_RE = re.compile(r"^(?:b64|base64)\s*:\s*", re.IGNORECASE)
+_LOCAL_MEDIA_HOSTS = {"0.0.0.0", "127.0.0.1", "localhost"}
 
 
 def _strip_markdown_target(target: str) -> str | None:
@@ -81,6 +83,39 @@ def _decode_base64_bytes(text: str) -> bytes:
     return b""
 
 
+def _guess_mime_from_magic(image_bytes: bytes) -> str | None:
+    if len(image_bytes) >= 3 and image_bytes[0:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if len(image_bytes) >= 8 and image_bytes[0:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if len(image_bytes) >= 6 and (
+        image_bytes[0:6] == b"GIF87a" or image_bytes[0:6] == b"GIF89a"
+    ):
+        return "image/gif"
+    if (
+        len(image_bytes) >= 12
+        and image_bytes[0:4] == b"RIFF"
+        and image_bytes[8:12] == b"WEBP"
+    ):
+        return "image/webp"
+    return None
+
+
+def _base64_to_data_image_ref(text: str, *, min_length: int = 128) -> str | None:
+    s = (text or "").strip().strip('"').strip("'")
+    s = _BASE64_PREFIX_RE.sub("", s).strip()
+    s = re.sub(r"\s+", "", s)
+    if len(s) < min_length:
+        return None
+    raw = _decode_base64_bytes(s)
+    if not raw:
+        return None
+    mime = _guess_mime_from_magic(raw)
+    if not mime:
+        return None
+    return f"data:{mime};base64,{base64.b64encode(raw).decode()}"
+
+
 def _is_valid_data_image_ref(ref: str) -> bool:
     s = str(ref or "").strip()
     if not s.startswith("data:image/"):
@@ -109,6 +144,89 @@ def _looks_like_video_url(url: str) -> bool:
     if "generated_video" in u:
         return True
     return False
+
+
+def _looks_like_relative_image_ref(value: str) -> bool:
+    s = (value or "").strip()
+    if not s or s.startswith(("http://", "https://", "data:image/")):
+        return False
+    if not s.startswith(("/", "./", "../", "tmp/")):
+        return False
+    base = s.split("?", 1)[0].lower()
+    return base.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))
+
+
+def _looks_like_relative_video_ref(value: str) -> bool:
+    s = (value or "").strip()
+    if not s or s.startswith(("http://", "https://")):
+        return False
+    if not s.startswith(("/", "./", "../", "tmp/")):
+        return False
+    base = s.split("?", 1)[0].lower()
+    return base.endswith((".mp4", ".webm", ".mov"))
+
+
+def _origin_from_url(raw: str) -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    try:
+        parts = urlsplit(s)
+    except Exception:
+        return ""
+    if not parts.scheme or not parts.netloc:
+        return ""
+    return urlunsplit((parts.scheme, parts.netloc, "", "", "")).rstrip("/")
+
+
+def _is_local_media_host(host: str) -> bool:
+    h = str(host or "").strip().lower()
+    if not h:
+        return False
+    return h in _LOCAL_MEDIA_HOSTS or h.endswith(".localhost") or h.endswith(".local")
+
+
+def _rewrite_flow2api_media_ref(ref: str, *, endpoint_url: str) -> str:
+    s = str(ref or "").strip()
+    if not s:
+        return ""
+
+    origin = _origin_from_url(endpoint_url)
+    if not origin:
+        return s
+
+    try:
+        parts = urlsplit(s)
+    except Exception:
+        return s
+
+    if parts.scheme and parts.netloc:
+        if not _is_local_media_host(parts.hostname or ""):
+            return s
+        origin_parts = urlsplit(origin)
+        return urlunsplit(
+            (
+                origin_parts.scheme,
+                origin_parts.netloc,
+                parts.path or "/",
+                parts.query,
+                parts.fragment,
+            )
+        )
+
+    if _looks_like_relative_image_ref(s) or _looks_like_relative_video_ref(s):
+        return urljoin(origin + "/", s)
+
+    return s
+
+
+def _nested_value(obj: Any, *path: str) -> Any:
+    current = obj
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
 
 
 def _extract_first_image_ref(text: str) -> str | None:
@@ -140,6 +258,8 @@ def _extract_first_image_ref(text: str) -> str | None:
     if m:
         ref = m.group(1).strip()
         return None if _looks_like_video_url(ref) else (ref or None)
+    if _looks_like_relative_image_ref(s):
+        return s
     if s.startswith(("http://", "https://")) and not _looks_like_video_url(s):
         return s
 
@@ -150,6 +270,8 @@ def _extract_first_image_ref(text: str) -> str | None:
             cand = re.sub(r"\s+", "", cand)
             if _is_valid_data_image_ref(cand):
                 return cand
+        if _looks_like_relative_image_ref(cand):
+            return cand
         if cand.startswith(("http://", "https://")) and not _looks_like_video_url(cand):
             return cand
 
@@ -188,6 +310,9 @@ def _extract_first_image_ref(text: str) -> str | None:
                 ref = _extract_first_image_ref(cand)
                 if ref:
                     return ref
+    ref = _base64_to_data_image_ref(s)
+    if ref:
+        return ref
     return None
 
 
@@ -203,6 +328,8 @@ def _extract_first_video_ref(text: str) -> str | None:
     if m:
         ref = m.group(1).strip()
         return ref if _looks_like_video_url(ref) else None
+    if _looks_like_relative_video_ref(s):
+        return s
     if _looks_like_video_url(s):
         return s
     return None
@@ -247,9 +374,37 @@ def _extract_first_image_ref_from_obj(obj: Any) -> str | None:
                 return ref
         return None
     if isinstance(obj, dict):
-        b64 = obj.get("b64_json")
-        if isinstance(b64, str) and b64.strip():
-            return f"data:image/png;base64,{b64.strip()}"
+        for path in (
+            ("generated_assets", "upscaled_image", "local_url"),
+            ("generated_assets", "upscaled_image", "url"),
+            ("generated_assets", "final_image_url"),
+            ("generated_assets", "local_url"),
+            ("upscaled_image", "local_url"),
+            ("upscaled_image", "url"),
+            ("final_image_url",),
+            ("local_url",),
+        ):
+            value = _nested_value(obj, *path)
+            ref = _extract_first_image_ref_from_obj(value)
+            if ref:
+                return ref
+
+        for path in (
+            ("generated_assets", "upscaled_image", "base64"),
+            ("upscaled_image", "base64"),
+        ):
+            value = _nested_value(obj, *path)
+            if isinstance(value, str) and value.strip():
+                ref = _base64_to_data_image_ref(value, min_length=1)
+                if ref:
+                    return ref
+
+        for key in ("b64_json", "b64", "base64", "image_b64", "image_base64"):
+            b64 = obj.get(key)
+            if isinstance(b64, str) and b64.strip():
+                ref = _base64_to_data_image_ref(b64, min_length=1)
+                if ref:
+                    return ref
 
         for key in (
             "url",
@@ -278,6 +433,7 @@ def _extract_first_image_ref_from_obj(obj: Any) -> str | None:
             "images",
             "image_urls",
             "attachments",
+            "generated_assets",
             "media",
             "result",
             "response",
@@ -312,6 +468,18 @@ def _extract_first_video_ref_from_obj(obj: Any) -> str | None:
                 return ref
         return None
     if isinstance(obj, dict):
+        for path in (
+            ("generated_assets", "final_video_url"),
+            ("generated_assets", "local_url"),
+            ("generated_assets", "url"),
+            ("final_video_url",),
+            ("local_url",),
+        ):
+            value = _nested_value(obj, *path)
+            ref = _extract_first_video_ref_from_obj(value)
+            if ref:
+                return ref
+
         for key in ("video_url", "file_url", "url", "href", "download_url"):
             value = obj.get(key)
             if isinstance(value, str):
@@ -552,9 +720,17 @@ class GeminiFlow2ApiBackend:
                         continue
 
                     chunk_image_ref = _extract_first_image_ref_from_obj(obj)
+                    if chunk_image_ref:
+                        chunk_image_ref = _rewrite_flow2api_media_ref(
+                            chunk_image_ref, endpoint_url=self.api_url
+                        )
                     if chunk_image_ref and chunk_image_ref not in full:
                         full += f"\n{chunk_image_ref}"
                     chunk_video_ref = _extract_first_video_ref_from_obj(obj)
+                    if chunk_video_ref:
+                        chunk_video_ref = _rewrite_flow2api_media_ref(
+                            chunk_video_ref, endpoint_url=self.api_url
+                        )
                     if chunk_video_ref and chunk_video_ref not in full:
                         full += f"\n{chunk_video_ref}"
 
@@ -639,9 +815,17 @@ class GeminiFlow2ApiBackend:
                         pass
                     else:
                         chunk_image_ref = _extract_first_image_ref_from_obj(obj)
+                        if chunk_image_ref:
+                            chunk_image_ref = _rewrite_flow2api_media_ref(
+                                chunk_image_ref, endpoint_url=self.api_url
+                            )
                         if chunk_image_ref and chunk_image_ref not in full:
                             full += f"\n{chunk_image_ref}"
                         chunk_video_ref = _extract_first_video_ref_from_obj(obj)
+                        if chunk_video_ref:
+                            chunk_video_ref = _rewrite_flow2api_media_ref(
+                                chunk_video_ref, endpoint_url=self.api_url
+                            )
                         if chunk_video_ref and chunk_video_ref not in full:
                             full += f"\n{chunk_video_ref}"
 
@@ -693,6 +877,8 @@ class GeminiFlow2ApiBackend:
                 )
             snippet = (content or "").strip().replace("\n", " ")[:200]
             raise RuntimeError(f"Flow2API 未返回图片：{snippet}")
+
+        ref = _rewrite_flow2api_media_ref(ref, endpoint_url=self.api_url)
 
         if ref.startswith("data:image/"):
             ref = re.sub(r"\s+", "", ref)
@@ -899,9 +1085,17 @@ class Flow2ApiVideoBackend:
                         continue
 
                     chunk_video_ref = _extract_first_video_ref_from_obj(obj)
+                    if chunk_video_ref:
+                        chunk_video_ref = _rewrite_flow2api_media_ref(
+                            chunk_video_ref, endpoint_url=self.api_url
+                        )
                     if chunk_video_ref and chunk_video_ref not in full:
                         full += f"\n{chunk_video_ref}"
                     chunk_image_ref = _extract_first_image_ref_from_obj(obj)
+                    if chunk_image_ref:
+                        chunk_image_ref = _rewrite_flow2api_media_ref(
+                            chunk_image_ref, endpoint_url=self.api_url
+                        )
                     if chunk_image_ref and chunk_image_ref not in full:
                         full += f"\n{chunk_image_ref}"
 
@@ -982,9 +1176,17 @@ class Flow2ApiVideoBackend:
                         pass
                     else:
                         chunk_video_ref = _extract_first_video_ref_from_obj(obj)
+                        if chunk_video_ref:
+                            chunk_video_ref = _rewrite_flow2api_media_ref(
+                                chunk_video_ref, endpoint_url=self.api_url
+                            )
                         if chunk_video_ref and chunk_video_ref not in full:
                             full += f"\n{chunk_video_ref}"
                         chunk_image_ref = _extract_first_image_ref_from_obj(obj)
+                        if chunk_image_ref:
+                            chunk_image_ref = _rewrite_flow2api_media_ref(
+                                chunk_image_ref, endpoint_url=self.api_url
+                            )
                         if chunk_image_ref and chunk_image_ref not in full:
                             full += f"\n{chunk_image_ref}"
 
@@ -1064,7 +1266,7 @@ class Flow2ApiVideoBackend:
         content_text = await self._request_stream_text(payload, headers)
         ref = _extract_first_video_ref(content_text)
         if ref:
-            return ref
+            return _rewrite_flow2api_media_ref(ref, endpoint_url=self.api_url)
         img = _extract_first_image_ref(content_text)
         if img:
             raise RuntimeError("Flow2API 返回了图片而不是视频")
