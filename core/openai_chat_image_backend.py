@@ -7,6 +7,7 @@ import re
 import time
 from pathlib import Path
 
+import httpx
 from openai import AsyncOpenAI
 
 from astrbot.api import logger
@@ -35,6 +36,36 @@ _VIDEO_URL_RE = re.compile(
 )
 
 _BASE64_PREFIX_RE = re.compile(r"^(?:b64|base64)\s*:\s*", re.IGNORECASE)
+
+
+def _parse_png_size(image_bytes: bytes) -> tuple[int, int] | None:
+    if len(image_bytes) < 24:
+        return None
+    if image_bytes[0:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    try:
+        width = int.from_bytes(image_bytes[16:20], "big")
+        height = int.from_bytes(image_bytes[20:24], "big")
+    except Exception:
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
+def _looks_like_placeholder_image_bytes(image_bytes: bytes) -> bool:
+    if not image_bytes:
+        return True
+    # 某些网关在被强制要求输出 data:image 时，会秒回一个 1x1 占位 PNG，
+    # 解析上看似成功，实际等于没出图。
+    if len(image_bytes) <= 128:
+        return True
+
+    png_size = _parse_png_size(image_bytes)
+    if png_size == (1, 1):
+        return True
+
+    return False
 
 
 def _strip_markdown_target(target: str) -> str | None:
@@ -542,6 +573,233 @@ class OpenAIChatImageBackend:
         self._http_client = build_proxy_http_client(self.proxy_url)
         return self._http_client
 
+    def _chat_completions_url(self) -> str:
+        return f"{self.base_url.rstrip('/')}/chat/completions"
+
+    @staticmethod
+    def _sse_debug_snippet(text: str) -> str:
+        snippet = re.sub(r"\s+", " ", str(text or "").strip())
+        return snippet[:200]
+
+    @staticmethod
+    def _build_generate_prompt(
+        prompt: str,
+        *,
+        size: str | None = None,
+        resolution: str | None = None,
+        strict_format: bool,
+    ) -> str:
+        size_hint = ""
+        if size:
+            size_hint = f" Output size target: {size}."
+        elif resolution:
+            size_hint = f" Output resolution target: {resolution}."
+
+        if strict_format:
+            return (
+                f"{prompt}\n\n"
+                "Return ONLY one image. Do NOT return video/mp4, HTML, or explanations.\n"
+                "Output format MUST be exactly one markdown image:\n"
+                "![](data:image/png;base64,...)"
+                f"{size_hint}"
+            )
+
+        return (
+            f"{prompt}\n\n"
+            "Generate exactly one image. Do NOT return video/mp4, HTML, or explanations."
+            f"{size_hint}"
+        )
+
+    @staticmethod
+    def _build_edit_text(
+        prompt: str,
+        *,
+        size: str | None = None,
+        resolution: str | None = None,
+        strict_format: bool,
+    ) -> str:
+        size_hint = ""
+        if size:
+            size_hint = f" Output size target: {size}."
+        elif resolution:
+            size_hint = f" Output resolution target: {resolution}."
+
+        if strict_format:
+            return (
+                f"{prompt}\n\n"
+                "Edit the attached image(s). Return ONLY one image.\n"
+                "Do NOT return video/mp4, HTML, or explanations.\n"
+                "Output format MUST be exactly one markdown image:\n"
+                "![](data:image/png;base64,...)"
+                f"{size_hint}"
+            )
+
+        return (
+            f"{prompt}\n\n"
+            "Edit the attached image(s) and return exactly one image."
+            " Do NOT return video/mp4, HTML, or explanations."
+            f"{size_hint}"
+        )
+
+    @staticmethod
+    def _build_edit_parts(text: str, images: list[bytes]) -> list[dict]:
+        parts: list[dict] = [{"type": "text", "text": text}]
+        for img_bytes in images:
+            mime, _ext = guess_image_mime_and_ext(img_bytes)
+            parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime};base64,{base64.b64encode(img_bytes).decode()}",
+                    },
+                }
+            )
+        return parts
+
+    async def _stream_chat_completion(
+        self,
+        *,
+        key: str,
+        model: str,
+        messages: list[dict],
+        extra_body: dict | None,
+        log_tag: str,
+    ) -> tuple[list[str], list[str], str]:
+        payload: dict = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+        }
+        if extra_body:
+            payload.update(extra_body)
+            payload["stream"] = True
+
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        }
+
+        client = self._get_http_client()
+        close_client = False
+        if client is None:
+            client = httpx.AsyncClient(
+                timeout=httpx.Timeout(float(self.timeout)),
+                follow_redirects=True,
+            )
+            close_client = True
+
+        refs: list[str] = []
+        videos: list[str] = []
+        seen_refs: set[str] = set()
+        seen_videos: set[str] = set()
+        debug_pieces: list[str] = []
+
+        def add_ref(value: str | None) -> None:
+            if not value or value in seen_refs:
+                return
+            seen_refs.add(value)
+            refs.append(value)
+
+        def add_video(value: str | None) -> None:
+            if not value or value in seen_videos:
+                return
+            seen_videos.add(value)
+            videos.append(value)
+
+        async def consume_json_body(resp: httpx.Response) -> tuple[list[str], list[str], str]:
+            raw = await resp.aread()
+            text = raw.decode("utf-8", errors="ignore")
+            try:
+                obj = json.loads(text)
+            except Exception:
+                return [], [], self._sse_debug_snippet(text)
+
+            add_ref(_extract_image_ref_from_content(obj))
+            add_video(_extract_video_ref_from_content(obj))
+            for s in _iter_strings(obj):
+                image_refs, video_refs = _extract_media_refs_from_sse_text(s)
+                for ref in image_refs:
+                    add_ref(ref)
+                for video in video_refs:
+                    add_video(video)
+                if len(debug_pieces) < 8 and s.strip():
+                    debug_pieces.append(self._sse_debug_snippet(s))
+            return refs, videos, self._sse_debug_snippet(" ".join(debug_pieces) or text)
+
+        t0 = time.time()
+        try:
+            async with client.stream(
+                "POST",
+                self._chat_completions_url(),
+                headers=headers,
+                json=payload,
+            ) as resp:
+                if resp.status_code != 200:
+                    text = (await resp.aread()).decode("utf-8", errors="ignore")
+                    raise RuntimeError(
+                        f"chat 流式请求失败 HTTP {resp.status_code}: {text[:300]}"
+                    )
+
+                content_type = (resp.headers.get("content-type") or "").lower()
+                if "text/event-stream" not in content_type:
+                    refs_out, videos_out, debug_snippet = await consume_json_body(resp)
+                    logger.info(
+                        "[OpenAIChatImage][%s][stream] API 响应耗时: %.2fs",
+                        log_tag,
+                        time.time() - t0,
+                    )
+                    return refs_out, videos_out, debug_snippet
+
+                buffer = ""
+                async for chunk in resp.aiter_text():
+                    if not chunk:
+                        continue
+                    buffer += chunk
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data_str = line[5:].strip()
+                        if not data_str or data_str == "[DONE]":
+                            continue
+                        try:
+                            obj = json.loads(data_str)
+                        except Exception:
+                            if len(debug_pieces) < 8:
+                                debug_pieces.append(self._sse_debug_snippet(data_str))
+                            continue
+
+                        add_ref(_extract_image_ref_from_content(obj))
+                        add_video(_extract_video_ref_from_content(obj))
+
+                        for s in _iter_strings(obj):
+                            image_refs, video_refs = _extract_media_refs_from_sse_text(s)
+                            for ref in image_refs:
+                                add_ref(ref)
+                            for video in video_refs:
+                                add_video(video)
+                            if len(debug_pieces) < 8 and s.strip():
+                                debug_pieces.append(self._sse_debug_snippet(s))
+
+                        if refs or videos:
+                            logger.info(
+                                "[OpenAIChatImage][%s][stream] 提前命中媒体引用, 耗时: %.2fs",
+                                log_tag,
+                                time.time() - t0,
+                            )
+                            return refs, videos, self._sse_debug_snippet(" ".join(debug_pieces))
+
+                logger.info(
+                    "[OpenAIChatImage][%s][stream] API 响应耗时: %.2fs",
+                    log_tag,
+                    time.time() - t0,
+                )
+                return refs, videos, self._sse_debug_snippet(" ".join(debug_pieces))
+        finally:
+            if close_client:
+                await client.aclose()
+
     async def close(self) -> None:
         for client in self._clients.values():
             try:
@@ -750,6 +1008,11 @@ class OpenAIChatImageBackend:
                     "chat 返回 data:image 但 base64 解码失败"
                     f"（len={len(b64_data or '')} head={str(b64_data)[:48]!r}）：{debug_snippet}"
                 )
+            if _looks_like_placeholder_image_bytes(image_bytes):
+                raise RuntimeError(
+                    "chat 返回了疑似占位图片（通常是网关被强制输出 data:image 时伪造的 1x1/极小图）"
+                    f"（bytes={len(image_bytes)}）：{debug_snippet}"
+                )
             return await self.imgr.save_image(image_bytes)
 
         if ref.startswith("http://") or ref.startswith("https://"):
@@ -807,23 +1070,54 @@ class OpenAIChatImageBackend:
         if not final_model:
             raise RuntimeError("未配置 model")
 
-        size_hint = ""
-        if size:
-            size_hint = f" Output size target: {size}."
-        elif resolution:
-            size_hint = f" Output resolution target: {resolution}."
-
-        user_text = (
-            f"{prompt}\n\n"
-            "Return ONLY one image. Do NOT return video/mp4, HTML, or explanations.\n"
-            "Output format MUST be exactly one markdown image:\n"
-            "![](data:image/png;base64,...)"
-            f"{size_hint}"
-        )
-
         eb = {}
         eb.update(self.extra_body)
         eb.update(extra_body or {})
+
+        stream_error: Exception | None = None
+        stream_messages = [
+            {
+                "role": "user",
+                "content": self._build_generate_prompt(
+                    prompt,
+                    size=size,
+                    resolution=resolution,
+                    strict_format=False,
+                ),
+            }
+        ]
+        try:
+            refs, videos, debug_snippet = await self._stream_chat_completion(
+                key=key,
+                model=final_model,
+                messages=stream_messages,
+                extra_body=eb or None,
+                log_tag="generate",
+            )
+            if refs:
+                return await self._save_from_ref(
+                    refs[0], debug_snippet=debug_snippet, fallback_refs=refs[1:]
+                )
+            if videos:
+                raise RuntimeError(
+                    f"chat 返回了视频而不是图片：{videos[0]}（如果想要视频请用 /视频；如果想要图片请换模型或改用 images 接口）"
+                )
+            stream_error = RuntimeError("stream 未解析到图片引用")
+            logger.warning(
+                "[OpenAIChatImage][generate] 流式模式未解析到图片，回退非流式"
+            )
+        except Exception as e:
+            stream_error = e
+            logger.warning(
+                "[OpenAIChatImage][generate] 流式模式失败，回退非流式: %s", e
+            )
+
+        user_text = self._build_generate_prompt(
+            prompt,
+            size=size,
+            resolution=resolution,
+            strict_format=True,
+        )
 
         t0 = time.time()
         try:
@@ -871,9 +1165,16 @@ class OpenAIChatImageBackend:
                 raise RuntimeError(
                     f"chat 返回了视频而不是图片：{video_url}（如果想要视频请用 /视频；如果想要图片请换模型或改用 images 接口）"
                 )
-        return await self._save_from_ref(
-            ref or "", debug_snippet=debug_snippet, fallback_refs=refs[1:]
-        )
+        try:
+            return await self._save_from_ref(
+                ref or "", debug_snippet=debug_snippet, fallback_refs=refs[1:]
+            )
+        except Exception as e:
+            if stream_error is not None:
+                raise RuntimeError(
+                    f"{e}；且此前流式兜底也失败：{stream_error}"
+                ) from e
+            raise
 
     async def edit(
         self,
@@ -897,36 +1198,51 @@ class OpenAIChatImageBackend:
         if not final_model:
             raise RuntimeError("未配置 model")
 
-        size_hint = ""
-        if size:
-            size_hint = f" Output size target: {size}."
-        elif resolution:
-            size_hint = f" Output resolution target: {resolution}."
-
-        text = (
-            f"{prompt}\n\n"
-            "Edit the attached image(s). Return ONLY one image.\n"
-            "Do NOT return video/mp4, HTML, or explanations.\n"
-            "Output format MUST be exactly one markdown image:\n"
-            "![](data:image/png;base64,...)"
-            f"{size_hint}"
-        )
-
-        parts: list[dict] = [{"type": "text", "text": text}]
-        for img_bytes in images:
-            mime, _ext = guess_image_mime_and_ext(img_bytes)
-            parts.append(
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{mime};base64,{base64.b64encode(img_bytes).decode()}",
-                    },
-                }
-            )
-
         eb = {}
         eb.update(self.extra_body)
         eb.update(extra_body or {})
+
+        stream_error: Exception | None = None
+        stream_parts = self._build_edit_parts(
+            self._build_edit_text(
+                prompt,
+                size=size,
+                resolution=resolution,
+                strict_format=False,
+            ),
+            images,
+        )
+        try:
+            refs, videos, debug_snippet = await self._stream_chat_completion(
+                key=key,
+                model=final_model,
+                messages=[{"role": "user", "content": stream_parts}],
+                extra_body=eb or None,
+                log_tag="edit",
+            )
+            if refs:
+                return await self._save_from_ref(
+                    refs[0], debug_snippet=debug_snippet, fallback_refs=refs[1:]
+                )
+            if videos:
+                raise RuntimeError(
+                    f"chat 返回了视频而不是图片：{videos[0]}（如果想要视频请用 /视频；如果想要图片请换模型或改用 images 接口）"
+                )
+            stream_error = RuntimeError("stream 未解析到图片引用")
+            logger.warning("[OpenAIChatImage][edit] 流式模式未解析到图片，回退非流式")
+        except Exception as e:
+            stream_error = e
+            logger.warning("[OpenAIChatImage][edit] 流式模式失败，回退非流式: %s", e)
+
+        parts = self._build_edit_parts(
+            self._build_edit_text(
+                prompt,
+                size=size,
+                resolution=resolution,
+                strict_format=True,
+            ),
+            images,
+        )
 
         t0 = time.time()
         try:
@@ -972,6 +1288,13 @@ class OpenAIChatImageBackend:
                 raise RuntimeError(
                     f"chat 返回了视频而不是图片：{video_url}（如果想要视频请用 /视频；如果想要图片请换模型或改用 images 接口）"
                 )
-        return await self._save_from_ref(
-            ref or "", debug_snippet=debug_snippet, fallback_refs=refs[1:]
-        )
+        try:
+            return await self._save_from_ref(
+                ref or "", debug_snippet=debug_snippet, fallback_refs=refs[1:]
+            )
+        except Exception as e:
+            if stream_error is not None:
+                raise RuntimeError(
+                    f"{e}；且此前流式兜底也失败：{stream_error}"
+                ) from e
+            raise
