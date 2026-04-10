@@ -826,6 +826,7 @@ class OpenAIChatImageBackend:
         seen_refs: set[str] = set()
         seen_videos: set[str] = set()
         debug_pieces: list[str] = []
+        first_media_hit_logged = False
 
         def add_ref(value: str | None) -> None:
             if not value or value in seen_refs:
@@ -915,13 +916,13 @@ class OpenAIChatImageBackend:
                             if len(debug_pieces) < 8 and s.strip():
                                 debug_pieces.append(self._sse_debug_snippet(s))
 
-                        if refs or videos:
+                        if (refs or videos) and not first_media_hit_logged:
+                            first_media_hit_logged = True
                             logger.info(
-                                "[OpenAIChatImage][%s][stream] 提前命中媒体引用, 耗时: %.2fs",
+                                "[OpenAIChatImage][%s][stream] 首次命中媒体引用, 耗时: %.2fs，继续等待最终结果",
                                 log_tag,
                                 time.time() - t0,
                             )
-                            return refs, videos, self._sse_debug_snippet(" ".join(debug_pieces))
 
                 logger.info(
                     "[OpenAIChatImage][%s][stream] API 响应耗时: %.2fs",
@@ -1230,6 +1231,16 @@ class OpenAIChatImageBackend:
             s = str(extra or "").strip()
             if s and s not in candidates:
                 candidates.append(s)
+
+        if len(candidates) > 1:
+            preferred: list[str] = []
+            seen_preferred: set[str] = set()
+            for cand in reversed(candidates):
+                if not cand or cand in seen_preferred:
+                    continue
+                seen_preferred.add(cand)
+                preferred.append(cand)
+            candidates = preferred
 
         last_error: Exception | None = None
         for idx, cand in enumerate(candidates):

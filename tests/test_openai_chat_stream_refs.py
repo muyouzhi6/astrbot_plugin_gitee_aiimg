@@ -238,6 +238,26 @@ class OpenAIChatEditFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out_path, Path("/tmp/result.png"))
         self.assertEqual(imgr.downloaded_urls, ["https://api.example.com/tmp/final.png"])
 
+    async def test_save_from_ref_prefers_latest_candidate(self):
+        mod = _load_module()
+        imgr = _DummyImageManager()
+        backend = mod.OpenAIChatImageBackend(
+            imgr=imgr,
+            base_url="https://api.example.com/v1",
+            api_keys=["test-key"],
+            default_model="gemini-3.1-flash-image-preview-4k",
+        )
+
+        out_path = await backend._save_from_ref(
+            "https://cdn.example.com/preview.png",
+            fallback_refs=[
+                "https://cdn.example.com/final.png",
+            ],
+        )
+
+        self.assertEqual(out_path, Path("/tmp/result.png"))
+        self.assertEqual(imgr.downloaded_urls, ["https://cdn.example.com/final.png"])
+
 
 if __name__ == "__main__":
     unittest.main()
