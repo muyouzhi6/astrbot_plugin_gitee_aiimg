@@ -18,6 +18,7 @@ from .openai_compat_backend import (
     build_proxy_http_client,
     normalize_openai_compat_base_url,
 )
+from .openai_full_url_backend import OpenAIFullURLBackend
 
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[.*?\]\((.*?)\)")
 _DATA_IMAGE_RE = re.compile(r"(data:image/[^\s)]+)")
@@ -1051,6 +1052,66 @@ class OpenAIChatImageBackend:
         )
         return any(marker in text for marker in markers)
 
+    @staticmethod
+    def _needs_images_api_fallback(exc: Exception) -> bool:
+        text = f"{exc!r} {exc}".lower()
+        markers = (
+            "unsupported protocol scheme",
+            "unsupported url scheme",
+            "get file base64 from url",
+            "image_url is required",
+            "image_url is required for image edits",
+            "missing_image",
+            "image edits",
+            "input_image",
+            "use images api",
+            "images/generations",
+            "images/edits",
+            "does not support chat completions",
+            "chat completions not supported",
+            "not a chat model",
+            "image generation model",
+        )
+        return any(marker in text for marker in markers)
+
+    def _build_images_api_endpoints(self) -> tuple[str, str]:
+        base = normalize_openai_compat_base_url(self.base_url).rstrip("/")
+        return f"{base}/images/edits", f"{base}/images/generations"
+
+    async def _edit_via_images_api(
+        self,
+        *,
+        key: str,
+        prompt: str,
+        images: list[bytes],
+        model: str,
+        size: str | None,
+        resolution: str | None,
+        extra_body: dict | None,
+    ) -> Path:
+        full_edit_url, full_generate_url = self._build_images_api_endpoints()
+        helper = OpenAIFullURLBackend(
+            imgr=self.imgr,
+            full_generate_url=full_generate_url,
+            full_edit_url=full_edit_url,
+            api_keys=[key],
+            default_model=model,
+            timeout=self.timeout,
+            max_retries=self.max_retries,
+            supports_edit=True,
+            extra_body=extra_body or None,
+        )
+        try:
+            return await helper.edit(
+                prompt,
+                images,
+                model=model,
+                size=size,
+                resolution=resolution,
+            )
+        finally:
+            await helper.close()
+
     async def _register_input_image_urls(self, images: list[bytes]) -> list[str]:
         try:
             from astrbot.api.message_components import Image as AstrImage
@@ -1505,7 +1566,34 @@ class OpenAIChatImageBackend:
         try:
             resp = await request_edit(parts, input_mode=input_mode)
         except Exception as e:
+            images_api_error: Exception | None = None
+            if self._needs_images_api_fallback(e):
+                logger.warning(
+                    "[OpenAIChatImage][edit] chat 改图不兼容当前网关，改用 Images API 兜底: %s",
+                    e,
+                )
+                try:
+                    return await self._edit_via_images_api(
+                        key=key,
+                        prompt=prompt,
+                        images=images,
+                        model=final_model,
+                        size=size,
+                        resolution=resolution,
+                        extra_body=eb,
+                    )
+                except Exception as images_exc:
+                    images_api_error = images_exc
+                    logger.warning(
+                        "[OpenAIChatImage][edit] Images API 兜底失败，继续尝试文件服务 URL: %s",
+                        images_exc,
+                    )
+
             if not self._needs_file_service_url_retry(e):
+                if images_api_error is not None:
+                    raise RuntimeError(
+                        f"{e}；且 Images API 兜底也失败：{images_api_error}"
+                    ) from e
                 raise
             self._prefer_file_service_url_input = True
             logger.warning(
@@ -1513,7 +1601,14 @@ class OpenAIChatImageBackend:
                 e,
             )
             input_mode = "file_service_url"
-            image_urls = prefetched_image_urls or await self._register_input_image_urls(images)
+            try:
+                image_urls = prefetched_image_urls or await self._register_input_image_urls(images)
+            except Exception as file_service_exc:
+                if images_api_error is not None:
+                    raise RuntimeError(
+                        f"{file_service_exc}；且 Images API 兜底也失败：{images_api_error}"
+                    ) from file_service_exc
+                raise
             parts = self._build_edit_parts(
                 self._build_edit_text(
                     prompt,
