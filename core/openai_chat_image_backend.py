@@ -6,6 +6,7 @@ import json
 import re
 import time
 from pathlib import Path
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from openai import AsyncOpenAI
@@ -117,6 +118,18 @@ def _looks_like_video_url(url: str) -> bool:
     return False
 
 
+def _looks_like_relative_media_ref(ref: str) -> bool:
+    s = str(ref or "").strip()
+    if not s:
+        return False
+    if s.startswith(("data:image/", "http://", "https://", "file://")):
+        return False
+    if "://" in s:
+        return False
+    lowered = s.lower()
+    return any(ext in lowered for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"))
+
+
 def _is_valid_data_image_ref(ref: str) -> bool:
     s = str(ref or "").strip()
     if not s.startswith("data:image/"):
@@ -220,6 +233,12 @@ def _extract_first_image_ref(text: str) -> str | None:
         if _looks_like_video_url(s):
             return None
         return s
+    if s.startswith("//"):
+        return s
+    if s.startswith("/") and _looks_like_relative_media_ref(s):
+        return s
+    if _looks_like_relative_media_ref(s):
+        return s
 
     # JSON-like snippets: {"image_url":"..."} / {"url":"..."} etc.
     for m in _JSON_URL_FIELD_RE.finditer(s):
@@ -230,6 +249,12 @@ def _extract_first_image_ref(text: str) -> str | None:
             if _is_valid_data_image_ref(cand):
                 return cand
         if cand.startswith(("http://", "https://")) and not _looks_like_video_url(cand):
+            return cand
+        if cand.startswith("//"):
+            return cand
+        if cand.startswith("/") and _looks_like_relative_media_ref(cand):
+            return cand
+        if _looks_like_relative_media_ref(cand):
             return cand
 
     # Some gateways wrap full payload into JSON string.
@@ -553,6 +578,7 @@ class OpenAIChatImageBackend:
         self._key_index = 0
         self._clients: dict[str, AsyncOpenAI] = {}
         self._http_client = None
+        self._prefer_file_service_url_input = False
 
     @staticmethod
     def _supports_http_client_param() -> bool:
@@ -611,6 +637,102 @@ class OpenAIChatImageBackend:
         )
 
     @staticmethod
+    def _normalize_image_size_hint(
+        *,
+        model: str | None,
+        size: str | None,
+        resolution: str | None,
+    ) -> str | None:
+        raw = str(size or "").strip()
+        if not raw:
+            raw = str(resolution or "").strip()
+        if not raw:
+            model_name = str(model or "").lower()
+            if "4k" in model_name:
+                raw = "4K"
+            elif "2k" in model_name:
+                raw = "2K"
+            elif "1k" in model_name:
+                raw = "1K"
+            elif "512px" in model_name:
+                raw = "512px"
+        if not raw:
+            return None
+
+        normalized = raw.strip().upper().replace("×", "X")
+        size_map = {
+            "1024X1024": "1K",
+            "2048X2048": "2K",
+            "4096X4096": "4K",
+        }
+        return size_map.get(normalized, raw.strip())
+
+    @classmethod
+    def _apply_gemini_image_config(
+        cls,
+        extra_body: dict | None,
+        *,
+        model: str | None,
+        size: str | None,
+        resolution: str | None,
+    ) -> dict:
+        merged = dict(extra_body or {})
+        model_name = str(model or "").lower()
+        if "gemini" not in model_name and "4k" not in model_name:
+            return merged
+
+        image_size = cls._normalize_image_size_hint(
+            model=model,
+            size=size,
+            resolution=resolution,
+        )
+        if not image_size:
+            return merged
+
+        raw_image_config = merged.get("image_config")
+        image_config = (
+            dict(raw_image_config) if isinstance(raw_image_config, dict) else {}
+        )
+        image_config.setdefault("image_size", image_size)
+        image_config.setdefault("imageSize", image_size)
+        merged["image_config"] = image_config
+
+        merged.setdefault("image_size", image_size)
+        merged.setdefault("imageSize", image_size)
+        merged.setdefault("size", image_size)
+
+        raw_generation_config = merged.get("generation_config")
+        generation_config = (
+            dict(raw_generation_config)
+            if isinstance(raw_generation_config, dict)
+            else {}
+        )
+        generation_config.setdefault("image_size", image_size)
+        generation_config.setdefault("imageSize", image_size)
+        if generation_config:
+            merged["generation_config"] = generation_config
+
+        raw_generation_config_camel = merged.get("generationConfig")
+        generation_config_camel = (
+            dict(raw_generation_config_camel)
+            if isinstance(raw_generation_config_camel, dict)
+            else {}
+        )
+        raw_image_config_camel = generation_config_camel.get("imageConfig")
+        image_config_camel = (
+            dict(raw_image_config_camel)
+            if isinstance(raw_image_config_camel, dict)
+            else {}
+        )
+        image_config_camel.setdefault("image_size", image_size)
+        image_config_camel.setdefault("imageSize", image_size)
+        if image_config_camel:
+            generation_config_camel["imageConfig"] = image_config_camel
+        if generation_config_camel:
+            merged["generationConfig"] = generation_config_camel
+        return merged
+
+    @staticmethod
     def _build_edit_text(
         prompt: str,
         *,
@@ -642,15 +764,26 @@ class OpenAIChatImageBackend:
         )
 
     @staticmethod
-    def _build_edit_parts(text: str, images: list[bytes]) -> list[dict]:
+    def _build_edit_parts(
+        text: str,
+        images: list[bytes],
+        *,
+        image_urls: list[str] | None = None,
+    ) -> list[dict]:
         parts: list[dict] = [{"type": "text", "text": text}]
-        for img_bytes in images:
-            mime, _ext = guess_image_mime_and_ext(img_bytes)
+        for idx, img_bytes in enumerate(images):
+            if image_urls is not None:
+                if idx >= len(image_urls):
+                    raise RuntimeError("image_urls 数量少于输入图片数量")
+                image_url = str(image_urls[idx] or "").strip()
+            else:
+                mime, _ext = guess_image_mime_and_ext(img_bytes)
+                image_url = f"data:{mime};base64,{base64.b64encode(img_bytes).decode()}"
             parts.append(
                 {
                     "type": "image_url",
                     "image_url": {
-                        "url": f"data:{mime};base64,{base64.b64encode(img_bytes).decode()}",
+                        "url": image_url,
                     },
                 }
             )
@@ -870,12 +1003,72 @@ class OpenAIChatImageBackend:
             return re.sub(r"\s+", "", s)
         if s.startswith("http://") or s.startswith("https://"):
             return s
+        if s.startswith("//"):
+            return s
+        if s.startswith("/") and _looks_like_relative_media_ref(s):
+            return s
+        if _looks_like_relative_media_ref(s):
+            return s
         ref = _extract_first_image_ref(s)
         if not ref:
             return None
         if ref.startswith("data:image/"):
             return re.sub(r"\s+", "", ref)
         return ref
+
+    def _absolutize_media_ref(self, ref: str) -> str:
+        s = str(ref or "").strip()
+        if not s:
+            return ""
+        if s.startswith(("data:image/", "http://", "https://")):
+            return s
+
+        split = urlsplit(self.base_url)
+        origin = f"{split.scheme}://{split.netloc}" if split.scheme and split.netloc else ""
+        if s.startswith("//"):
+            return f"{split.scheme}:{s}" if split.scheme else f"https:{s}"
+        if s.startswith("/"):
+            return urljoin(origin + "/", s.lstrip("/")) if origin else s
+        if _looks_like_relative_media_ref(s):
+            if origin:
+                return urljoin(origin + "/", s.lstrip("/"))
+            return urljoin(self.base_url.rstrip("/") + "/", s)
+        return s
+
+    @staticmethod
+    def _needs_file_service_url_retry(exc: Exception) -> bool:
+        text = f"{exc!r} {exc}".lower()
+        if "data:image" not in text:
+            return False
+        markers = (
+            "unsupported protocol scheme",
+            "unsupported url scheme",
+            "failed to download",
+            "get file base64 from url",
+            "invalid image_url",
+            "unable to process input image",
+        )
+        return any(marker in text for marker in markers)
+
+    async def _register_input_image_urls(self, images: list[bytes]) -> list[str]:
+        try:
+            from astrbot.api.message_components import Image as AstrImage
+        except Exception as e:
+            raise RuntimeError("当前 AstrBot 环境缺少图片文件服务能力，无法回退为 URL 输入") from e
+
+        urls: list[str] = []
+        for idx, image_bytes in enumerate(images):
+            saved_path = await self.imgr.save_image(image_bytes)
+            img_comp = AstrImage.fromFileSystem(str(saved_path))
+            register = getattr(img_comp, "register_to_file_service", None)
+            if not callable(register):
+                raise RuntimeError("当前 AstrBot Image 组件不支持 register_to_file_service")
+            url = await _resolve_awaitable(register())
+            url_text = str(url or "").strip()
+            if not url_text:
+                raise RuntimeError(f"第 {idx + 1} 张输入图注册到文件服务失败")
+            urls.append(url_text)
+        return urls
 
     async def _extract_image_refs_from_response(self, resp: object) -> list[str]:
         refs: list[str] = []
@@ -989,6 +1182,7 @@ class OpenAIChatImageBackend:
             raise RuntimeError(
                 f"chat 返回未包含图片（需 markdown/data:image/url）：{debug_snippet}"
             )
+        ref = self._absolutize_media_ref(ref)
 
         if ref.startswith("data:image/"):
             compact = re.sub(r"\s+", "", ref)
@@ -1073,6 +1267,12 @@ class OpenAIChatImageBackend:
         eb = {}
         eb.update(self.extra_body)
         eb.update(extra_body or {})
+        eb = self._apply_gemini_image_config(
+            eb,
+            model=final_model,
+            size=size,
+            resolution=resolution,
+        )
 
         stream_error: Exception | None = None
         stream_messages = [
@@ -1201,6 +1401,16 @@ class OpenAIChatImageBackend:
         eb = {}
         eb.update(self.extra_body)
         eb.update(extra_body or {})
+        eb = self._apply_gemini_image_config(
+            eb,
+            model=final_model,
+            size=size,
+            resolution=resolution,
+        )
+
+        prefetched_image_urls: list[str] | None = None
+        if self._prefer_file_service_url_input:
+            prefetched_image_urls = await self._register_input_image_urls(images)
 
         stream_error: Exception | None = None
         stream_parts = self._build_edit_parts(
@@ -1211,6 +1421,7 @@ class OpenAIChatImageBackend:
                 strict_format=False,
             ),
             images,
+            image_urls=prefetched_image_urls,
         )
         try:
             refs, videos, debug_snippet = await self._stream_chat_completion(
@@ -1242,32 +1453,67 @@ class OpenAIChatImageBackend:
                 strict_format=True,
             ),
             images,
+            image_urls=prefetched_image_urls,
         )
 
-        t0 = time.time()
-        try:
-            resp = await client.chat.completions.create(
-                model=final_model,
-                messages=[{"role": "user", "content": parts}],
-                extra_body=eb or None,
-            )
-        except Exception as e:
-            if _is_client_closed_error(e):
-                logger.warning("[OpenAIChatImage][edit] client 已关闭，重建后重试一次")
-                client = await self._recreate_client(key)
-                resp = await client.chat.completions.create(
+        async def request_edit(parts_payload: list[dict], *, input_mode: str) -> object:
+            nonlocal client
+            t0 = time.time()
+            try:
+                response = await client.chat.completions.create(
                     model=final_model,
-                    messages=[{"role": "user", "content": parts}],
+                    messages=[{"role": "user", "content": parts_payload}],
                     extra_body=eb or None,
                 )
-            else:
-                logger.error(
-                    "[OpenAIChatImage][edit] API 调用失败，base_url=%s，耗时: %.2fs: %s",
-                    self.base_url,
-                    time.time() - t0,
-                    e,
-                )
+            except Exception as e:
+                if _is_client_closed_error(e):
+                    logger.warning("[OpenAIChatImage][edit] client 已关闭，重建后重试一次")
+                    client = await self._recreate_client(key)
+                    response = await client.chat.completions.create(
+                        model=final_model,
+                        messages=[{"role": "user", "content": parts_payload}],
+                        extra_body=eb or None,
+                    )
+                else:
+                    logger.error(
+                        "[OpenAIChatImage][edit] API 调用失败，base_url=%s，input_mode=%s，耗时: %.2fs: %s",
+                        self.base_url,
+                        input_mode,
+                        time.time() - t0,
+                        e,
+                    )
+                    raise
+            logger.info(
+                "[OpenAIChatImage][edit] API 响应耗时: %.2fs, input_mode=%s",
+                time.time() - t0,
+                input_mode,
+            )
+            return response
+
+        input_mode = "data_url"
+        try:
+            resp = await request_edit(parts, input_mode=input_mode)
+        except Exception as e:
+            if not self._needs_file_service_url_retry(e):
                 raise
+            self._prefer_file_service_url_input = True
+            logger.warning(
+                "[OpenAIChatImage][edit] data:image 输入不被目标网关接受，改用文件服务 URL 重试: %s",
+                e,
+            )
+            input_mode = "file_service_url"
+            image_urls = prefetched_image_urls or await self._register_input_image_urls(images)
+            parts = self._build_edit_parts(
+                self._build_edit_text(
+                    prompt,
+                    size=size,
+                    resolution=resolution,
+                    strict_format=True,
+                ),
+                images,
+                image_urls=image_urls,
+            )
+            resp = await request_edit(parts, input_mode=input_mode)
 
         refs = await self._extract_image_refs_from_response(resp)
         ref = refs[0] if refs else None
@@ -1281,7 +1527,6 @@ class OpenAIChatImageBackend:
         except Exception:
             pass
 
-        logger.info("[OpenAIChatImage][edit] API 响应耗时: %.2fs", time.time() - t0)
         if not ref:
             video_url = await self._extract_video_ref_from_response(resp)
             if video_url:
