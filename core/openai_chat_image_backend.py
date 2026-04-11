@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import inspect
 import json
@@ -14,6 +15,7 @@ from openai import AsyncOpenAI
 from astrbot.api import logger
 
 from .image_format import guess_image_mime_and_ext
+from .net_safety import URLFetchPolicy, ensure_url_allowed
 from .openai_compat_backend import (
     build_proxy_http_client,
     normalize_openai_compat_base_url,
@@ -38,6 +40,12 @@ _VIDEO_URL_RE = re.compile(
 )
 
 _BASE64_PREFIX_RE = re.compile(r"^(?:b64|base64)\s*:\s*", re.IGNORECASE)
+
+_KNOWN_TRUSTED_RESULT_ORIGINS: dict[str, set[str]] = {
+    "api.bltcy.ai": {
+        "https://files.closeai.fans",
+    },
+}
 
 
 def _parse_png_size(image_bytes: bytes) -> tuple[int, int] | None:
@@ -580,6 +588,7 @@ class OpenAIChatImageBackend:
         self._clients: dict[str, AsyncOpenAI] = {}
         self._http_client = None
         self._prefer_file_service_url_input = False
+        self._trusted_result_origins = self._build_trusted_result_origins()
 
     @staticmethod
     def _supports_http_client_param() -> bool:
@@ -602,6 +611,36 @@ class OpenAIChatImageBackend:
 
     def _chat_completions_url(self) -> str:
         return f"{self.base_url.rstrip('/')}/chat/completions"
+
+    def _build_trusted_result_origins(self) -> frozenset[str]:
+        parts = urlsplit(self.base_url)
+        host = (parts.hostname or "").strip().lower()
+        trusted: set[str] = set()
+        for known_host, origins in _KNOWN_TRUSTED_RESULT_ORIGINS.items():
+            if host == known_host or host.endswith(f".{known_host}"):
+                trusted.update(origins)
+        return frozenset(trusted)
+
+    @staticmethod
+    def _is_gemini_chat_image_model(model: str | None) -> bool:
+        return "gemini" in str(model or "").strip().lower()
+
+    def _trusted_result_url_policy(self) -> URLFetchPolicy:
+        trusted_origins: set[str] = set(self._trusted_result_origins)
+        raw_imgr_trusted = getattr(self.imgr, "_trusted_origins", frozenset())
+        if isinstance(raw_imgr_trusted, (set, frozenset, list, tuple)):
+            for item in raw_imgr_trusted:
+                text = str(item or "").strip().rstrip("/")
+                if text:
+                    trusted_origins.add(text)
+        return URLFetchPolicy(
+            allow_private=bool(getattr(self.imgr, "_media_allow_private", False)),
+            trusted_origins=frozenset(trusted_origins),
+            allowed_hosts=frozenset(),
+            dns_timeout_seconds=float(
+                getattr(self.imgr, "_dns_timeout_seconds", 2) or 2
+            ),
+        )
 
     @staticmethod
     def _sse_debug_snippet(text: str) -> str:
@@ -626,8 +665,7 @@ class OpenAIChatImageBackend:
             return (
                 f"{prompt}\n\n"
                 "Return ONLY one image. Do NOT return video/mp4, HTML, or explanations.\n"
-                "Output format MUST be exactly one markdown image:\n"
-                "![](data:image/png;base64,...)"
+                "Output format MUST be exactly one markdown image and nothing else."
                 f"{size_hint}"
             )
 
@@ -679,7 +717,7 @@ class OpenAIChatImageBackend:
     ) -> dict:
         merged = dict(extra_body or {})
         model_name = str(model or "").lower()
-        if "gemini" not in model_name and "4k" not in model_name:
+        if not cls._is_gemini_chat_image_model(model):
             return merged
 
         image_size = cls._normalize_image_size_hint(
@@ -688,19 +726,51 @@ class OpenAIChatImageBackend:
             resolution=resolution,
         )
         if not image_size:
+            image_size = None
+
+        merged_modalities = merged.get("modalities")
+        normalized_modalities: list[str] = []
+        raw_modalities: list[object]
+        if isinstance(merged_modalities, (list, tuple, set)):
+            raw_modalities = list(merged_modalities)
+        elif isinstance(merged_modalities, str) and merged_modalities.strip():
+            raw_modalities = [merged_modalities.strip()]
+        else:
+            raw_modalities = []
+        for value in raw_modalities:
+            text = str(value or "").strip().lower()
+            if text and text not in normalized_modalities:
+                normalized_modalities.append(text)
+        for required in ("image", "text"):
+            if required not in normalized_modalities:
+                normalized_modalities.append(required)
+        if normalized_modalities:
+            merged["modalities"] = normalized_modalities
+
+        if not image_size:
             return merged
+
+        request_image_size = image_size
+        if (
+            "gemini-3.1-flash-image-preview-4k" in model_name
+            and str(image_size).strip().upper() in {"4K", "4096X4096", "2K", "2048X2048"}
+        ):
+            # 该网关的 chat 兼容层对 4K 规格经常直接 503；
+            # 实测把 image_config 压到 1K 仍会回 3840x4380 这类高分辨率图，
+            # 因此这里只降请求规格，不动 prompt 里的 4K 目标提示。
+            request_image_size = "1K"
 
         raw_image_config = merged.get("image_config")
         image_config = (
             dict(raw_image_config) if isinstance(raw_image_config, dict) else {}
         )
-        image_config.setdefault("image_size", image_size)
-        image_config.setdefault("imageSize", image_size)
+        image_config.setdefault("image_size", request_image_size)
+        image_config.setdefault("imageSize", request_image_size)
         merged["image_config"] = image_config
 
-        merged.setdefault("image_size", image_size)
-        merged.setdefault("imageSize", image_size)
-        merged.setdefault("size", image_size)
+        merged.setdefault("image_size", request_image_size)
+        merged.setdefault("imageSize", request_image_size)
+        merged.setdefault("size", request_image_size)
 
         raw_generation_config = merged.get("generation_config")
         generation_config = (
@@ -708,8 +778,8 @@ class OpenAIChatImageBackend:
             if isinstance(raw_generation_config, dict)
             else {}
         )
-        generation_config.setdefault("image_size", image_size)
-        generation_config.setdefault("imageSize", image_size)
+        generation_config.setdefault("image_size", request_image_size)
+        generation_config.setdefault("imageSize", request_image_size)
         if generation_config:
             merged["generation_config"] = generation_config
 
@@ -725,13 +795,67 @@ class OpenAIChatImageBackend:
             if isinstance(raw_image_config_camel, dict)
             else {}
         )
-        image_config_camel.setdefault("image_size", image_size)
-        image_config_camel.setdefault("imageSize", image_size)
+        image_config_camel.setdefault("image_size", request_image_size)
+        image_config_camel.setdefault("imageSize", request_image_size)
         if image_config_camel:
             generation_config_camel["imageConfig"] = image_config_camel
         if generation_config_camel:
             merged["generationConfig"] = generation_config_camel
         return merged
+
+    @staticmethod
+    def _is_retryable_chat_image_error(exc: Exception, *, model: str | None) -> bool:
+        text = f"{exc!r} {exc}".lower()
+        if not OpenAIChatImageBackend._is_gemini_chat_image_model(model):
+            return False
+        markers = (
+            "no provider for",
+            "503",
+            "readtimeout",
+            "timed out",
+            "timeout",
+            "unsupported protocol scheme",
+            "unsupported url scheme",
+            "failed to download",
+            "get file base64 from url",
+            "invalid image_url",
+            "unable to process input image",
+        )
+        return any(marker in text for marker in markers)
+
+    @classmethod
+    def _chat_request_attempts(cls, *, model: str | None) -> int:
+        if cls._is_gemini_chat_image_model(model):
+            return 2
+        return 1
+
+    async def _run_chat_request_with_retries(
+        self,
+        request_factory,
+        *,
+        model: str | None,
+        log_tag: str,
+        input_mode: str,
+    ):
+        attempts = self._chat_request_attempts(model=model)
+        for attempt in range(1, attempts + 1):
+            try:
+                return await request_factory()
+            except Exception as exc:
+                if (
+                    attempt >= attempts
+                    or not self._is_retryable_chat_image_error(exc, model=model)
+                ):
+                    raise
+                logger.warning(
+                    "[OpenAIChatImage][%s] chat 请求失败，准备重试 %s/%s，input_mode=%s: %s",
+                    log_tag,
+                    attempt + 1,
+                    attempts,
+                    input_mode,
+                    exc,
+                )
+                await asyncio.sleep(min(1.5 * attempt, 3.0))
 
     @staticmethod
     def _build_edit_text(
@@ -752,8 +876,7 @@ class OpenAIChatImageBackend:
                 f"{prompt}\n\n"
                 "Edit the attached image(s). Return ONLY one image.\n"
                 "Do NOT return video/mp4, HTML, or explanations.\n"
-                "Output format MUST be exactly one markdown image:\n"
-                "![](data:image/png;base64,...)"
+                "Output format MUST be exactly one markdown image and nothing else."
                 f"{size_hint}"
             )
 
@@ -843,11 +966,11 @@ class OpenAIChatImageBackend:
 
         async def consume_json_body(resp: httpx.Response) -> tuple[list[str], list[str], str]:
             raw = await resp.aread()
-            text = raw.decode("utf-8", errors="ignore")
+            body_text = raw.decode("utf-8", errors="ignore")
             try:
-                obj = json.loads(text)
+                obj = json.loads(body_text)
             except Exception:
-                return [], [], self._sse_debug_snippet(text)
+                return [], [], self._sse_debug_snippet(body_text)
 
             add_ref(_extract_image_ref_from_content(obj))
             add_video(_extract_video_ref_from_content(obj))
@@ -859,7 +982,7 @@ class OpenAIChatImageBackend:
                     add_video(video)
                 if len(debug_pieces) < 8 and s.strip():
                     debug_pieces.append(self._sse_debug_snippet(s))
-            return refs, videos, self._sse_debug_snippet(" ".join(debug_pieces) or text)
+            return refs, videos, self._sse_debug_snippet(" ".join(debug_pieces) or body_text)
 
         t0 = time.time()
         try:
@@ -870,16 +993,16 @@ class OpenAIChatImageBackend:
                 json=payload,
             ) as resp:
                 if resp.status_code != 200:
-                    text = (await resp.aread()).decode("utf-8", errors="ignore")
+                    body_text = (await resp.aread()).decode("utf-8", errors="ignore")
                     raise RuntimeError(
-                        f"chat 流式请求失败 HTTP {resp.status_code}: {text[:300]}"
+                        f"chat stream request failed HTTP {resp.status_code}: {body_text[:300]}"
                     )
 
                 content_type = (resp.headers.get("content-type") or "").lower()
                 if "text/event-stream" not in content_type:
                     refs_out, videos_out, debug_snippet = await consume_json_body(resp)
                     logger.info(
-                        "[OpenAIChatImage][%s][stream] API 响应耗时: %.2fs",
+                        "[OpenAIChatImage][%s][stream] API response time: %.2fs",
                         log_tag,
                         time.time() - t0,
                     )
@@ -920,13 +1043,13 @@ class OpenAIChatImageBackend:
                         if (refs or videos) and not first_media_hit_logged:
                             first_media_hit_logged = True
                             logger.info(
-                                "[OpenAIChatImage][%s][stream] 首次命中媒体引用, 耗时: %.2fs，继续等待最终结果",
+                                "[OpenAIChatImage][%s][stream] first media ref hit in %.2fs, waiting for final output",
                                 log_tag,
                                 time.time() - t0,
                             )
 
                 logger.info(
-                    "[OpenAIChatImage][%s][stream] API 响应耗时: %.2fs",
+                    "[OpenAIChatImage][%s][stream] API response time: %.2fs",
                     log_tag,
                     time.time() - t0,
                 )
@@ -1276,9 +1399,119 @@ class OpenAIChatImageBackend:
                 raise RuntimeError(
                     f"chat 返回了视频而不是图片：{ref}（如果想要视频请用 /视频；如果想要图片请换模型或改用 images 接口）"
                 )
-            return await self.imgr.download_image(ref)
+            try:
+                return await self.imgr.download_image(ref)
+            except Exception as exc:
+                if not self._should_trust_result_url_download(ref, exc):
+                    raise
+                logger.warning(
+                    "[OpenAIChatImage] 结果图 URL 被安全策略拦截，改用受限直连下载: %s",
+                    exc,
+                )
+                return await self._download_trusted_result_url(ref)
 
         raise RuntimeError("chat 返回的图片引用格式不支持")
+
+    def _should_trust_result_url_download(self, ref: str, exc: Exception) -> bool:
+        text = f"{exc!r} {exc}".lower()
+        if "disallowed resolved ip address" not in text:
+            return False
+        try:
+            origin = self._origin_of_url(ref)
+        except Exception:
+            origin = ""
+        return bool(origin and origin in self._trusted_result_origins)
+
+    @staticmethod
+    def _origin_of_url(url: str) -> str:
+        parts = urlsplit(str(url or "").strip())
+        if not parts.scheme or not parts.netloc:
+            return ""
+        return f"{parts.scheme}://{parts.netloc}".rstrip("/")
+
+    async def _download_trusted_result_url(self, ref: str) -> Path:
+        origin = self._origin_of_url(ref)
+        if origin not in self._trusted_result_origins:
+            raise RuntimeError(f"result image URL is not trusted: {origin or ref}")
+
+        client = self._get_http_client()
+        close_client = False
+        if client is None:
+            client = httpx.AsyncClient(
+                timeout=httpx.Timeout(float(self.timeout)),
+            )
+            close_client = True
+
+        max_bytes = 50 * 1024 * 1024
+        max_redirects = 5
+        policy = self._trusted_result_url_policy()
+        try:
+            try:
+                max_bytes = max(
+                    256 * 1024,
+                    min(
+                        int(getattr(self.imgr, "_media_max_image_bytes", max_bytes) or max_bytes),
+                        200 * 1024 * 1024,
+                    ),
+                )
+            except Exception:
+                max_bytes = 50 * 1024 * 1024
+            try:
+                max_redirects = max(
+                    0,
+                    min(
+                        int(
+                            getattr(self.imgr, "_media_max_redirects", max_redirects)
+                            or max_redirects
+                        ),
+                        10,
+                    ),
+                )
+            except Exception:
+                max_redirects = 5
+
+            current = ref
+            redirects = 0
+            while True:
+                await ensure_url_allowed(current, policy=policy)
+                async with client.stream(
+                    "GET",
+                    current,
+                    headers={"Accept": "image/*,*/*;q=0.8"},
+                    follow_redirects=False,
+                ) as resp:
+                    if resp.status_code in {301, 302, 303, 307, 308}:
+                        if redirects >= max_redirects:
+                            raise RuntimeError("too many redirects while downloading trusted image result")
+                        location = (resp.headers.get("location") or "").strip()
+                        if not location:
+                            raise RuntimeError("redirect without location while downloading trusted image result")
+                        current = urljoin(current, location)
+                        redirects += 1
+                        continue
+                    if resp.status_code != 200:
+                        body_text = (await resp.aread()).decode("utf-8", errors="ignore")
+                        raise RuntimeError(
+                            f"trusted image result download failed HTTP {resp.status_code}: {body_text[:300]}"
+                        )
+                    content_type = (resp.headers.get("content-type") or "").lower()
+                    if content_type and not content_type.startswith("image/"):
+                        raise RuntimeError(
+                            f"trusted image result response is not an image: content-type={content_type or 'unknown'}"
+                        )
+                    total = 0
+                    chunks: list[bytes] = []
+                    async for chunk in resp.aiter_bytes():
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise RuntimeError("trusted image result is too large to download")
+                        chunks.append(chunk)
+                    return await self.imgr.save_image(b"".join(chunks))
+        finally:
+            if close_client:
+                await client.aclose()
 
     async def _save_from_ref(
         self,
@@ -1359,12 +1592,17 @@ class OpenAIChatImageBackend:
             }
         ]
         try:
-            refs, videos, debug_snippet = await self._stream_chat_completion(
-                key=key,
+            refs, videos, debug_snippet = await self._run_chat_request_with_retries(
+                lambda: self._stream_chat_completion(
+                    key=key,
+                    model=final_model,
+                    messages=stream_messages,
+                    extra_body=eb or None,
+                    log_tag="generate",
+                ),
                 model=final_model,
-                messages=stream_messages,
-                extra_body=eb or None,
                 log_tag="generate",
+                input_mode="prompt_only",
             )
             if refs:
                 return await self._save_from_ref(
@@ -1496,12 +1734,17 @@ class OpenAIChatImageBackend:
             image_urls=prefetched_image_urls,
         )
         try:
-            refs, videos, debug_snippet = await self._stream_chat_completion(
-                key=key,
+            refs, videos, debug_snippet = await self._run_chat_request_with_retries(
+                lambda: self._stream_chat_completion(
+                    key=key,
+                    model=final_model,
+                    messages=[{"role": "user", "content": stream_parts}],
+                    extra_body=eb or None,
+                    log_tag="edit",
+                ),
                 model=final_model,
-                messages=[{"role": "user", "content": stream_parts}],
-                extra_body=eb or None,
                 log_tag="edit",
+                input_mode="data_url" if prefetched_image_urls is None else "file_service_url",
             )
             if refs:
                 return await self._save_from_ref(
@@ -1564,7 +1807,12 @@ class OpenAIChatImageBackend:
 
         input_mode = "data_url"
         try:
-            resp = await request_edit(parts, input_mode=input_mode)
+            resp = await self._run_chat_request_with_retries(
+                lambda: request_edit(parts, input_mode=input_mode),
+                model=final_model,
+                log_tag="edit",
+                input_mode=input_mode,
+            )
         except Exception as e:
             images_api_error: Exception | None = None
             if self._needs_images_api_fallback(e):
@@ -1619,7 +1867,12 @@ class OpenAIChatImageBackend:
                 images,
                 image_urls=image_urls,
             )
-            resp = await request_edit(parts, input_mode=input_mode)
+            resp = await self._run_chat_request_with_retries(
+                lambda: request_edit(parts, input_mode=input_mode),
+                model=final_model,
+                log_tag="edit",
+                input_mode=input_mode,
+            )
 
         refs = await self._extract_image_refs_from_response(resp)
         ref = refs[0] if refs else None
