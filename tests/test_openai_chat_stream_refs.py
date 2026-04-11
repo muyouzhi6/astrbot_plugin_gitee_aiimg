@@ -40,9 +40,10 @@ class _MessageImage:
 
 
 class _DummyImageManager:
-    def __init__(self):
+    def __init__(self, *, fail_download_error: Exception | None = None):
         self.saved_inputs: list[bytes] = []
         self.downloaded_urls: list[str] = []
+        self.fail_download_error = fail_download_error
 
     async def save_image(self, data: bytes):
         self.saved_inputs.append(data)
@@ -50,6 +51,8 @@ class _DummyImageManager:
 
     async def download_image(self, url: str):
         self.downloaded_urls.append(url)
+        if self.fail_download_error is not None:
+            raise self.fail_download_error
         return Path("/tmp/result.png")
 
 
@@ -164,15 +167,34 @@ class OpenAIChatStreamRefTests(unittest.TestCase):
             resolution="4K",
         )
 
-        self.assertEqual(payload["image_config"]["image_size"], "4K")
-        self.assertEqual(payload["image_config"]["imageSize"], "4K")
-        self.assertEqual(payload["image_size"], "4K")
-        self.assertEqual(payload["imageSize"], "4K")
-        self.assertEqual(payload["size"], "4K")
-        self.assertEqual(payload["generation_config"]["image_size"], "4K")
-        self.assertEqual(payload["generation_config"]["imageSize"], "4K")
-        self.assertEqual(payload["generationConfig"]["imageConfig"]["image_size"], "4K")
-        self.assertEqual(payload["generationConfig"]["imageConfig"]["imageSize"], "4K")
+        self.assertEqual(payload["image_config"]["image_size"], "1K")
+        self.assertEqual(payload["image_config"]["imageSize"], "1K")
+        self.assertEqual(payload["image_size"], "1K")
+        self.assertEqual(payload["imageSize"], "1K")
+        self.assertEqual(payload["size"], "1K")
+        self.assertEqual(payload["generation_config"]["image_size"], "1K")
+        self.assertEqual(payload["generation_config"]["imageSize"], "1K")
+        self.assertEqual(payload["generationConfig"]["imageConfig"]["image_size"], "1K")
+        self.assertEqual(payload["generationConfig"]["imageConfig"]["imageSize"], "1K")
+        self.assertEqual(payload["modalities"], ["image", "text"])
+
+    def test_apply_gemini_image_config_skips_non_gemini_4k_model(self):
+        mod = _load_module()
+
+        payload = mod.OpenAIChatImageBackend._apply_gemini_image_config(
+            {"existing": True},
+            model="custom-image-preview-4k",
+            size=None,
+            resolution="4K",
+        )
+
+        self.assertEqual(payload, {"existing": True})
+        self.assertEqual(
+            mod.OpenAIChatImageBackend._chat_request_attempts(
+                model="custom-image-preview-4k"
+            ),
+            1,
+        )
 
 
 class OpenAIChatEditFallbackTests(unittest.IsolatedAsyncioTestCase):
@@ -190,6 +212,10 @@ class OpenAIChatEditFallbackTests(unittest.IsolatedAsyncioTestCase):
         )
         client = _DummyClient(
             [
+                RuntimeError(
+                    'get file base64 from url "data:image/png;base64,..." failed: '
+                    'unsupported protocol scheme "data"'
+                ),
                 RuntimeError(
                     'get file base64 from url "data:image/png;base64,..." failed: '
                     'unsupported protocol scheme "data"'
@@ -217,11 +243,13 @@ class OpenAIChatEditFallbackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(out_path, Path("/tmp/result.png"))
         self.assertEqual(imgr.downloaded_urls, ["https://cdn.example.com/final.png"])
-        self.assertEqual(len(client.chat.completions.calls), 2)
+        self.assertEqual(len(client.chat.completions.calls), 3)
         first_url = client.chat.completions.calls[0]["messages"][0]["content"][1]["image_url"]["url"]
         second_url = client.chat.completions.calls[1]["messages"][0]["content"][1]["image_url"]["url"]
+        third_url = client.chat.completions.calls[2]["messages"][0]["content"][1]["image_url"]["url"]
         self.assertTrue(first_url.startswith("data:image/png;base64,"))
-        self.assertEqual(second_url, "https://files.example/input_1.png")
+        self.assertTrue(second_url.startswith("data:image/png;base64,"))
+        self.assertEqual(third_url, "https://files.example/input_1.png")
 
     async def test_save_single_ref_rewrites_relative_ref_to_origin(self):
         mod = _load_module()
@@ -257,6 +285,88 @@ class OpenAIChatEditFallbackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(out_path, Path("/tmp/result.png"))
         self.assertEqual(imgr.downloaded_urls, ["https://cdn.example.com/final.png"])
+
+    async def test_save_single_ref_uses_trusted_direct_download_when_guard_blocks(self):
+        mod = _load_module()
+        imgr = _DummyImageManager(
+            fail_download_error=RuntimeError("Disallowed resolved IP address")
+        )
+        backend = mod.OpenAIChatImageBackend(
+            imgr=imgr,
+            base_url="https://api.bltcy.ai/v1",
+            api_keys=["test-key"],
+            default_model="gemini-3.1-flash-image-preview-4k",
+        )
+
+        async def _direct_download(url: str):
+            self.assertEqual(url, "https://files.closeai.fans/output/final.jpg")
+            return Path("/tmp/input_1.png")
+
+        backend._download_trusted_result_url = _direct_download
+
+        out_path = await backend._save_single_ref(
+            "https://files.closeai.fans/output/final.jpg"
+        )
+
+        self.assertEqual(out_path, Path("/tmp/input_1.png"))
+        self.assertEqual(
+            imgr.downloaded_urls,
+            ["https://files.closeai.fans/output/final.jpg"],
+        )
+
+    async def test_download_trusted_result_url_checks_redirect_targets(self):
+        mod = _load_module()
+        imgr = _DummyImageManager()
+        backend = mod.OpenAIChatImageBackend(
+            imgr=imgr,
+            base_url="https://api.bltcy.ai/v1",
+            api_keys=["test-key"],
+            default_model="gemini-3.1-flash-image-preview-4k",
+        )
+
+        class _FakeResponse:
+            def __init__(self, status_code: int, headers: dict[str, str], body: bytes = b""):
+                self.status_code = status_code
+                self.headers = headers
+                self._body = body
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def aread(self):
+                return self._body
+
+            async def aiter_bytes(self):
+                if self._body:
+                    yield self._body
+
+        class _FakeClient:
+            def __init__(self):
+                self.calls: list[str] = []
+
+            def stream(self, method: str, url: str, **kwargs):
+                self.calls.append(url)
+                return _FakeResponse(
+                    302,
+                    {"location": "http://127.0.0.1/private.png"},
+                )
+
+        fake_client = _FakeClient()
+        backend.proxy_url = "http://proxy.local"
+        backend._http_client = fake_client
+
+        with self.assertRaisesRegex(RuntimeError, "Disallowed IP address"):
+            await backend._download_trusted_result_url(
+                "https://files.closeai.fans/output/final.jpg"
+            )
+
+        self.assertEqual(
+            fake_client.calls,
+            ["https://files.closeai.fans/output/final.jpg"],
+        )
 
     async def test_edit_uses_images_api_fallback_before_file_service(self):
         mod = _load_module()
