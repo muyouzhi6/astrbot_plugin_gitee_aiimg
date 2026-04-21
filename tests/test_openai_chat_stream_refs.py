@@ -196,6 +196,23 @@ class OpenAIChatStreamRefTests(unittest.TestCase):
             1,
         )
 
+    def test_rewrite_local_media_url_preserves_result_port(self):
+        mod = _load_module()
+
+        for ref in (
+            "http://host.docker.internal:38000/tmp/final_4k.jpg",
+            "http://172.17.0.1:38000/tmp/final_4k.jpg",
+            "http://172.22.0.1:38000/tmp/final_4k.jpg",
+        ):
+            rewritten = mod._rewrite_local_media_url(
+                ref,
+                base_url="https://newapi.165201.xyz/v1",
+            )
+            self.assertEqual(
+                rewritten,
+                "http://newapi.165201.xyz:38000/tmp/final_4k.jpg",
+            )
+
 
 class OpenAIChatEditFallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_edit_retries_with_file_service_url_when_data_uri_is_rejected(self):
@@ -265,6 +282,26 @@ class OpenAIChatEditFallbackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(out_path, Path("/tmp/result.png"))
         self.assertEqual(imgr.downloaded_urls, ["https://api.example.com/tmp/final.png"])
+
+    async def test_save_single_ref_rewrites_local_result_host_to_origin_host(self):
+        mod = _load_module()
+        imgr = _DummyImageManager()
+        backend = mod.OpenAIChatImageBackend(
+            imgr=imgr,
+            base_url="https://newapi.165201.xyz/v1",
+            api_keys=["test-key"],
+            default_model="gemini-3.1-flash-image-4k",
+        )
+
+        out_path = await backend._save_single_ref(
+            "http://host.docker.internal:38000/tmp/final.png"
+        )
+
+        self.assertEqual(out_path, Path("/tmp/result.png"))
+        self.assertEqual(
+            imgr.downloaded_urls,
+            ["http://newapi.165201.xyz:38000/tmp/final.png"],
+        )
 
     async def test_save_from_ref_prefers_latest_candidate(self):
         mod = _load_module()

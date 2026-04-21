@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ipaddress
 import inspect
 import json
 import re
 import time
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 from openai import AsyncOpenAI
@@ -40,6 +41,7 @@ _VIDEO_URL_RE = re.compile(
 )
 
 _BASE64_PREFIX_RE = re.compile(r"^(?:b64|base64)\s*:\s*", re.IGNORECASE)
+_LOCAL_MEDIA_HOSTS = {"0.0.0.0", "127.0.0.1", "localhost", "host.docker.internal"}
 
 _KNOWN_TRUSTED_RESULT_ORIGINS: dict[str, set[str]] = {
     "api.bltcy.ai": {
@@ -137,6 +139,49 @@ def _looks_like_relative_media_ref(ref: str) -> bool:
         return False
     lowered = s.lower()
     return any(ext in lowered for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"))
+
+
+def _is_local_media_host(host: str) -> bool:
+    h = str(host or "").strip().lower()
+    if not h:
+        return False
+    if h in _LOCAL_MEDIA_HOSTS or h.endswith(".localhost") or h.endswith(".local"):
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return False
+    return bool(ip.is_loopback or ip.is_private or ip.is_link_local)
+
+
+def _rewrite_local_media_url(ref: str, *, base_url: str) -> str:
+    s = str(ref or "").strip()
+    if not s:
+        return ""
+    try:
+        parts = urlsplit(s)
+    except Exception:
+        return s
+    if not parts.scheme or not parts.netloc or not _is_local_media_host(parts.hostname or ""):
+        return s
+
+    base_parts = urlsplit(str(base_url or "").strip())
+    if not base_parts.hostname:
+        return s
+
+    host = base_parts.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = f"{host}:{parts.port}" if parts.port is not None else host
+    return urlunsplit(
+        (
+            parts.scheme or base_parts.scheme or "http",
+            netloc,
+            parts.path or "/",
+            parts.query,
+            parts.fragment,
+        )
+    )
 
 
 def _is_valid_data_image_ref(ref: str) -> bool:
@@ -1146,7 +1191,14 @@ class OpenAIChatImageBackend:
         if not s:
             return ""
         if s.startswith(("data:image/", "http://", "https://")):
-            return s
+            rewritten = _rewrite_local_media_url(s, base_url=self.base_url)
+            if rewritten != s:
+                logger.info(
+                    "[OpenAIChatImage] 重写本地结果图地址: %s -> %s",
+                    s,
+                    rewritten,
+                )
+            return rewritten
 
         split = urlsplit(self.base_url)
         origin = f"{split.scheme}://{split.netloc}" if split.scheme and split.netloc else ""
