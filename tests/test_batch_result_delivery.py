@@ -377,38 +377,11 @@ def _make_success_result(mod, index: int, image_name: str, mode: str = "selfie_r
 
 
 class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
-    async def test_merge_forward_mode_uses_single_nodes_component_with_image_only_entries(self):
-        mod = _load_module()
-        plugin = mod.GiteeAIImagePlugin(context=types.SimpleNamespace(), config={})
-        event = _DummyEvent()
-        results = [
-            _make_success_result(mod, 0, "one.png"),
-            _make_success_result(mod, 1, "two.png"),
-        ]
-
-        await plugin._send_batch_results(event, results, title="LLM 批量自拍 x2")
-
-        self.assertEqual(len(event.sent), 1)
-        kind, payload = event.sent[0]
-        self.assertEqual(kind, "chain")
-        self.assertEqual(len(payload), 1)
-        self.assertIsInstance(payload[0], _DummyNodes)
-        self.assertEqual(len(payload[0].nodes), 3)
-        self.assertIsInstance(payload[0].nodes[0].content[0], _DummyPlain)
-        self.assertIn("2 张自拍", payload[0].nodes[0].content[0].text)
-        self.assertNotIn("标题", payload[0].nodes[0].content[0].text)
-        self.assertTrue(
-            all(
-                len(node.content) == 1 and isinstance(node.content[0], _DummyImage)
-                for node in payload[0].nodes[1:]
-            )
-        )
-
-    async def test_single_message_mode_sends_only_intro_and_images(self):
+    async def test_batch_results_ignore_legacy_merge_setting_and_send_images_only(self):
         mod = _load_module()
         plugin = mod.GiteeAIImagePlugin(
             context=types.SimpleNamespace(),
-            config={"features": {"batch": {"result_send_mode": "single_message"}}},
+            config={"features": {"batch": {"result_send_mode": "merge_forward"}}},
         )
         event = _DummyEvent()
         results = [
@@ -425,15 +398,33 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         await plugin._send_batch_results(event, results, title="LLM 批量自拍 x2")
 
-        self.assertEqual(event.sent, [("plain", "这次给你准备了 2 张自拍，我一张张发给你。")])
+        self.assertEqual(event.sent, [])
         self.assertEqual(image_paths, [Path("/tmp/one.png"), Path("/tmp/two.png")])
 
-    async def test_single_message_mode_reports_failures_without_report_style_labels(self):
+    async def test_batch_results_send_only_images_without_plain_messages(self):
         mod = _load_module()
-        plugin = mod.GiteeAIImagePlugin(
-            context=types.SimpleNamespace(),
-            config={"features": {"batch": {"result_send_mode": "single_message"}}},
-        )
+        plugin = mod.GiteeAIImagePlugin(context=types.SimpleNamespace(), config={})
+        event = _DummyEvent()
+        results = [
+            _make_success_result(mod, 0, "one.png"),
+            _make_success_result(mod, 1, "two.png"),
+        ]
+        image_paths: list[Path] = []
+
+        async def _fake_send_image(evt, path):
+            image_paths.append(Path(path))
+            return True
+
+        plugin._send_image_with_fallback = _fake_send_image
+
+        await plugin._send_batch_results(event, results, title="LLM 批量自拍 x2")
+
+        self.assertEqual(event.sent, [])
+        self.assertEqual(image_paths, [Path("/tmp/one.png"), Path("/tmp/two.png")])
+
+    async def test_batch_results_stay_silent_on_partial_failures(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(context=types.SimpleNamespace(), config={})
         event = _DummyEvent()
         results = [
             _make_success_result(mod, 0, "one.png"),
@@ -449,21 +440,8 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         await plugin._send_batch_results(event, results, title="LLM 批量自拍 x2")
 
-        self.assertEqual(
-            event.sent,
-            [
-                ("plain", "这次先给你发成功的 1 张自拍，另外 1 张没跑出来。"),
-                ("plain", "第 2 张没跑出来，需要的话可以再补一轮。"),
-            ],
-        )
+        self.assertEqual(event.sent, [])
         self.assertEqual(image_paths, [Path("/tmp/one.png")])
-        self.assertTrue(
-            all(
-                all(bad not in text for bad in ("标题", "提示词", "状态", "原因"))
-                for kind, text in event.sent
-                if kind == "plain"
-            )
-        )
 
 
 if __name__ == "__main__":

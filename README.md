@@ -207,16 +207,14 @@ Q版化:Convert to chibi illustration style
 - 文生图批量并发由 `features.draw.batch_concurrency` 控制，默认 `2`
 - 改图 / 自拍批量并发由 `features.edit.batch_concurrency` 控制，默认 `2`
 - 改图批量和自拍批量都要求当前消息里能读到输入图片；文生图批量不需要图片
-- 批量结果发送方式由 `features.batch.result_send_mode` 控制：
-  - `merge_forward`：使用一条合并转发把整组图收起来
-  - `single_message`：按顺序一张张直接发送
-- 当 `result_send_mode=merge_forward` 时，如果当前平台不支持合并转发，且 `features.batch.forward_fallback_to_messages=true`，会自动回退为普通消息逐条发送
+- 批量结果会按顺序直接发送单张图片
+- 除原插件自带表情反馈外，不额外发送标题、提示词、状态、失败摘要这类通知文本
 
 ### 批量结果展示
 
-- `merge_forward`：聊天窗口只显示一条简短摘要，点开后按顺序查看整组图片
-- `single_message`：先发一条自然语言短句，再逐张发图，不再附带“标题 / 提示词 / 状态”这类报表式文本
-- 如果部分任务失败，会额外用自然语言简短提示是第几张没成功
+- 批量任务成功的图片会一张一张直接发出
+- 不额外插入摘要、说明、失败提示等文本消息
+- 如果某几张失败，只保留原插件自己的表情反馈，不额外发通知
 
 ## 自拍参考照
 
@@ -335,8 +333,6 @@ Q版化:Convert to chibi illustration style
 ### 批量相关
 
 - `features.batch.max_count`：单次批量最大张数
-- `features.batch.result_send_mode`：批量结果发送方式，`merge_forward` 或 `single_message`
-- `features.batch.forward_fallback_to_messages`：合并转发失败时是否回退普通消息
 - `features.draw.batch_concurrency`：文生图批量并发
 - `features.edit.batch_concurrency`：改图 / 自拍批量并发
 
@@ -363,8 +359,7 @@ Q版化:Convert to chibi illustration style
 
 ### 已知平台限制
 
-- 批量结果“合并转发”当前只有 `aiocqhttp` 原生支持
-- 其他平台如果开启 `features.batch.forward_fallback_to_messages`，会自动退回普通消息逐条发送
+- 批量结果默认就是普通消息逐张发送
 - 视频发送依赖适配器是否支持 `Video.fromFileSystem` 或 `Video.fromURL`
 - 某些需要 URL 回退输入的后端，依赖当前 AstrBot 环境具备文件服务能力
 
@@ -414,9 +409,9 @@ Q版化:Convert to chibi illustration style
 - 先发图再跟命令
 - 或直接回复图片消息执行命令
 
-### 批量结果为什么不是合并转发
+### 批量结果为什么没有额外说明文字
 
-因为当前平台不支持，或者发送合并转发失败了。只要 `features.batch.result_send_mode=merge_forward`，并且 `features.batch.forward_fallback_to_messages=true`，插件就会自动改成普通消息逐条发。
+这是当前设计：批量结果默认只发图片本体，避免刷出不拟人的通知文本。
 
 ### 为什么 `request_mode=stream` 没起作用
 
@@ -426,7 +421,7 @@ Q版化:Convert to chibi illustration style
 
 这一节保留原仓库 README 里的推广与展示内容，方便插件市场页和仓库首页继续正常展示。
 
-### Gitee AI API Key 获取方法
+### Gitee AI API Key 获取方法（原展示）
 
 1. 访问 <https://ai.gitee.com/serverless-api?model=z-image-turbo>
 
@@ -440,7 +435,7 @@ Q版化:Convert to chibi illustration style
 
 5. 好用可以给个 💗
 
-### 出图展示区
+### 出图展示区（原展示）
 
 ![出图展示 1](https://github.com/user-attachments/assets/c2390320-6d55-4db4-b3ad-0dde7b447c87)
 
