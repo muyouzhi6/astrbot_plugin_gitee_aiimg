@@ -427,7 +427,7 @@ Q版化:Convert to chibi illustration style
 
 这一节保留原仓库 README 里的推广与展示内容，方便插件市场页和仓库首页继续正常展示。
 
-### Gitee AI API Key 获取方法（原展示）
+### Gitee AI API Key 获取方法
 
 1. 访问 <https://ai.gitee.com/serverless-api?model=z-image-turbo>
 
@@ -441,7 +441,7 @@ Q版化:Convert to chibi illustration style
 
 5. 好用可以给个 💗
 
-### 出图展示区（原展示）
+### 出图展示区
 
 ![出图展示 1](https://github.com/user-attachments/assets/c2390320-6d55-4db4-b3ad-0dde7b447c87)
 
