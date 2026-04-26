@@ -31,6 +31,7 @@ from astrbot.api.message_components import (
     File,
     Image,
     Node,
+    Nodes,
     Plain,
     Reply,
     Video,
@@ -2393,6 +2394,20 @@ class GiteeAIImagePlugin(Star):
             default=True,
         )
 
+    def _get_batch_result_send_mode(self) -> str:
+        raw = str(
+            self._get_batch_feature().get("result_send_mode", "merge_forward")
+        ).strip()
+        normalized = raw.lower()
+        if normalized in {"merge", "merge_forward", "forward"}:
+            return "merge_forward"
+        if normalized in {"single", "single_message", "message"}:
+            return "single_message"
+        logger.warning(
+            "[batch] invalid result_send_mode=%s; fallback to merge_forward", raw
+        )
+        return "merge_forward"
+
     def _get_draw_presets(self) -> dict[str, str]:
         presets: dict[str, str] = {}
         conf = self._get_feature("draw")
@@ -2644,107 +2659,131 @@ class GiteeAIImagePlugin(Star):
             await self._save_last_image_task_meta(event, result.value.task_meta)
             return
 
+    @staticmethod
+    def _count_batch_outcomes(
+        results: list[BatchRunResult[ExecutedImageTask]],
+    ) -> tuple[int, int]:
+        success_count = sum(1 for result in results if result.success and result.value)
+        failed_count = len(results) - success_count
+        return success_count, failed_count
+
+    def _describe_batch_subject(
+        self,
+        title: str,
+        results: list[BatchRunResult[ExecutedImageTask]],
+    ) -> str:
+        labels: list[str] = []
+        for result in results:
+            spec = result.value.spec if result.success and result.value is not None else None
+            if spec is not None:
+                labels.append(self._batch_mode_label(spec))
+        if not labels:
+            labels.append(title)
+        joined = " ".join(labels)
+        if "自拍" in joined:
+            return "自拍"
+        return "图"
+
+    def _build_batch_intro_text(
+        self,
+        title: str,
+        results: list[BatchRunResult[ExecutedImageTask]],
+        *,
+        send_mode: str,
+    ) -> str:
+        total_count = len(results)
+        success_count, failed_count = self._count_batch_outcomes(results)
+        subject = self._describe_batch_subject(title, results)
+        if success_count <= 0:
+            return f"这次想给你准备 {total_count} 张{subject}，不过暂时都没跑出来。"
+        if send_mode == "single_message":
+            if failed_count > 0:
+                return (
+                    f"这次先给你发成功的 {success_count} 张{subject}，"
+                    f"另外 {failed_count} 张没跑出来。"
+                )
+            return f"这次给你准备了 {total_count} 张{subject}，我一张张发给你。"
+        if failed_count > 0:
+            return (
+                f"这次先整理出 {success_count} 张{subject}，"
+                f"另外 {failed_count} 张没跑出来，点开看看。"
+            )
+        return f"这次给你整理了 {total_count} 张{subject}，点开挑喜欢的吧。"
+
+    def _build_batch_failure_text(
+        self,
+        results: list[BatchRunResult[ExecutedImageTask]],
+    ) -> str:
+        failed_indices = [
+            result.index + 1
+            for result in results
+            if not (result.success and result.value is not None)
+        ]
+        if not failed_indices:
+            return ""
+        if len(failed_indices) == 1:
+            return f"第 {failed_indices[0]} 张没跑出来，需要的话可以再补一轮。"
+        shown = "、".join(f"第 {index} 张" for index in failed_indices[:4])
+        suffix = " 等" if len(failed_indices) > 4 else ""
+        return f"{shown}{suffix}没跑出来，需要的话可以再补一轮。"
+
     def _build_batch_forward_nodes(
         self,
         event: AstrMessageEvent,
         results: list[BatchRunResult[ExecutedImageTask]],
         *,
         title: str,
-    ) -> list[Node]:
+    ) -> Nodes:
         bot_uin = self._get_event_self_id(event) or "0"
         bot_name = "AstrBot"
-        success_count = sum(1 for result in results if result.success and result.value)
-        failed_count = len(results) - success_count
-        header = (
-            f"📦 {title}\n"
-            f"总数：{len(results)}\n"
-            f"成功：{success_count}\n"
-            f"失败：{failed_count}"
-        )
-        nodes = [Node(uin=bot_uin, name=bot_name, content=[Plain(header)])]
+        nodes = [
+            Node(
+                uin=bot_uin,
+                name=bot_name,
+                content=[
+                    Plain(
+                        self._build_batch_intro_text(
+                            title,
+                            results,
+                            send_mode="merge_forward",
+                        )
+                    )
+                ],
+            )
+        ]
 
         for result in results:
-            index = result.index + 1
             if result.success and result.value is not None:
-                meta = result.value.task_meta or {}
-                prompt_summary = self._truncate_text(
-                    meta.get("effective_prompt") or result.value.spec.effective_prompt,
-                    limit=120,
-                )
-                label = self._batch_mode_label(result.value.spec)
-                title_line = ""
-                if result.value.spec.variant_title:
-                    title_line = f"标题：{result.value.spec.variant_title}\n"
-                content = [
-                    Plain(
-                        f"#{index} {label}\n"
-                        f"{title_line}"
-                        f"提示词：{prompt_summary}\n"
-                        "状态：成功"
-                    ),
-                    Image.fromFileSystem(str(result.value.image_path)),
-                ]
+                content = [Image.fromFileSystem(str(result.value.image_path))]
                 nodes.append(Node(uin=bot_uin, name=bot_name, content=content))
-                continue
-
-            reason = self._truncate_text(result.error or "unknown error", limit=160)
+        failure_text = self._build_batch_failure_text(results)
+        if failure_text:
             nodes.append(
-                Node(
-                    uin=bot_uin,
-                    name=bot_name,
-                    content=[
-                        Plain(
-                            f"#{index} 任务失败\n"
-                            f"原因：{reason}"
-                        )
-                    ],
-                )
+                Node(uin=bot_uin, name=bot_name, content=[Plain(failure_text)])
             )
 
-        return nodes
+        return Nodes(nodes)
 
-    async def _send_batch_results_fallback(
+    async def _send_batch_results_single(
         self,
         event: AstrMessageEvent,
         results: list[BatchRunResult[ExecutedImageTask]],
         *,
         title: str,
     ) -> None:
-        success_count = sum(1 for result in results if result.success and result.value)
-        failed_count = len(results) - success_count
-        await event.send(
-            event.plain_result(
-                f"📦 {title}\n总数：{len(results)}\n成功：{success_count}\n失败：{failed_count}"
-            )
+        success_count, failed_count = self._count_batch_outcomes(results)
+        intro_text = self._build_batch_intro_text(
+            title,
+            results,
+            send_mode="single_message",
         )
+        if intro_text:
+            await event.send(event.plain_result(intro_text))
         for result in results:
-            index = result.index + 1
             if result.success and result.value is not None:
-                meta = result.value.task_meta or {}
-                prompt_summary = self._truncate_text(
-                    meta.get("effective_prompt") or result.value.spec.effective_prompt,
-                    limit=120,
-                )
-                title_line = ""
-                if result.value.spec.variant_title:
-                    title_line = f"标题：{result.value.spec.variant_title}\n"
-                await event.send(
-                    event.plain_result(
-                        f"#{index} {self._batch_mode_label(result.value.spec)}\n"
-                        f"{title_line}"
-                        f"提示词：{prompt_summary}\n"
-                        "状态：成功"
-                    )
-                )
                 await self._send_image_with_fallback(event, result.value.image_path)
-            else:
-                reason = self._truncate_text(
-                    result.error or "unknown error",
-                    limit=160,
-                )
-                await event.send(
-                    event.plain_result(f"#{index} 任务失败\n原因：{reason}")
-                )
+        if failed_count > 0 and success_count > 0:
+            await event.send(event.plain_result(self._build_batch_failure_text(results)))
 
     async def _send_batch_results(
         self,
@@ -2753,14 +2792,20 @@ class GiteeAIImagePlugin(Star):
         *,
         title: str,
     ) -> None:
+        send_mode = self._get_batch_result_send_mode()
+        success_count, _ = self._count_batch_outcomes(results)
+        if send_mode == "single_message" or success_count <= 0:
+            await self._send_batch_results_single(event, results, title=title)
+            return
+
         nodes = self._build_batch_forward_nodes(event, results, title=title)
         try:
-            await event.send(event.chain_result(nodes))
+            await event.send(event.chain_result([nodes]))
         except Exception as exc:
             if not self._should_fallback_batch_forward():
                 raise
             logger.warning("[batch] 合并转发失败，回退普通消息: %s", exc)
-            await self._send_batch_results_fallback(event, results, title=title)
+            await self._send_batch_results_single(event, results, title=title)
 
     async def _plan_batch_prompt_items(
         self,
