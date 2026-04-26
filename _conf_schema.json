@@ -319,22 +319,6 @@
             "description": "单次批量最大张数",
             "hint": "超过此数量将直接拒绝，避免一次性提交过多任务。",
             "default": 8
-          },
-          "result_send_mode": {
-            "type": "string",
-            "description": "批量结果发送方式",
-            "hint": "merge_forward=合并转发；single_message=单张发送。单张发送会尽量只发自然语言短句和图片本体。",
-            "options": [
-              "merge_forward",
-              "single_message"
-            ],
-            "default": "merge_forward"
-          },
-          "forward_fallback_to_messages": {
-            "type": "bool",
-            "description": "合并转发失败时回退普通消息",
-            "hint": "关闭后，合并转发失败会直接报错；开启后会按顺序发送普通消息。",
-            "default": true
           }
         }
       }

@@ -12,16 +12,14 @@
   - `/批量n 自拍 ...`
   - `/批量n 改图预设名 ...`
 - 新增 `LLM` 批量工具 `aiimg_batch_generate`，支持先规划多条不重复提示词，再一次性批量生成整组图片。
-- 批量结果发送支持真正的合并转发节点打包，避免只发出摘要头部、图片丢在外面的错误表现。
-- 单张发送模式改为拟人化极简输出，默认不再附带“标题 / 提示词 / 状态”这类报表式文本。
+- 批量结果统一改为单张直接发送。
+- 批量发送不再额外附带“标题 / 提示词 / 状态 / 失败提示”这类通知文本，只保留原插件自己的表情反馈。
 
 ### 配置增强
 
 - 新增 `features.draw.batch_concurrency`，单独控制文生图批量并发。
 - 新增 `features.edit.batch_concurrency`，单独控制改图 / 自拍批量并发。
 - 新增 `features.batch.max_count`，控制单次批量最大数量，默认 `8`。
-- 新增 `features.batch.result_send_mode`，支持 `merge_forward` / `single_message` 两种批量结果发送方式。
-- 新增 `features.batch.forward_fallback_to_messages`，控制合并转发失败时是否自动回退普通消息。
 - 新增 provider 级 `generate_request_mode` / `edit_request_mode`，支持 `auto`、`stream`、`non_stream`。
 
 ### LLM 工具与批量规划
