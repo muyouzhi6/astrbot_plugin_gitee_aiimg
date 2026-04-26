@@ -74,6 +74,18 @@
                 }
               }
             }
+          },
+          "presets": {
+            "type": "list",
+            "description": "文生图预设提示词",
+            "hint": "格式：预设名:英文提示词。例如：手办:Transform into collectible figurine style",
+            "default": []
+          },
+          "batch_concurrency": {
+            "type": "int",
+            "description": "文生图批量并发数",
+            "hint": "批量命令执行文生图时，同时并行跑多少个任务。",
+            "default": 2
           }
         }
       },
@@ -137,6 +149,12 @@
             "description": "改图预设提示词",
             "hint": "格式：预设名:英文提示词。例如：手办化:Transform into figurine style",
             "default": []
+          },
+          "batch_concurrency": {
+            "type": "int",
+            "description": "改图/自拍批量并发数",
+            "hint": "批量命令执行改图或自拍时，同时并行跑多少个任务。",
+            "default": 2
           }
         }
       },
@@ -289,6 +307,24 @@
               "step": 30
             },
             "default": 300
+          }
+        }
+      },
+      "batch": {
+        "description": "批量图片任务",
+        "type": "object",
+        "items": {
+          "max_count": {
+            "type": "int",
+            "description": "单次批量最大张数",
+            "hint": "超过此数量将直接拒绝，避免一次性提交过多任务。",
+            "default": 8
+          },
+          "forward_fallback_to_messages": {
+            "type": "bool",
+            "description": "合并转发失败时回退普通消息",
+            "hint": "关闭后，合并转发失败会直接报错；开启后会按顺序发送普通消息。",
+            "default": true
           }
         }
       }
@@ -447,6 +483,28 @@
             "description": "模型名称",
             "default": "gemini-3-pro-image-preview"
           },
+          "generate_request_mode": {
+            "type": "string",
+            "description": "文生图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
+          "edit_request_mode": {
+            "type": "string",
+            "description": "改图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
           "default_resolution": {
             "type": "string",
             "description": "默认分辨率",
@@ -506,6 +564,28 @@
             "description": "模型名称",
             "default": ""
           },
+          "generate_request_mode": {
+            "type": "string",
+            "description": "文生图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
+          "edit_request_mode": {
+            "type": "string",
+            "description": "改图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
@@ -543,6 +623,28 @@
             "description": "模型名称",
             "hint": "示例：gemini-3-pro-image-preview",
             "default": "gemini-3-pro-image-preview"
+          },
+          "generate_request_mode": {
+            "type": "string",
+            "description": "文生图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
+          "edit_request_mode": {
+            "type": "string",
+            "description": "改图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
           },
           "timeout": {
             "type": "int",
@@ -629,6 +731,28 @@
             "description": "支持改图 (images.edit)",
             "default": true
           },
+          "generate_request_mode": {
+            "type": "string",
+            "description": "文生图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
+          "edit_request_mode": {
+            "type": "string",
+            "description": "改图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
@@ -701,6 +825,28 @@
             "description": "支持改图 (images.edit)",
             "default": true
           },
+          "generate_request_mode": {
+            "type": "string",
+            "description": "文生图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
+          "edit_request_mode": {
+            "type": "string",
+            "description": "改图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
@@ -761,6 +907,28 @@
             "description": "支持改图（图文输入）",
             "default": true
           },
+          "generate_request_mode": {
+            "type": "string",
+            "description": "文生图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
+          "edit_request_mode": {
+            "type": "string",
+            "description": "改图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
@@ -820,6 +988,28 @@
             "type": "bool",
             "description": "支持改图 (images.edit)",
             "default": true
+          },
+          "generate_request_mode": {
+            "type": "string",
+            "description": "文生图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
+          "edit_request_mode": {
+            "type": "string",
+            "description": "改图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
           },
           "timeout": {
             "type": "int",
@@ -885,6 +1075,28 @@
             "description": "支持改图（图文输入）",
             "default": true
           },
+          "generate_request_mode": {
+            "type": "string",
+            "description": "文生图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
+          "edit_request_mode": {
+            "type": "string",
+            "description": "改图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
@@ -940,6 +1152,28 @@
             "description": "模型名称",
             "default": ""
           },
+          "generate_request_mode": {
+            "type": "string",
+            "description": "文生图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
+          "edit_request_mode": {
+            "type": "string",
+            "description": "改图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
@@ -993,6 +1227,28 @@
             "type": "bool",
             "description": "支持改图 (images.edit)",
             "default": true
+          },
+          "generate_request_mode": {
+            "type": "string",
+            "description": "文生图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
+          "edit_request_mode": {
+            "type": "string",
+            "description": "改图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
           },
           "timeout": {
             "type": "int",
@@ -1058,6 +1314,28 @@
             "description": "支持改图（图文输入）",
             "default": true
           },
+          "generate_request_mode": {
+            "type": "string",
+            "description": "文生图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
+          "edit_request_mode": {
+            "type": "string",
+            "description": "改图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
@@ -1111,6 +1389,28 @@
             "type": "string",
             "description": "模型名称",
             "default": "z-image-turbo"
+          },
+          "generate_request_mode": {
+            "type": "string",
+            "description": "文生图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
+          "edit_request_mode": {
+            "type": "string",
+            "description": "改图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
           },
           "timeout": {
             "type": "int",
@@ -1190,6 +1490,28 @@
             "type": "string",
             "description": "模型名称",
             "default": "Qwen-Image-Edit-2511"
+          },
+          "generate_request_mode": {
+            "type": "string",
+            "description": "文生图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
+          "edit_request_mode": {
+            "type": "string",
+            "description": "改图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
           },
           "num_inference_steps": {
             "type": "int",
@@ -1280,6 +1602,28 @@
             "type": "string",
             "description": "默认模型",
             "default": "Seedream 4.0"
+          },
+          "generate_request_mode": {
+            "type": "string",
+            "description": "文生图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
+          "edit_request_mode": {
+            "type": "string",
+            "description": "改图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
           },
           "timeout": {
             "type": "int",
@@ -1446,6 +1790,28 @@
             "type": "bool",
             "description": "支持改图 (images.edit)",
             "default": false
+          },
+          "generate_request_mode": {
+            "type": "string",
+            "description": "文生图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
+          "edit_request_mode": {
+            "type": "string",
+            "description": "改图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
           },
           "timeout": {
             "type": "int",

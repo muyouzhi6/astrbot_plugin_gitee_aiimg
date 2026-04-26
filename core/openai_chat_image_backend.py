@@ -49,6 +49,15 @@ _KNOWN_TRUSTED_RESULT_ORIGINS: dict[str, set[str]] = {
     },
 }
 
+_REQUEST_MODE_ALIASES = {
+    "auto": "auto",
+    "stream": "stream",
+    "non_stream": "non_stream",
+    "non-stream": "non_stream",
+    "nonstream": "non_stream",
+    "non stream": "non_stream",
+}
+
 
 def _parse_png_size(image_bytes: bytes) -> tuple[int, int] | None:
     if len(image_bytes) < 24:
@@ -618,6 +627,10 @@ class OpenAIChatImageBackend:
         supports_edit: bool = True,
         extra_body: dict | None = None,
         proxy_url: str | None = None,
+        generate_request_mode: str | None = None,
+        edit_request_mode: str | None = None,
+        enable_stream_generate: bool | None = None,
+        enable_stream_edit: bool | None = None,
     ):
         self.imgr = imgr
         self.base_url = normalize_openai_compat_base_url(base_url)
@@ -628,12 +641,59 @@ class OpenAIChatImageBackend:
         self.supports_edit = bool(supports_edit)
         self.extra_body = extra_body or {}
         self.proxy_url = str(proxy_url or "").strip() or None
+        self.generate_request_mode = self._resolve_request_mode(
+            generate_request_mode,
+            legacy_stream_enabled=enable_stream_generate,
+        )
+        self.edit_request_mode = self._resolve_request_mode(
+            edit_request_mode,
+            legacy_stream_enabled=enable_stream_edit,
+        )
+        self.enable_stream_generate = self._should_try_stream("generate")
+        self.enable_stream_edit = self._should_try_stream("edit")
 
         self._key_index = 0
         self._clients: dict[str, AsyncOpenAI] = {}
         self._http_client = None
         self._prefer_file_service_url_input = False
         self._trusted_result_origins = self._build_trusted_result_origins()
+
+    @staticmethod
+    def _normalize_request_mode(value: object) -> str:
+        if isinstance(value, bool):
+            return "stream" if value else "non_stream"
+        text = str(value or "").strip().lower()
+        if not text:
+            return ""
+        return _REQUEST_MODE_ALIASES.get(text, "")
+
+    @classmethod
+    def _resolve_request_mode(
+        cls,
+        mode_value: object,
+        *,
+        legacy_stream_enabled: bool | None = None,
+    ) -> str:
+        normalized = cls._normalize_request_mode(mode_value)
+        if normalized and normalized != "auto":
+            return normalized
+        if legacy_stream_enabled is not None:
+            return "stream" if legacy_stream_enabled else "non_stream"
+        if normalized == "auto":
+            return "auto"
+        return "auto"
+
+    def _should_try_stream(self, operation: str) -> bool:
+        request_mode = (
+            self.generate_request_mode
+            if operation == "generate"
+            else self.edit_request_mode
+        )
+        if request_mode == "stream":
+            return True
+        if request_mode == "non_stream":
+            return False
+        return operation == "generate"
 
     @staticmethod
     def _supports_http_client_param() -> bool:
@@ -1632,47 +1692,48 @@ class OpenAIChatImageBackend:
         )
 
         stream_error: Exception | None = None
-        stream_messages = [
-            {
-                "role": "user",
-                "content": self._build_generate_prompt(
-                    prompt,
-                    size=size,
-                    resolution=resolution,
-                    strict_format=False,
-                ),
-            }
-        ]
-        try:
-            refs, videos, debug_snippet = await self._run_chat_request_with_retries(
-                lambda: self._stream_chat_completion(
-                    key=key,
+        if self._should_try_stream("generate"):
+            stream_messages = [
+                {
+                    "role": "user",
+                    "content": self._build_generate_prompt(
+                        prompt,
+                        size=size,
+                        resolution=resolution,
+                        strict_format=False,
+                    ),
+                }
+            ]
+            try:
+                refs, videos, debug_snippet = await self._run_chat_request_with_retries(
+                    lambda: self._stream_chat_completion(
+                        key=key,
+                        model=final_model,
+                        messages=stream_messages,
+                        extra_body=eb or None,
+                        log_tag="generate",
+                    ),
                     model=final_model,
-                    messages=stream_messages,
-                    extra_body=eb or None,
                     log_tag="generate",
-                ),
-                model=final_model,
-                log_tag="generate",
-                input_mode="prompt_only",
-            )
-            if refs:
-                return await self._save_from_ref(
-                    refs[0], debug_snippet=debug_snippet, fallback_refs=refs[1:]
+                    input_mode="prompt_only",
                 )
-            if videos:
-                raise RuntimeError(
-                    f"chat 返回了视频而不是图片：{videos[0]}（如果想要视频请用 /视频；如果想要图片请换模型或改用 images 接口）"
+                if refs:
+                    return await self._save_from_ref(
+                        refs[0], debug_snippet=debug_snippet, fallback_refs=refs[1:]
+                    )
+                if videos:
+                    raise RuntimeError(
+                        f"chat 返回了视频而不是图片：{videos[0]}（如果想要视频请用 /视频；如果想要图片请换模型或改用 images 接口）"
+                    )
+                stream_error = RuntimeError("stream 未解析到图片引用")
+                logger.warning(
+                    "[OpenAIChatImage][generate] 流式模式未解析到图片，回退非流式"
                 )
-            stream_error = RuntimeError("stream 未解析到图片引用")
-            logger.warning(
-                "[OpenAIChatImage][generate] 流式模式未解析到图片，回退非流式"
-            )
-        except Exception as e:
-            stream_error = e
-            logger.warning(
-                "[OpenAIChatImage][generate] 流式模式失败，回退非流式: %s", e
-            )
+            except Exception as e:
+                stream_error = e
+                logger.warning(
+                    "[OpenAIChatImage][generate] 流式模式失败，回退非流式: %s", e
+                )
 
         user_text = self._build_generate_prompt(
             prompt,
@@ -1775,42 +1836,45 @@ class OpenAIChatImageBackend:
             prefetched_image_urls = await self._register_input_image_urls(images)
 
         stream_error: Exception | None = None
-        stream_parts = self._build_edit_parts(
-            self._build_edit_text(
-                prompt,
-                size=size,
-                resolution=resolution,
-                strict_format=False,
-            ),
-            images,
-            image_urls=prefetched_image_urls,
-        )
-        try:
-            refs, videos, debug_snippet = await self._run_chat_request_with_retries(
-                lambda: self._stream_chat_completion(
-                    key=key,
-                    model=final_model,
-                    messages=[{"role": "user", "content": stream_parts}],
-                    extra_body=eb or None,
-                    log_tag="edit",
+        if self._should_try_stream("edit"):
+            stream_parts = self._build_edit_parts(
+                self._build_edit_text(
+                    prompt,
+                    size=size,
+                    resolution=resolution,
+                    strict_format=False,
                 ),
-                model=final_model,
-                log_tag="edit",
-                input_mode="data_url" if prefetched_image_urls is None else "file_service_url",
+                images,
+                image_urls=prefetched_image_urls,
             )
-            if refs:
-                return await self._save_from_ref(
-                    refs[0], debug_snippet=debug_snippet, fallback_refs=refs[1:]
+            try:
+                refs, videos, debug_snippet = await self._run_chat_request_with_retries(
+                    lambda: self._stream_chat_completion(
+                        key=key,
+                        model=final_model,
+                        messages=[{"role": "user", "content": stream_parts}],
+                        extra_body=eb or None,
+                        log_tag="edit",
+                    ),
+                    model=final_model,
+                    log_tag="edit",
+                    input_mode="data_url"
+                    if prefetched_image_urls is None
+                    else "file_service_url",
                 )
-            if videos:
-                raise RuntimeError(
-                    f"chat 返回了视频而不是图片：{videos[0]}（如果想要视频请用 /视频；如果想要图片请换模型或改用 images 接口）"
-                )
-            stream_error = RuntimeError("stream 未解析到图片引用")
-            logger.warning("[OpenAIChatImage][edit] 流式模式未解析到图片，回退非流式")
-        except Exception as e:
-            stream_error = e
-            logger.warning("[OpenAIChatImage][edit] 流式模式失败，回退非流式: %s", e)
+                if refs:
+                    return await self._save_from_ref(
+                        refs[0], debug_snippet=debug_snippet, fallback_refs=refs[1:]
+                    )
+                if videos:
+                    raise RuntimeError(
+                        f"chat 返回了视频而不是图片：{videos[0]}（如果想要视频请用 /视频；如果想要图片请换模型或改用 images 接口）"
+                    )
+                stream_error = RuntimeError("stream 未解析到图片引用")
+                logger.warning("[OpenAIChatImage][edit] 流式模式未解析到图片，回退非流式")
+            except Exception as e:
+                stream_error = e
+                logger.warning("[OpenAIChatImage][edit] 流式模式失败，回退非流式: %s", e)
 
         parts = self._build_edit_parts(
             self._build_edit_text(

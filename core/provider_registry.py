@@ -54,6 +54,48 @@ _TEMPLATE_KEY_ALIASES: dict[str, str] = {
     "modelscope": "modelscope_openai_images",
 }
 
+_REQUEST_MODE_PROVIDER_TEMPLATES = {
+    "flow2api",
+    "gemini_native",
+    "gemini_openai_chat",
+    "gemini_openai_images",
+    "gitee_async",
+    "gitee_images",
+    "grok2api_images",
+    "grok_chat",
+    "grok_images",
+    "jimeng",
+    "modelscope_openai_images",
+    "openai_chat",
+    "openai_full_url_images",
+    "openai_images",
+    "vertex_ai_anonymous",
+}
+
+_REQUEST_MODE_EFFECTIVE_PROVIDER_TEMPLATES = {
+    "gemini_openai_chat",
+    "grok_chat",
+    "openai_chat",
+}
+
+_REQUEST_MODE_ALIASES = {
+    "auto": "auto",
+    "stream": "stream",
+    "non_stream": "non_stream",
+    "non-stream": "non_stream",
+    "nonstream": "non_stream",
+    "non stream": "non_stream",
+}
+
+
+def _normalize_request_mode(value: Any) -> str:
+    if isinstance(value, bool):
+        return "stream" if value else "non_stream"
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    return _REQUEST_MODE_ALIASES.get(text, "")
+
 
 class ProviderRegistry:
     """Build and cache provider backends from v4 config."""
@@ -144,6 +186,75 @@ class ProviderRegistry:
                 normalized["__template_key"] = template_key
             self._providers[provider_id] = normalized
 
+    @staticmethod
+    def _resolve_request_mode(conf: dict, operation: str) -> str:
+        field = f"{operation}_request_mode"
+        normalized = _normalize_request_mode(conf.get(field))
+        if normalized and normalized != "auto":
+            return normalized
+
+        legacy_field = f"enable_stream_{operation}"
+        legacy_value = conf.get(legacy_field)
+        if isinstance(legacy_value, bool):
+            return "stream" if legacy_value else "non_stream"
+        if normalized == "auto":
+            return "auto"
+        return "auto"
+
+    @staticmethod
+    def _request_mode_fallback_message(
+        provider_id: str,
+        item: dict,
+        field: str,
+    ) -> str:
+        operation = "generate" if field.startswith("generate_") else "edit"
+        legacy_field = f"enable_stream_{operation}"
+        legacy_value = item.get(legacy_field)
+        if isinstance(legacy_value, bool):
+            legacy_text = "true" if legacy_value else "false"
+            resolved = "stream" if legacy_value else "non_stream"
+            return (
+                f"provider '{provider_id}' invalid {field}: {item.get(field)}; "
+                f"runtime will fallback to {resolved} via {legacy_field}={legacy_text}"
+            )
+        return (
+            f"provider '{provider_id}' invalid {field}: {item.get(field)}; "
+            "runtime will fallback to auto"
+        )
+
+    @classmethod
+    def _validate_request_mode(
+        cls,
+        errors: list[str],
+        provider_id: str,
+        item: dict,
+        field: str,
+    ) -> None:
+        raw = item.get(field)
+        if raw in (None, ""):
+            return
+        if _normalize_request_mode(raw):
+            return
+        errors.append(cls._request_mode_fallback_message(provider_id, item, field))
+
+    @staticmethod
+    def _validate_request_mode_support(
+        errors: list[str],
+        provider_id: str,
+        template_key: str,
+        item: dict,
+        field: str,
+    ) -> None:
+        if template_key in _REQUEST_MODE_EFFECTIVE_PROVIDER_TEMPLATES:
+            return
+        normalized = _normalize_request_mode(item.get(field))
+        if normalized not in {"stream", "non_stream"}:
+            return
+        errors.append(
+            f"provider '{provider_id}' set {field}={normalized}, "
+            f"but template '{template_key}' currently ignores request_mode (single-path backend)"
+        )
+
     def validate(self) -> list[str]:
         """Return human-readable validation errors. Never raises."""
         errors: list[str] = []
@@ -174,6 +285,28 @@ class ProviderRegistry:
             if not template_key:
                 errors.append(f"providers[{idx}].__template_key is required")
                 continue
+
+            if template_key in _REQUEST_MODE_PROVIDER_TEMPLATES:
+                self._validate_request_mode(
+                    errors, provider_id, item, "generate_request_mode"
+                )
+                self._validate_request_mode(
+                    errors, provider_id, item, "edit_request_mode"
+                )
+                self._validate_request_mode_support(
+                    errors,
+                    provider_id,
+                    template_key,
+                    item,
+                    "generate_request_mode",
+                )
+                self._validate_request_mode_support(
+                    errors,
+                    provider_id,
+                    template_key,
+                    item,
+                    "edit_request_mode",
+                )
 
             # Minimal required fields per provider type.
             if template_key in {
@@ -401,6 +534,10 @@ class ProviderRegistry:
                 supports_edit=bool(conf.get("supports_edit", True)),
                 extra_body=_as_dict(conf.get("extra_body")) or None,
                 proxy_url=str(conf.get("proxy_url") or "").strip() or None,
+                generate_request_mode=self._resolve_request_mode(conf, "generate"),
+                edit_request_mode=self._resolve_request_mode(conf, "edit"),
+                enable_stream_generate=conf.get("enable_stream_generate"),
+                enable_stream_edit=conf.get("enable_stream_edit"),
             )
 
         if template_key == "grok2api_images":

@@ -15,6 +15,7 @@ import base64
 import io
 import json
 import math
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,7 @@ from astrbot.api.message_components import (
     AtAll,
     File,
     Image,
+    Node,
     Plain,
     Reply,
     Video,
@@ -36,10 +38,22 @@ from astrbot.api.message_components import (
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
+from .core.batch_executor import BatchRunResult, run_batch
 from .core.debouncer import Debouncer
 from .core.draw_service import ImageDrawService
 from .core.edit_router import EditRouter
 from .core.emoji_feedback import mark_failed, mark_processing, mark_success
+from .core.image_task_parser import (
+    ImageTaskSpec,
+    ParsedImageRequest,
+    parse_image_request,
+)
+from .core.llm_batch_planner import (
+    PlannedPromptItem,
+    build_batch_planning_prompt,
+    parse_planned_prompt_items,
+    validate_planned_prompt_items,
+)
 from .core.gitee_sizes import (
     GITEE_SUPPORTED_RATIOS,
     normalize_size_text,
@@ -54,6 +68,10 @@ from .core.utils import close_session, get_images_from_event
 from .core.video_manager import VideoManager
 
 
+_BATCH_COMMAND_PATTERN = re.compile(r"[/!！.。．]批量(?:\s*\d+|\d+)")
+_async_pause = asyncio.sleep
+
+
 @dataclass(slots=True)
 class SendImageResult:
     ok: bool
@@ -64,6 +82,13 @@ class SendImageResult:
 
     def __bool__(self) -> bool:
         return self.ok
+
+
+@dataclass(slots=True)
+class ExecutedImageTask:
+    spec: ImageTaskSpec
+    image_path: Path
+    task_meta: dict[str, Any]
 
 
 class GiteeAIImagePlugin(Star):
@@ -527,6 +552,7 @@ class GiteeAIImagePlugin(Star):
         logger.info(
             f"[GiteeAIImagePlugin] 插件初始化完成: "
             f"改图后端={self.edit.get_available_backends()}, "
+            f"文生图预设={len(self._get_draw_presets())}个, "
             f"改图预设={len(self.edit.get_preset_names())}个, "
             f"视频启用={bool(self._get_feature('video').get('enabled', False))}, "
             f"视频预设={len(self._get_video_presets())}个"
@@ -922,7 +948,7 @@ class GiteeAIImagePlugin(Star):
                 break
 
             if attempt < attempts:
-                await asyncio.sleep(delay)
+                await _async_pause(delay)
                 delay = min(delay * 1.8, 8.0)
 
         reason = (
@@ -1166,7 +1192,46 @@ class GiteeAIImagePlugin(Star):
 
     # ==================== 文生图 ====================
 
-    @filter.command("aiimg", alias={"文生图", "生图", "画图", "绘图", "出图"})
+    @filter.command("文生图")
+    async def generate_image_with_presets(self, event: AstrMessageEvent):
+        """支持文生图预设的图片生成命令。"""
+        event.should_call_llm(True)
+        parsed = self._parse_structured_image_request(event.message_str)
+        if parsed is None or parsed.spec.source_command != "文生图":
+            await mark_failed(event)
+            return
+
+        spec = parsed.spec
+        if not str(spec.effective_prompt or "").strip():
+            await mark_failed(event)
+            return
+
+        user_id = str(event.get_sender_id() or "")
+        request_id = self._debounce_key(event, "draw_preset", user_id)
+        if self.debouncer.hit(request_id):
+            await mark_failed(event)
+            return
+        if not await self._begin_user_job(user_id, kind="image"):
+            await mark_failed(event)
+            return
+
+        try:
+            await mark_processing(event)
+            executed = await self._execute_image_task_spec(event, spec)
+            self._remember_last_image(event, executed.image_path)
+            sent = await self._send_image_with_fallback(event, executed.image_path)
+            if not sent:
+                await mark_failed(event)
+                return
+            await self._save_last_image_task_meta(event, executed.task_meta)
+            await mark_success(event)
+        except Exception as exc:
+            logger.error("[文生图预设] 失败: %s", exc, exc_info=True)
+            await mark_failed(event)
+        finally:
+            await self._end_user_job(user_id, kind="image")
+
+    @filter.command("aiimg", alias={"生图", "画图", "绘图", "出图"})
     async def generate_image_command(self, event: AstrMessageEvent, prompt: str):
         """生成图片指令
 
@@ -1236,6 +1301,50 @@ class GiteeAIImagePlugin(Star):
 
         except Exception as e:
             logger.error(f"[文生图] 失败: {e}")
+            await mark_failed(event)
+        finally:
+            await self._end_user_job(user_id, kind="image")
+
+    @filter.regex(r"[/!！.。．]批量(?:\s*\d+|\d+)(?:\s|$)", priority=-10)
+    async def batch_image_command(self, event: AstrMessageEvent):
+        """批量图片任务入口。"""
+        event.should_call_llm(True)
+        fragment = self._extract_batch_command_fragment(event.message_str)
+        parsed = self._parse_structured_image_request(fragment)
+        if parsed is None or parsed.batch_count <= 1:
+            await mark_failed(event)
+            return
+        if parsed.batch_count > self._get_batch_max_count():
+            await event.send(
+                event.plain_result(
+                    f"批量数量过大，当前上限为 {self._get_batch_max_count()}。"
+                )
+            )
+            await mark_failed(event)
+            return
+
+        user_id = str(event.get_sender_id() or "")
+        request_id = self._debounce_key(event, "batch_image", user_id)
+        if self.debouncer.hit(request_id):
+            await mark_failed(event)
+            return
+        if not await self._begin_user_job(user_id, kind="image"):
+            await mark_failed(event)
+            return
+
+        try:
+            await mark_processing(event)
+            specs = [parsed.spec for _ in range(parsed.batch_count)]
+            results = await self._run_batch_specs(event, specs)
+            title = f"{self._batch_mode_label(parsed.spec)} x{parsed.batch_count}"
+            await self._send_batch_results(event, results, title=title)
+            if any(result.success and result.value for result in results):
+                await self._remember_batch_success(event, results)
+                await mark_success(event)
+            else:
+                await mark_failed(event)
+        except Exception as exc:
+            logger.error("[批量图片] 失败: %s", exc, exc_info=True)
             await mark_failed(event)
         finally:
             await self._end_user_job(user_id, kind="image")
@@ -1618,6 +1727,48 @@ class GiteeAIImagePlugin(Star):
 
     # ==================== 管理命令 ====================
 
+    @filter.command("文生图预设列表")
+    async def list_draw_presets(self, event: AstrMessageEvent):
+        """列出所有可用文生图预设"""
+        event.should_call_llm(True)
+        presets = self._get_draw_presets()
+        backends = self.draw._candidate_ids()
+        draw_conf = self._get_feature("draw")
+        chain = []
+        for it in (
+            draw_conf.get("chain", [])
+            if isinstance(draw_conf.get("chain", []), list)
+            else []
+        ):
+            pid = self._extract_chain_provider_id(it)
+            if pid and pid not in chain:
+                chain.append(pid)
+
+        if not presets:
+            msg = "📋 文生图预设列表\n"
+            msg += "━━━━━━━━━━━━━━\n"
+            msg += f"🔧 可用后端: {', '.join(backends)}\n"
+            if chain:
+                msg += f"⭐ 当前链路: {', '.join(chain)}\n"
+            msg += "━━━━━━━━━━━━━━\n"
+            msg += "📌 暂无预设\n"
+            msg += "━━━━━━━━━━━━━━\n"
+            msg += "💡 在配置 features.draw.presets 中添加:\n"
+            msg += '  格式: "预设名:英文提示词"'
+        else:
+            msg = "📋 文生图预设列表\n"
+            msg += "━━━━━━━━━━━━━━\n"
+            msg += f"🔧 可用后端: {', '.join(backends)}\n"
+            if chain:
+                msg += f"⭐ 当前链路: {', '.join(chain)}\n"
+            msg += "━━━━━━━━━━━━━━\n"
+            msg += "📌 预设:\n"
+            for name in presets:
+                msg += f"  • {name}\n"
+        msg += "━━━━━━━━━━━━━━\n"
+        msg += "💡 用法: /文生图 [@provider_id] <预设名> [补充提示词]"
+        yield event.plain_result(msg)
+
     @filter.command("预设列表")
     async def list_presets(self, event: AstrMessageEvent):
         """列出所有可用预设"""
@@ -1990,6 +2141,144 @@ class GiteeAIImagePlugin(Star):
         finally:
             await self._end_user_job(user_id, kind="image")
 
+    @filter.llm_tool(name="aiimg_batch_generate")
+    async def aiimg_batch_generate(
+        self,
+        event: AstrMessageEvent,
+        prompt: str,
+        count: int = 4,
+        mode: str = "auto",
+        backend: str = "auto",
+        output: str = "",
+    ):
+        """规划并批量生成一组图片。
+
+        使用建议（给 LLM 的决策规则）：
+        - 当用户明确想要一组不重复但同主题的图片时，优先调用这个工具。
+        - 先规划多条不同 prompt，再批量执行，不要自己重复调用单图工具。
+
+        Args:
+            prompt(string): 用户的总要求。应包含整组图片共同要满足的条件。
+            count(number): 目标数量。建议 2-8。
+            mode(string): auto=自动判断, text=文生图, edit=改图, selfie_ref=参考照自拍
+            backend(string): auto=自动选择；也可填 provider_id（你在 WebUI providers 里配置的 id）
+            output(string): 输出尺寸/分辨率。例: 2048x2048 或 4K（不同后端支持能力不同，留空用默认）
+        """
+        prompt = str(prompt or "").strip()
+        if not prompt:
+            await self._signal_llm_tool_failure(event)
+            return self._llm_tool_text_result("Batch image planning failed because no prompt was provided.")
+
+        target_count = self._as_int(count, default=4)
+        target_count = max(1, min(self._get_batch_max_count(), target_count))
+        resolved_mode = await self._resolve_llm_batch_mode(event, mode, prompt)
+        target_backend = self._resolve_target_backend(backend)
+
+        output = (output or "").strip()
+        size = output if output and "x" in output else None
+        resolution = output if output and size is None else None
+
+        if resolved_mode == "draw":
+            draw_conf = self._get_feature("draw")
+            if not bool(draw_conf.get("enabled", True)) or not bool(
+                draw_conf.get("llm_tool_enabled", True)
+            ):
+                await self._signal_llm_tool_failure(event)
+                return self._llm_tool_text_result(
+                    "The requested batch text-to-image tool is disabled by plugin configuration."
+                )
+        elif resolved_mode == "edit":
+            edit_conf = self._get_feature("edit")
+            if not bool(edit_conf.get("enabled", True)) or not bool(
+                edit_conf.get("llm_tool_enabled", True)
+            ):
+                await self._signal_llm_tool_failure(event)
+                return self._llm_tool_text_result(
+                    "The requested batch image editing tool is disabled by plugin configuration."
+                )
+        elif resolved_mode == "selfie_ref":
+            if not self._is_selfie_enabled() or not self._is_selfie_llm_enabled():
+                await self._signal_llm_tool_failure(event)
+                return self._llm_tool_text_result(
+                    "The requested batch selfie image tool is disabled by plugin configuration."
+                )
+
+        message_id = (
+            getattr(getattr(event, "message_obj", None), "message_id", "") or ""
+        )
+        origin = getattr(event, "unified_msg_origin", "") or ""
+        if message_id and origin and self.debouncer.llm_tool_is_duplicate(message_id, origin):
+            await mark_success(event)
+            return self._llm_tool_text_result(
+                "This batch image request was already handled for the same message. Do not run it again."
+            )
+
+        user_id = str(event.get_sender_id() or "")
+        request_id = self._debounce_key(event, "aiimg_batch", user_id)
+        if self.debouncer.hit(request_id):
+            await mark_success(event)
+            return self._llm_tool_text_result(
+                "This batch image request is already being handled or was just handled. Do not resubmit unless the user explicitly asks for a new batch."
+            )
+
+        if not await self._begin_user_job(user_id, kind="image"):
+            await mark_success(event)
+            return self._llm_tool_text_result(
+                "A batch image request for this user is already in progress. Do not resubmit unless the user asks for a new request."
+            )
+
+        try:
+            await mark_processing(event)
+            planned_items = await self._plan_batch_prompt_items(
+                mode=resolved_mode,
+                user_prompt=prompt,
+                count=target_count,
+            )
+            specs = [
+                ImageTaskSpec(
+                    mode=resolved_mode,
+                    provider_id=target_backend,
+                    preset_name=None,
+                    user_prompt=item.prompt,
+                    effective_prompt=item.prompt,
+                    source_command="llm_batch",
+                    variant_title=item.title,
+                )
+                for item in planned_items
+            ]
+            results = await self._run_batch_specs(
+                event,
+                specs,
+                size=size,
+                resolution=resolution,
+            )
+            await self._send_batch_results(
+                event,
+                results,
+                title=f"LLM 批量{self._batch_mode_label(specs[0])} x{len(specs)}",
+            )
+            success_count = sum(1 for result in results if result.success and result.value)
+            failed_count = len(results) - success_count
+            if success_count > 0:
+                await self._remember_batch_success(event, results)
+                await mark_success(event)
+            else:
+                await self._signal_llm_tool_failure(event)
+            return self._llm_tool_text_result(
+                "The batch image set has already been generated and sent to the user. "
+                f"Mode={resolved_mode}, success={success_count}, failed={failed_count}. "
+                "Do not send another confirmation message to the user."
+            )
+        except Exception as e:
+            logger.error("[aiimg_batch_generate] 失败: %s", e, exc_info=True)
+            await self._signal_llm_tool_failure(event)
+            return self._llm_tool_text_result(
+                "The batch image request failed and has ended. Reason: "
+                + self._summarize_status_text(e, fallback="unknown error")
+            )
+        finally:
+            await self._end_user_job(user_id, kind="image")
+
     @filter.llm_tool()
     async def grok_generate_video(self, event: AstrMessageEvent, prompt: str):
         """根据用户发送/引用的图片生成视频。
@@ -2079,6 +2368,94 @@ class GiteeAIImagePlugin(Star):
         conf = feats.get(name, {})
         return conf if isinstance(conf, dict) else {}
 
+    def _get_batch_feature(self) -> dict:
+        return self._get_feature("batch")
+
+    def _get_batch_max_count(self) -> int:
+        value = self._as_int(self._get_batch_feature().get("max_count", 8), default=8)
+        return max(1, min(32, value))
+
+    def _get_draw_batch_concurrency(self) -> int:
+        value = self._as_int(
+            self._get_feature("draw").get("batch_concurrency", 2), default=2
+        )
+        return max(1, min(8, value))
+
+    def _get_edit_batch_concurrency(self) -> int:
+        value = self._as_int(
+            self._get_feature("edit").get("batch_concurrency", 2), default=2
+        )
+        return max(1, min(8, value))
+
+    def _should_fallback_batch_forward(self) -> bool:
+        return self._as_bool(
+            self._get_batch_feature().get("forward_fallback_to_messages", True),
+            default=True,
+        )
+
+    def _get_draw_presets(self) -> dict[str, str]:
+        presets: dict[str, str] = {}
+        conf = self._get_feature("draw")
+        items = conf.get("presets", [])
+        if not isinstance(items, list):
+            return presets
+        for item in items:
+            if isinstance(item, str) and ":" in item:
+                key, val = item.split(":", 1)
+                key = key.strip()
+                val = val.strip()
+                if key and val:
+                    presets[key] = val
+        return presets
+
+    def _parse_structured_image_request(self, text: str) -> ParsedImageRequest | None:
+        edit_presets = dict(getattr(self.edit, "presets", {}) or {})
+        return parse_image_request(
+            text,
+            draw_presets=self._get_draw_presets(),
+            edit_presets=edit_presets,
+            known_provider_ids=set(self.registry.provider_ids()),
+        )
+
+    @staticmethod
+    def _extract_batch_command_fragment(message: str) -> str:
+        text = str(message or "")
+        match = _BATCH_COMMAND_PATTERN.search(text)
+        if not match:
+            return ""
+        return text[match.start() :].strip()
+
+    def _batch_mode_label(self, spec: ImageTaskSpec) -> str:
+        if spec.mode == "draw":
+            if spec.preset_name:
+                return f"文生图预设/{spec.preset_name}"
+            return "文生图"
+        if spec.mode == "edit":
+            if spec.preset_name:
+                return f"改图预设/{spec.preset_name}"
+            return "改图"
+        if spec.mode == "selfie_ref":
+            return "自拍"
+        return spec.mode
+
+    def _get_batch_concurrency_for_mode(self, mode: str) -> int:
+        if mode == "draw":
+            return self._get_draw_batch_concurrency()
+        return self._get_edit_batch_concurrency()
+
+    def _resolve_target_backend(self, backend: str | None) -> str | None:
+        raw = str(backend or "auto").strip()
+        known_provider_ids = set(self.registry.provider_ids())
+        if not raw or raw.lower() == "auto":
+            return None
+        if raw in known_provider_ids:
+            return raw
+        logger.warning(
+            "[backend_override] 忽略未知 backend 覆盖，回退自动链路: backend=%s",
+            raw,
+        )
+        return None
+
     def _get_draw_ratio_default_sizes(self) -> dict[str, str]:
         conf = self._get_feature("draw")
         raw = conf.get("ratio_default_sizes", {})
@@ -2146,6 +2523,321 @@ class GiteeAIImagePlugin(Star):
         if first and first in self._get_video_presets():
             return first, rest.strip()
         return None, text
+
+    async def _prepare_edit_image_bytes(self, event: AstrMessageEvent) -> list[bytes]:
+        image_segs = await get_images_from_event(
+            event,
+            include_avatar=True,
+            include_sender_avatar_fallback=False,
+        )
+        if not image_segs:
+            raise RuntimeError("当前消息没有可用输入图片，无法执行改图批量任务。")
+        bytes_images = await self._image_segs_to_bytes(image_segs)
+        if not bytes_images:
+            raise RuntimeError("当前消息图片读取失败，无法执行改图批量任务。")
+        return bytes_images
+
+    async def _execute_image_task_spec(
+        self,
+        event: AstrMessageEvent,
+        spec: ImageTaskSpec,
+        *,
+        prepared_edit_images: list[bytes] | None = None,
+        size: str | None = None,
+        resolution: str | None = None,
+    ) -> ExecutedImageTask:
+        if spec.mode == "draw":
+            prompt = str(spec.effective_prompt or spec.user_prompt or "").strip()
+            if not prompt:
+                raise RuntimeError("文生图提示词为空。")
+            image_path = await self.draw.generate(
+                prompt,
+                provider_id=spec.provider_id,
+                size=size,
+                resolution=resolution,
+            )
+            task_meta = self._build_image_task_meta(
+                mode="text",
+                user_prompt=spec.user_prompt,
+                effective_user_prompt=prompt if spec.preset_name else spec.user_prompt,
+                effective_prompt=prompt,
+                continue_with="text",
+                backend=spec.provider_id,
+            )
+            return ExecutedImageTask(spec=spec, image_path=image_path, task_meta=task_meta)
+
+        if spec.mode == "edit":
+            bytes_images = prepared_edit_images
+            if bytes_images is None:
+                bytes_images = await self._prepare_edit_image_bytes(event)
+            image_path = await self.edit.edit(
+                prompt=spec.user_prompt,
+                images=bytes_images,
+                backend=spec.provider_id,
+                preset=spec.preset_name,
+                size=size,
+                resolution=resolution,
+            )
+            task_meta = self._build_image_task_meta(
+                mode="edit",
+                user_prompt=spec.user_prompt,
+                effective_user_prompt=spec.effective_prompt,
+                effective_prompt=spec.effective_prompt,
+                continue_with="edit",
+                backend=spec.provider_id,
+            )
+            if spec.preset_name:
+                task_meta["preset_name"] = spec.preset_name
+            return ExecutedImageTask(spec=spec, image_path=image_path, task_meta=task_meta)
+
+        if spec.mode == "selfie_ref":
+            if not self._is_selfie_enabled():
+                raise RuntimeError(self._selfie_disabled_message())
+            image_path, task_meta = await self._generate_selfie_image_with_meta(
+                event,
+                spec.user_prompt,
+                spec.provider_id,
+                size=size,
+                resolution=resolution,
+            )
+            return ExecutedImageTask(spec=spec, image_path=image_path, task_meta=task_meta)
+
+        raise RuntimeError(f"不支持的图片任务模式: {spec.mode}")
+
+    async def _run_batch_specs(
+        self,
+        event: AstrMessageEvent,
+        specs: list[ImageTaskSpec],
+        *,
+        size: str | None = None,
+        resolution: str | None = None,
+    ) -> list[BatchRunResult[ExecutedImageTask]]:
+        if not specs:
+            return []
+
+        prepared_edit_images: list[bytes] | None = None
+        if any(spec.mode == "edit" for spec in specs):
+            prepared_edit_images = await self._prepare_edit_image_bytes(event)
+
+        concurrency = self._get_batch_concurrency_for_mode(specs[0].mode)
+
+        async def _runner(index: int, spec: ImageTaskSpec) -> ExecutedImageTask:
+            return await self._execute_image_task_spec(
+                event,
+                spec,
+                prepared_edit_images=prepared_edit_images,
+                size=size,
+                resolution=resolution,
+            )
+
+        return await run_batch(specs, concurrency=concurrency, runner=_runner)
+
+    async def _remember_batch_success(
+        self,
+        event: AstrMessageEvent,
+        results: list[BatchRunResult[ExecutedImageTask]],
+    ) -> None:
+        for result in reversed(results):
+            if not result.success or result.value is None:
+                continue
+            self._remember_last_image(event, result.value.image_path)
+            await self._save_last_image_task_meta(event, result.value.task_meta)
+            return
+
+    def _build_batch_forward_nodes(
+        self,
+        event: AstrMessageEvent,
+        results: list[BatchRunResult[ExecutedImageTask]],
+        *,
+        title: str,
+    ) -> list[Node]:
+        bot_uin = self._get_event_self_id(event) or "0"
+        bot_name = "AstrBot"
+        success_count = sum(1 for result in results if result.success and result.value)
+        failed_count = len(results) - success_count
+        header = (
+            f"📦 {title}\n"
+            f"总数：{len(results)}\n"
+            f"成功：{success_count}\n"
+            f"失败：{failed_count}"
+        )
+        nodes = [Node(uin=bot_uin, name=bot_name, content=[Plain(header)])]
+
+        for result in results:
+            index = result.index + 1
+            if result.success and result.value is not None:
+                meta = result.value.task_meta or {}
+                prompt_summary = self._truncate_text(
+                    meta.get("effective_prompt") or result.value.spec.effective_prompt,
+                    limit=120,
+                )
+                label = self._batch_mode_label(result.value.spec)
+                title_line = ""
+                if result.value.spec.variant_title:
+                    title_line = f"标题：{result.value.spec.variant_title}\n"
+                content = [
+                    Plain(
+                        f"#{index} {label}\n"
+                        f"{title_line}"
+                        f"提示词：{prompt_summary}\n"
+                        "状态：成功"
+                    ),
+                    Image.fromFileSystem(str(result.value.image_path)),
+                ]
+                nodes.append(Node(uin=bot_uin, name=bot_name, content=content))
+                continue
+
+            reason = self._truncate_text(result.error or "unknown error", limit=160)
+            nodes.append(
+                Node(
+                    uin=bot_uin,
+                    name=bot_name,
+                    content=[
+                        Plain(
+                            f"#{index} 任务失败\n"
+                            f"原因：{reason}"
+                        )
+                    ],
+                )
+            )
+
+        return nodes
+
+    async def _send_batch_results_fallback(
+        self,
+        event: AstrMessageEvent,
+        results: list[BatchRunResult[ExecutedImageTask]],
+        *,
+        title: str,
+    ) -> None:
+        success_count = sum(1 for result in results if result.success and result.value)
+        failed_count = len(results) - success_count
+        await event.send(
+            event.plain_result(
+                f"📦 {title}\n总数：{len(results)}\n成功：{success_count}\n失败：{failed_count}"
+            )
+        )
+        for result in results:
+            index = result.index + 1
+            if result.success and result.value is not None:
+                meta = result.value.task_meta or {}
+                prompt_summary = self._truncate_text(
+                    meta.get("effective_prompt") or result.value.spec.effective_prompt,
+                    limit=120,
+                )
+                title_line = ""
+                if result.value.spec.variant_title:
+                    title_line = f"标题：{result.value.spec.variant_title}\n"
+                await event.send(
+                    event.plain_result(
+                        f"#{index} {self._batch_mode_label(result.value.spec)}\n"
+                        f"{title_line}"
+                        f"提示词：{prompt_summary}\n"
+                        "状态：成功"
+                    )
+                )
+                await self._send_image_with_fallback(event, result.value.image_path)
+            else:
+                reason = self._truncate_text(
+                    result.error or "unknown error",
+                    limit=160,
+                )
+                await event.send(
+                    event.plain_result(f"#{index} 任务失败\n原因：{reason}")
+                )
+
+    async def _send_batch_results(
+        self,
+        event: AstrMessageEvent,
+        results: list[BatchRunResult[ExecutedImageTask]],
+        *,
+        title: str,
+    ) -> None:
+        nodes = self._build_batch_forward_nodes(event, results, title=title)
+        try:
+            await event.send(event.chain_result(nodes))
+        except Exception as exc:
+            if not self._should_fallback_batch_forward():
+                raise
+            logger.warning("[batch] 合并转发失败，回退普通消息: %s", exc)
+            await self._send_batch_results_fallback(event, results, title=title)
+
+    async def _plan_batch_prompt_items(
+        self,
+        *,
+        mode: str,
+        user_prompt: str,
+        count: int,
+    ) -> list[PlannedPromptItem]:
+        provider = self.context.get_using_provider()
+        if provider is None or not hasattr(provider, "text_chat"):
+            raise RuntimeError("当前没有可用的 LLM 提供商，无法规划批量提示词。")
+
+        planning_prompt = build_batch_planning_prompt(
+            mode=mode,
+            user_prompt=user_prompt,
+            count=count,
+        )
+        last_error: Exception | None = None
+        for _ in range(3):
+            llm_response = await provider.text_chat(
+                prompt=planning_prompt,
+                contexts=[],
+                image_urls=[],
+                func_tool=None,
+                system_prompt=(
+                    "You plan image prompt sets. Output JSON only. "
+                    "No markdown, no code fence, no explanation."
+                ),
+            )
+            text = str(getattr(llm_response, "completion_text", "") or "").strip()
+            if not text:
+                last_error = RuntimeError("LLM returned empty planner output")
+                continue
+            try:
+                items = parse_planned_prompt_items(text)
+                validation_error = validate_planned_prompt_items(
+                    items, expected_count=count
+                )
+                if validation_error is not None:
+                    raise ValueError(validation_error)
+                return items
+            except Exception as exc:
+                last_error = exc
+        raise RuntimeError(f"批量提示词规划失败: {last_error}")
+
+    async def _resolve_llm_batch_mode(
+        self, event: AstrMessageEvent, mode: str, prompt: str
+    ) -> str:
+        m = str(mode or "auto").strip().lower()
+        if m in {"text", "draw", "aiimg"}:
+            return "draw"
+        if m in {"edit", "img2img", "aiedit"}:
+            return "edit"
+        if m in {"selfie_ref", "selfie", "ref"}:
+            return "selfie_ref"
+        if m != "auto":
+            return "draw"
+
+        if (
+            self._is_selfie_enabled()
+            and self._is_selfie_llm_enabled()
+            and await self._should_auto_selfie_ref(event, prompt)
+        ):
+            return "selfie_ref"
+
+        has_msg_images = await self._has_message_images(event)
+        if has_msg_images:
+            return "edit"
+
+        prefetched_edit_image_segs = await get_images_from_event(
+            event,
+            include_avatar=True,
+            include_sender_avatar_fallback=False,
+        )
+        if prefetched_edit_image_segs:
+            return "edit"
+        return "draw"
 
     async def _video_begin(self, user_id: str) -> bool:
         """单用户并发保护：成功占用返回 True，否则 False（上限可配置）"""

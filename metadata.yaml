@@ -1,11 +1,13 @@
 name: astrbot_plugin_gitee_aiimg
 display_name: Gitee AI Image
 desc: >
-  接入多服务商的文生图/图生图（改图），并支持 Bot 自拍参考照与 Grok 视频生成；支持 LLM 调用、指令调用、预设提示词、多 Key 轮询、失败重试与超时配置。
-version: v4.2.26
+  [主要适配 QQ / aiocqhttp] 多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件，支持文生图预设、改图预设、批量出图、LLM 批量调用、请求模式控制、多 Key 轮询、失败兜底与超时配置。
+version: v4.3.0
 author: 木有知、Zhalslar
+astrbot_version: ">=4.16.0,<5"
+support_platforms:
+  - aiocqhttp
 repo: https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg
-
 
 
 

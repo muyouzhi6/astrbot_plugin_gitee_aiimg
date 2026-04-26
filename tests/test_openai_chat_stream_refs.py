@@ -130,6 +130,66 @@ def _load_module():
 
 
 class OpenAIChatStreamRefTests(unittest.TestCase):
+    def test_request_mode_auto_uses_backend_defaults(self):
+        mod = _load_module()
+        backend = mod.OpenAIChatImageBackend(
+            imgr=_DummyImageManager(),
+            base_url="https://api.example.com/v1",
+            api_keys=["test-key"],
+            default_model="gemini-3.1-flash-image-preview-4k",
+        )
+
+        self.assertEqual(backend.generate_request_mode, "auto")
+        self.assertEqual(backend.edit_request_mode, "auto")
+        self.assertTrue(backend._should_try_stream("generate"))
+        self.assertFalse(backend._should_try_stream("edit"))
+
+    def test_request_mode_overrides_legacy_stream_flags(self):
+        mod = _load_module()
+        backend = mod.OpenAIChatImageBackend(
+            imgr=_DummyImageManager(),
+            base_url="https://api.example.com/v1",
+            api_keys=["test-key"],
+            default_model="gemini-3.1-flash-image-preview-4k",
+            generate_request_mode="non_stream",
+            edit_request_mode="stream",
+            enable_stream_generate=True,
+            enable_stream_edit=False,
+        )
+
+        self.assertEqual(backend.generate_request_mode, "non_stream")
+        self.assertEqual(backend.edit_request_mode, "stream")
+        self.assertFalse(backend._should_try_stream("generate"))
+        self.assertTrue(backend._should_try_stream("edit"))
+
+    def test_request_mode_auto_preserves_legacy_generate_flag(self):
+        mod = _load_module()
+        backend = mod.OpenAIChatImageBackend(
+            imgr=_DummyImageManager(),
+            base_url="https://api.example.com/v1",
+            api_keys=["test-key"],
+            default_model="gemini-3.1-flash-image-preview-4k",
+            generate_request_mode="auto",
+            enable_stream_generate=False,
+        )
+
+        self.assertEqual(backend.generate_request_mode, "non_stream")
+        self.assertFalse(backend._should_try_stream("generate"))
+
+    def test_request_mode_auto_preserves_legacy_edit_flag(self):
+        mod = _load_module()
+        backend = mod.OpenAIChatImageBackend(
+            imgr=_DummyImageManager(),
+            base_url="https://api.example.com/v1",
+            api_keys=["test-key"],
+            default_model="gemini-3.1-flash-image-preview-4k",
+            edit_request_mode="auto",
+            enable_stream_edit=True,
+        )
+
+        self.assertEqual(backend.edit_request_mode, "stream")
+        self.assertTrue(backend._should_try_stream("edit"))
+
     def test_extracts_delta_images_from_sse(self):
         mod = _load_module()
         sse_text = (
@@ -259,14 +319,85 @@ class OpenAIChatEditFallbackTests(unittest.IsolatedAsyncioTestCase):
         out_path = await backend.edit("改成赛博朋克", [png_bytes])
 
         self.assertEqual(out_path, Path("/tmp/result.png"))
-        self.assertEqual(imgr.downloaded_urls, ["https://cdn.example.com/final.png"])
-        self.assertEqual(len(client.chat.completions.calls), 3)
-        first_url = client.chat.completions.calls[0]["messages"][0]["content"][1]["image_url"]["url"]
-        second_url = client.chat.completions.calls[1]["messages"][0]["content"][1]["image_url"]["url"]
-        third_url = client.chat.completions.calls[2]["messages"][0]["content"][1]["image_url"]["url"]
-        self.assertTrue(first_url.startswith("data:image/png;base64,"))
-        self.assertTrue(second_url.startswith("data:image/png;base64,"))
-        self.assertEqual(third_url, "https://files.example/input_1.png")
+
+    async def test_edit_skips_stream_when_disabled(self):
+        mod = _load_module()
+        imgr = _DummyImageManager()
+        final_response = types.SimpleNamespace(
+            choices=[
+                types.SimpleNamespace(
+                    message=types.SimpleNamespace(
+                        content="![image1](https://cdn.example.com/final-edit.png)"
+                    )
+                )
+            ]
+        )
+        client = _DummyClient([final_response])
+        backend = mod.OpenAIChatImageBackend(
+            imgr=imgr,
+            base_url="https://api.example.com/v1",
+            api_keys=["test-key"],
+            default_model="gemini-3.1-flash-image-preview-4k",
+            edit_request_mode="non_stream",
+        )
+        backend._get_client = lambda key: client
+
+        stream_called = {"value": False}
+
+        async def _stream_stub(**kwargs):
+            stream_called["value"] = True
+            return [], [], ""
+
+        backend._stream_chat_completion = _stream_stub
+
+        png_bytes = b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2ioAAAAASUVORK5CYII="
+        )
+        out_path = await backend.edit("改成赛博朋克", [png_bytes])
+
+        self.assertEqual(out_path, Path("/tmp/result.png"))
+        self.assertFalse(stream_called["value"])
+
+
+class OpenAIChatGenerateFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_generate_skips_stream_when_disabled(self):
+        mod = _load_module()
+        imgr = _DummyImageManager()
+        final_response = types.SimpleNamespace(
+            choices=[
+                types.SimpleNamespace(
+                    message=types.SimpleNamespace(
+                        content="![image1](https://cdn.example.com/final-generate.png)"
+                    )
+                )
+            ]
+        )
+        client = _DummyClient([final_response])
+        backend = mod.OpenAIChatImageBackend(
+            imgr=imgr,
+            base_url="https://api.example.com/v1",
+            api_keys=["test-key"],
+            default_model="gemini-3.1-flash-image-preview-4k",
+            generate_request_mode="non_stream",
+        )
+        backend._get_client = lambda key: client
+
+        stream_called = {"value": False}
+
+        async def _stream_stub(**kwargs):
+            stream_called["value"] = True
+            return [], [], ""
+
+        backend._stream_chat_completion = _stream_stub
+
+        out_path = await backend.generate("画一个赛博朋克少女")
+
+        self.assertEqual(out_path, Path("/tmp/result.png"))
+        self.assertFalse(stream_called["value"])
+        self.assertEqual(
+            imgr.downloaded_urls, ["https://cdn.example.com/final-generate.png"]
+        )
+        self.assertEqual(len(client.chat.completions.calls), 1)
 
     async def test_save_single_ref_rewrites_relative_ref_to_origin(self):
         mod = _load_module()
