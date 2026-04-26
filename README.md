@@ -207,18 +207,16 @@ Q版化:Convert to chibi illustration style
 - 文生图批量并发由 `features.draw.batch_concurrency` 控制，默认 `2`
 - 改图 / 自拍批量并发由 `features.edit.batch_concurrency` 控制，默认 `2`
 - 改图批量和自拍批量都要求当前消息里能读到输入图片；文生图批量不需要图片
-- 批量输出会优先尝试“合并转发”
-- 如果当前平台不支持合并转发，且 `features.batch.forward_fallback_to_messages=true`，会自动回退为普通消息逐条发送
+- 批量结果发送方式由 `features.batch.result_send_mode` 控制：
+  - `merge_forward`：使用一条合并转发把整组图收起来
+  - `single_message`：按顺序一张张直接发送
+- 当 `result_send_mode=merge_forward` 时，如果当前平台不支持合并转发，且 `features.batch.forward_fallback_to_messages=true`，会自动回退为普通消息逐条发送
 
 ### 批量结果展示
 
-每张图都会带上：
-
-- 序号
-- 模式标签
-- 规划标题（如果来自 `LLM` 批量）
-- 实际执行的提示词摘要
-- 成功或失败状态
+- `merge_forward`：聊天窗口只显示一条简短摘要，点开后按顺序查看整组图片
+- `single_message`：先发一条自然语言短句，再逐张发图，不再附带“标题 / 提示词 / 状态”这类报表式文本
+- 如果部分任务失败，会额外用自然语言简短提示是第几张没成功
 
 ## 自拍参考照
 
@@ -337,6 +335,7 @@ Q版化:Convert to chibi illustration style
 ### 批量相关
 
 - `features.batch.max_count`：单次批量最大张数
+- `features.batch.result_send_mode`：批量结果发送方式，`merge_forward` 或 `single_message`
 - `features.batch.forward_fallback_to_messages`：合并转发失败时是否回退普通消息
 - `features.draw.batch_concurrency`：文生图批量并发
 - `features.edit.batch_concurrency`：改图 / 自拍批量并发
@@ -417,7 +416,7 @@ Q版化:Convert to chibi illustration style
 
 ### 批量结果为什么不是合并转发
 
-因为当前平台不支持，或者发送合并转发失败了。只要 `features.batch.forward_fallback_to_messages=true`，插件就会自动改成普通消息逐条发。
+因为当前平台不支持，或者发送合并转发失败了。只要 `features.batch.result_send_mode=merge_forward`，并且 `features.batch.forward_fallback_to_messages=true`，插件就会自动改成普通消息逐条发。
 
 ### 为什么 `request_mode=stream` 没起作用
 
