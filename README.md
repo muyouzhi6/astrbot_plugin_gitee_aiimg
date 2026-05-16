@@ -4,12 +4,12 @@
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16.0%2C%20%3C5-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![Platform](https://img.shields.io/badge/Primary-aiocqhttp-4caf50?style=for-the-badge)](#平台与限制)
 
-多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件，支持命令调用、`LLM tool` 调用、预设提示词、批量出图、请求模式控制、多 `API Key` 轮询、失败兜底与超时配置。
+多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件，支持命令调用、`LLM tool` 调用、预设提示词、批量出图、请求模式控制、多 `API Key`轮询、失败兜底与超时配置。
 
 > [!IMPORTANT]
 > 这份文档对应 `v4.3.0` 配置结构。
 > 
-> - `v4` 与旧版 `v3 / v2` 配置不兼容，升级后请重新检查 WebUI 配置。
+> - `v4` 与旧版 `v3 / v2` 配置不兼容，升级后请重新检查 **AstrBot 管理面板中的插件配置**。
 > - 插件主维护场景是 `QQ / aiocqhttp`。
 > - 批量结果的“合并转发”当前只有 `aiocqhttp` 原生支持；其他平台会在开启回退时自动改为普通消息逐条发送。
 > - 历史更新内容见 [CHANGELOG.md](./CHANGELOG.md)。
@@ -75,6 +75,12 @@
 
 - `features.<mode>.enabled`：是否启用该能力
 - `features.<mode>.llm_tool_enabled`：是否允许 `LLM` 通过工具调用该能力
+
+## 配置说明
+
+> [!TIP]
+> **本插件没有独立 WebUI 界面。** 所有的配置都在 **AstrBot 的管理面板**（默认 `http://localhost:6185`）中进行。
+> 登录面板后，在左侧菜单点击“插件”，找到本插件并点击进入配置表单即可。
 
 ## 命令速查
 
@@ -228,7 +234,7 @@ Q版化:Convert to chibi illustration style
 /自拍参考 设置
 ```
 
-2. 直接在 WebUI 的 `features.selfie.reference_images` 上传
+2. 直接在 WebUI（AstrBot 管理面板）的 `features.selfie.reference_images` 上传
 
 ### 查看和删除
 
@@ -246,8 +252,8 @@ Q版化:Convert to chibi illustration style
 
 说明：
 
-- 如果 WebUI 里已经上传了参考照，优先使用 WebUI 配置
-- 如果同时没有 WebUI 参考照，也没有通过命令保存参考照，`/自拍` 会直接报错
+- 如果面板里已经上传了参考照，优先使用面板配置
+- 如果同时没有面板参考照，也没有通过命令保存参考照，`/自拍` 会直接报错
 - 自拍链路为空时，可通过 `features.selfie.use_edit_chain_when_empty=true` 复用改图链路
 
 ## 视频生成
