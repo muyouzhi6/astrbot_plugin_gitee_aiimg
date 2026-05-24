@@ -12,6 +12,7 @@ Gitee AI 图像生成插件
 
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import math
@@ -710,6 +711,169 @@ class GiteeAIImagePlugin(Star):
         msg = f"{exc!r} {exc}".lower()
         return "rich media transfer failed" in msg
 
+    def _get_send_conf(self) -> dict[str, Any]:
+        conf = self.config.get("send", {}) if isinstance(self.config, dict) else {}
+        return conf if isinstance(conf, dict) else {}
+
+    def _is_weixin_event(self, event: AstrMessageEvent | None) -> bool:
+        if not event:
+            return False
+        chunks: list[str] = []
+        for getter in (
+            lambda: event.get_platform_name(),
+            lambda: getattr(event, "unified_msg_origin", ""),
+            lambda: str(event.get_sender_id() or ""),
+        ):
+            try:
+                chunks.append(str(getter() or ""))
+            except Exception:
+                pass
+        platform_inst = getattr(event, "platform", None)
+        if platform_inst is not None:
+            chunks.extend(
+                [
+                    platform_inst.__class__.__name__,
+                    platform_inst.__class__.__module__,
+                    str(getattr(platform_inst, "config", "") or ""),
+                ]
+            )
+            try:
+                meta = platform_inst.meta() if hasattr(platform_inst, "meta") else None
+                if meta:
+                    chunks.append(str(getattr(meta, "__dict__", "")))
+                    chunks.append(str(getattr(meta, "name", "") or ""))
+                    chunks.append(str(getattr(meta, "id", "") or ""))
+            except Exception:
+                pass
+        text = " ".join(chunks).lower()
+        return "weixin" in text or "wechat" in text or "@im.wechat" in text
+
+    def _get_weixin_timeout_ms(self) -> int:
+        conf = self._get_send_conf()
+        timeout_seconds = self._as_int(
+            conf.get("weixin_api_timeout_seconds", 60), default=60
+        )
+        timeout_ms = timeout_seconds * 1000
+        return max(15000, min(timeout_ms, 300000))
+
+    def _apply_weixin_timeout(self, platform_inst: Any) -> None:
+        if not platform_inst:
+            return
+        timeout_ms = self._get_weixin_timeout_ms()
+        try:
+            old_timeout = getattr(platform_inst, "api_timeout_ms", None)
+            if old_timeout != timeout_ms:
+                setattr(platform_inst, "api_timeout_ms", timeout_ms)
+                logger.info(
+                    "[GiteeAIImagePlugin] 已设置 weixin_oc API/CDN 超时: %s -> %sms",
+                    old_timeout,
+                    timeout_ms,
+                )
+
+            client = getattr(platform_inst, "client", None)
+            if client and getattr(client, "api_timeout_ms", None) != timeout_ms:
+                setattr(client, "api_timeout_ms", timeout_ms)
+        except Exception as exc:
+            logger.debug("[GiteeAIImagePlugin] 设置 weixin_oc 超时失败: %s", exc)
+
+    def _compress_image_for_weixin_sync(self, image_path: Path) -> Path:
+        conf = self._get_send_conf()
+        if not self._as_bool(conf.get("weixin_compress_images", True), default=True):
+            return image_path
+
+        p = Path(image_path)
+        if not p.exists():
+            return p
+
+        try:
+            from PIL import Image as PILImage
+            from PIL import ImageOps
+        except Exception as exc:
+            logger.debug(
+                "[GiteeAIImagePlugin] Pillow 不可用，跳过 weixin_oc 图片优化: %s",
+                exc,
+            )
+            return p
+
+        max_side = self._as_int(conf.get("weixin_image_max_side", 4096), default=4096)
+        max_kb = self._as_int(conf.get("weixin_image_max_size_kb", 10240), default=10240)
+        max_side = max(1600, min(max_side, 8192))
+        target_bytes = max(512, max_kb) * 1024
+
+        try:
+            raw_size = p.stat().st_size
+            with PILImage.open(p) as im:
+                im = ImageOps.exif_transpose(im)
+                width, height = im.size
+                if raw_size <= target_bytes and max(width, height) <= max_side:
+                    return p
+
+                if im.mode in ("RGBA", "LA") or (
+                    im.mode == "P" and "transparency" in im.info
+                ):
+                    bg = PILImage.new("RGB", im.size, (255, 255, 255))
+                    rgba = im.convert("RGBA")
+                    bg.paste(rgba, mask=rgba.split()[-1])
+                    im = bg
+                else:
+                    im = im.convert("RGB")
+
+                if max(width, height) > max_side:
+                    resampling = getattr(
+                        getattr(PILImage, "Resampling", PILImage), "LANCZOS"
+                    )
+                    im.thumbnail((max_side, max_side), resampling)
+
+                temp_dir = Path(self.data_dir) / "Temp"
+                temp_dir.mkdir(parents=True, exist_ok=True)
+                digest_src = (
+                    f"{p}:{raw_size}:{p.stat().st_mtime}:{max_side}:{max_kb}".encode(
+                        "utf-8", errors="ignore"
+                    )
+                )
+                digest = hashlib.md5(digest_src).hexdigest()[:12]
+                out_path = temp_dir / f"weixin_send_{digest}.jpg"
+
+                for quality in (95, 93, 90, 88, 85, 82, 78, 74, 70):
+                    im.save(
+                        out_path,
+                        format="JPEG",
+                        quality=quality,
+                        optimize=True,
+                        progressive=True,
+                        subsampling=0 if quality >= 90 else -1,
+                    )
+                    if out_path.stat().st_size <= target_bytes:
+                        break
+
+                out_size = out_path.stat().st_size
+                if out_size < raw_size:
+                    logger.info(
+                        "[GiteeAIImagePlugin] 已为 weixin_oc 优化图片: %.2fMB -> %.2fMB, 分辨率 %sx%s -> %sx%s",
+                        raw_size / 1024 / 1024,
+                        out_size / 1024 / 1024,
+                        width,
+                        height,
+                        im.size[0],
+                        im.size[1],
+                    )
+                    return out_path
+        except Exception as exc:
+            logger.warning(
+                "[GiteeAIImagePlugin] weixin_oc 图片优化失败，继续发送原图: %s",
+                exc,
+            )
+
+        return p
+
+    async def _prepare_image_for_send(
+        self, event: AstrMessageEvent, image_path: Path
+    ) -> Path:
+        if self._is_weixin_event(event):
+            self._apply_weixin_timeout(getattr(event, "platform", None))
+            return await asyncio.to_thread(self._compress_image_for_weixin_sync, image_path)
+        return Path(image_path)
+
     @staticmethod
     def _build_compact_image_bytes(
         image_path: Path, *, max_side: int = 2048, target_bytes: int = 3_500_000
@@ -772,7 +936,7 @@ class GiteeAIImagePlugin(Star):
 
         Avoids wasting generation credits when platform send fails transiently.
         """
-        p = Path(image_path)
+        p = await self._prepare_image_for_send(event, Path(image_path))
 
         if not p.exists():
             logger.warning("[send_image] file not found: %s", p)
@@ -1884,11 +2048,11 @@ class GiteeAIImagePlugin(Star):
         backend: str = "auto",
         output: str = "",
     ):
-        """统一图片生成/改图/自拍（参考照）工具。
+        """统一图片生成/改图/生活照（参考照）工具。
 
         使用建议（给 LLM 的决策规则）：
         - 用户发送/引用了图片，并要求"改图/换背景/换风格/修图/换衣服"等：用 mode=edit（或 mode=auto）
-        - 用户要求"bot 自拍/来一张你自己的自拍"，且已设置自拍参考照：用 mode=selfie_ref（或 mode=auto）
+        - 用户要求"看看你/来一张你自己的生活照"，且已设置自拍参考照：用 mode=selfie_ref（或 mode=auto）
         - 纯文生图（用户没有给图片）：用 mode=text（或 mode=auto）
 
         当前 LLM tool 行为：
@@ -1898,7 +2062,7 @@ class GiteeAIImagePlugin(Star):
 
         Args:
             prompt(string): 提示词
-            mode(string): auto=自动判断, text=文生图, edit=改图, selfie_ref=参考照自拍
+            mode(string): auto=自动判断, text=文生图, edit=改图, selfie_ref=参考照
             backend(string): auto=自动选择；也可填 provider_id（你在 WebUI providers 里配置的 id）
             output(string): 输出尺寸/分辨率。例: 2048x2048 或 4K（不同后端支持能力不同，留空用默认）
         """
@@ -2106,7 +2270,7 @@ class GiteeAIImagePlugin(Star):
                     "The requested image generation tool is disabled by plugin configuration."
                 )
             if not prompt:
-                prompt = "a selfie photo"
+                prompt = "lifestyle photo"
 
             logger.info("[aiimg_generate] route=draw")
             image_path = await self.draw.generate(
@@ -3246,22 +3410,21 @@ class GiteeAIImagePlugin(Star):
         if any(
             k in text
             for k in (
-                "来一张你",
-                "来张你",
-                "你来一张",
-                "你来张",
+                "发一张你",
+                "发张你",
+                "发你照片", 
+                "你发一张",
+                "你发张",
                 "看看你",
                 "你自己",
                 "你本人",
                 "你的照片",
+                "你的生活照",
                 "你的自拍",
                 "你自己的照片",
                 "你自己的自拍",
                 "你长什么样",
                 "看看你本人",
-                "看看你自己",
-                "bot自拍",
-                "机器人自拍",
             )
         ):
             return True
@@ -3294,13 +3457,13 @@ class GiteeAIImagePlugin(Star):
         prefix = str(conf.get("prompt_prefix", "") or "").strip()
         if not prefix:
             prefix = (
-                "请根据参考图生成一张新的自拍照：\n"
+                "请根据参考图生成一张新的生活照：\n"
                 "1) 以第1张参考图的人脸身份为准（仅人脸身份特征），保持五官/气质一致。\n"
                 "2) 如果还有其它参考图，请将它们仅作为服装/姿势/构图/场景的参考。\n"
-                "3) 输出一张高质量照片风格自拍，不要拼图，不要水印。"
+                "3) 输出一张高质量照片风格，不要拼图，不要水印。"
             )
 
-        user_prompt = (prompt or "").strip() or "日常自拍照"
+        user_prompt = (prompt or "").strip() or "日常生活照"
         if extra_refs > 0:
             return (
                 f"{prefix}\n\n用户要求：{user_prompt}\n（额外参考图数量：{extra_refs}）"

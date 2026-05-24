@@ -94,6 +94,10 @@ def _is_valid_video_url(url: str) -> bool:
         return False
     if any(ext in lowered for ext in (".mp4", ".webm", ".mov")):
         return True
+        
+    if "/v1/files/video" in lowered or "video?id=" in lowered:
+        return True
+        
     if _looks_like_proxy_video_url(url):
         return True
     return False
