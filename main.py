@@ -718,35 +718,23 @@ class GiteeAIImagePlugin(Star):
     def _is_weixin_event(self, event: AstrMessageEvent | None) -> bool:
         if not event:
             return False
-        chunks: list[str] = []
-        for getter in (
-            lambda: event.get_platform_name(),
-            lambda: getattr(event, "unified_msg_origin", ""),
-            lambda: str(event.get_sender_id() or ""),
-        ):
-            try:
-                chunks.append(str(getter() or ""))
-            except Exception:
-                pass
+        names: list[str] = []
+        try:
+            names.append(str(event.get_platform_name() or ""))
+        except Exception:
+            pass
+
         platform_inst = getattr(event, "platform", None)
         if platform_inst is not None:
-            chunks.extend(
-                [
-                    platform_inst.__class__.__name__,
-                    platform_inst.__class__.__module__,
-                    str(getattr(platform_inst, "config", "") or ""),
-                ]
-            )
             try:
                 meta = platform_inst.meta() if hasattr(platform_inst, "meta") else None
                 if meta:
-                    chunks.append(str(getattr(meta, "__dict__", "")))
-                    chunks.append(str(getattr(meta, "name", "") or ""))
-                    chunks.append(str(getattr(meta, "id", "") or ""))
+                    names.append(str(getattr(meta, "name", "") or ""))
+                    names.append(str(getattr(meta, "id", "") or ""))
             except Exception:
                 pass
-        text = " ".join(chunks).lower()
-        return "weixin" in text or "wechat" in text or "@im.wechat" in text
+
+        return any(name.strip().lower() == "weixin_oc" for name in names)
 
     def _get_weixin_timeout_ms(self) -> int:
         conf = self._get_send_conf()
@@ -2265,7 +2253,7 @@ class GiteeAIImagePlugin(Star):
                     "The requested image generation tool is disabled by plugin configuration."
                 )
             if not prompt:
-                prompt = "lifestyle photo"
+                prompt = "a selfie photo"
 
             logger.info("[aiimg_generate] route=draw")
             image_path = await self.draw.generate(
@@ -3405,21 +3393,22 @@ class GiteeAIImagePlugin(Star):
         if any(
             k in text
             for k in (
-                "发一张你",
-                "发张你",
-                "发你照片", 
-                "你发一张",
-                "你发张",
+                "来一张你",
+                "来张你",
+                "你来一张",
+                "你来张",
                 "看看你",
                 "你自己",
                 "你本人",
                 "你的照片",
-                "你的生活照",
                 "你的自拍",
                 "你自己的照片",
                 "你自己的自拍",
                 "你长什么样",
                 "看看你本人",
+                "看看你自己",
+                "bot自拍",
+                "机器人自拍",
             )
         ):
             return True
@@ -3452,13 +3441,13 @@ class GiteeAIImagePlugin(Star):
         prefix = str(conf.get("prompt_prefix", "") or "").strip()
         if not prefix:
             prefix = (
-                "请根据参考图生成一张新的生活照：\n"
+                "请根据参考图生成一张新的自拍照：\n"
                 "1) 以第1张参考图的人脸身份为准（仅人脸身份特征），保持五官/气质一致。\n"
                 "2) 如果还有其它参考图，请将它们仅作为服装/姿势/构图/场景的参考。\n"
-                "3) 输出一张高质量照片风格，不要拼图，不要水印。"
+                "3) 输出一张高质量照片风格自拍，不要拼图，不要水印。"
             )
 
-        user_prompt = (prompt or "").strip() or "日常生活照"
+        user_prompt = (prompt or "").strip() or "日常自拍照"
         if extra_refs > 0:
             return (
                 f"{prefix}\n\n用户要求：{user_prompt}\n（额外参考图数量：{extra_refs}）"
