@@ -764,11 +764,6 @@ class GiteeAIImagePlugin(Star):
             old_timeout = getattr(platform_inst, "api_timeout_ms", None)
             if old_timeout != timeout_ms:
                 setattr(platform_inst, "api_timeout_ms", timeout_ms)
-                logger.info(
-                    "[GiteeAIImagePlugin] 已设置 weixin_oc API/CDN 超时: %s -> %sms",
-                    old_timeout,
-                    timeout_ms,
-                )
 
             client = getattr(platform_inst, "client", None)
             if client and getattr(client, "api_timeout_ms", None) != timeout_ms:
