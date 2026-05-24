@@ -10,7 +10,7 @@
 > 这份文档对应 `v4.3.1` 配置结构。
 >
 > - `v4` 与旧版 `v3 / v2` 配置不兼容，升级后请重新检查 WebUI 配置。
-> - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了图片发送前优化。
+> - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了发送图片前优化。
 > - 批量结果的“合并转发”当前只有 `aiocqhttp` 原生支持；其他平台会在开启回退时自动改为普通消息逐条发送。
 > - 历史更新内容见 [CHANGELOG.md](./CHANGELOG.md)。
 
@@ -366,7 +366,7 @@ Q版化:Convert to chibi illustration style
 
 - `AstrBot >= 4.16.0, < 5`
 - 主要维护平台：`QQ / aiocqhttp`
-- 兼容平台：个人微信 `weixin_oc` 图片消息发送前优化
+- 兼容平台：个人微信 `weixin_oc` 发送图片前优化
 
 ### 已知平台限制
 
