@@ -1,6 +1,9 @@
 import sys
 import types
 import unittest
+import os
+import time
+from tempfile import TemporaryDirectory
 from dataclasses import dataclass
 from pathlib import Path
 import importlib.util
@@ -96,6 +99,10 @@ class _DummyImage:
     def fromFileSystem(path: str):
         return _DummyImage(path=path)
 
+    @staticmethod
+    def fromBytes(data: bytes):
+        return _DummyImage(path=f"bytes:{len(data)}")
+
 
 class _DummyNode:
     def __init__(self, content=None, **kwargs):
@@ -172,6 +179,9 @@ class _DummyEvent:
 
     def get_self_id(self):
         return "123456"
+
+    def get_platform_name(self):
+        return "aiocqhttp"
 
 
 def _clear_modules():
@@ -442,6 +452,104 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(event.sent, [])
         self.assertEqual(image_paths, [Path("/tmp/one.png")])
+
+    async def test_weixin_send_temp_file_is_removed_after_send(self):
+        mod = _load_module()
+        with TemporaryDirectory() as td:
+            data_dir = Path(td)
+            original = data_dir / "original.jpg"
+            original.write_bytes(b"original")
+            temp_dir = data_dir / "Temp"
+            temp_dir.mkdir()
+            temp = temp_dir / "weixin_send_test.jpg"
+            temp.write_bytes(b"optimized")
+
+            plugin = mod.GiteeAIImagePlugin(context=types.SimpleNamespace(), config={})
+            plugin.data_dir = data_dir
+
+            async def _prepare_image_for_send(event, path):
+                return temp
+
+            plugin._prepare_image_for_send = _prepare_image_for_send
+            event = _DummyEvent()
+
+            result = await plugin._send_image_with_fallback(event, original)
+
+            self.assertTrue(result.ok)
+            self.assertFalse(temp.exists())
+            self.assertTrue(original.exists())
+            self.assertEqual(result.cached_path, original)
+
+    def test_weixin_send_temp_cleanup_removes_only_stale_and_overflow_files(self):
+        mod = _load_module()
+        with TemporaryDirectory() as td:
+            data_dir = Path(td)
+            temp_dir = data_dir / "Temp"
+            temp_dir.mkdir()
+
+            plugin = mod.GiteeAIImagePlugin(context=types.SimpleNamespace(), config={})
+            plugin.data_dir = data_dir
+            plugin.WEIXIN_SEND_TEMP_MAX_FILES = 2
+            plugin.WEIXIN_SEND_TEMP_TTL_SECONDS = 60
+
+            old_keep = temp_dir / "not_weixin_send_old.jpg"
+            old_keep.write_bytes(b"keep")
+            stale = temp_dir / "weixin_send_stale.jpg"
+            oldest = temp_dir / "weixin_send_oldest.jpg"
+            middle = temp_dir / "weixin_send_middle.jpg"
+            newest = temp_dir / "weixin_send_newest.jpg"
+            for p in (stale, oldest, middle, newest):
+                p.write_bytes(b"x")
+
+            now = time.time()
+            os.utime(old_keep, (now - 3600, now - 3600))
+            os.utime(stale, (now - 3600, now - 3600))
+            os.utime(oldest, (now - 30, now - 30))
+            os.utime(middle, (now - 15, now - 15))
+            os.utime(newest, (now, now))
+
+            plugin._cleanup_weixin_send_temp_images_sync()
+
+            self.assertTrue(old_keep.exists())
+            self.assertFalse(stale.exists())
+            self.assertFalse(oldest.exists())
+            self.assertTrue(middle.exists())
+            self.assertTrue(newest.exists())
+
+    def test_weixin_send_temp_cleanup_does_not_overdelete_after_stale_removal(self):
+        mod = _load_module()
+        with TemporaryDirectory() as td:
+            data_dir = Path(td)
+            temp_dir = data_dir / "Temp"
+            temp_dir.mkdir()
+
+            plugin = mod.GiteeAIImagePlugin(context=types.SimpleNamespace(), config={})
+            plugin.data_dir = data_dir
+            plugin.WEIXIN_SEND_TEMP_MAX_FILES = 2
+            plugin.WEIXIN_SEND_TEMP_TTL_SECONDS = 60
+
+            stale = [
+                temp_dir / "weixin_send_stale_1.jpg",
+                temp_dir / "weixin_send_stale_2.jpg",
+                temp_dir / "weixin_send_stale_3.jpg",
+            ]
+            keep = [
+                temp_dir / "weixin_send_keep_1.jpg",
+                temp_dir / "weixin_send_keep_2.jpg",
+            ]
+            for p in [*stale, *keep]:
+                p.write_bytes(b"x")
+
+            now = time.time()
+            for p in stale:
+                os.utime(p, (now - 3600, now - 3600))
+            for index, p in enumerate(keep):
+                os.utime(p, (now - index, now - index))
+
+            plugin._cleanup_weixin_send_temp_images_sync()
+
+            self.assertTrue(all(not p.exists() for p in stale))
+            self.assertTrue(all(p.exists() for p in keep))
 
 
 if __name__ == "__main__":
