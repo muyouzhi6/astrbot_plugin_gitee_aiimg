@@ -2,14 +2,13 @@ name: astrbot_plugin_gitee_aiimg
 display_name: Gitee AI Image
 desc: >
   [主要适配 QQ / aiocqhttp，兼容个人微信 weixin_oc 图片发送优化] 多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件，支持文生图预设、改图预设、批量出图、LLM 批量调用、请求模式控制、多 Key 轮询、失败兜底与超时配置。
-version: v4.3.1
+version: v4.3.2
 author: 木有知、Zhalslar
 astrbot_version: ">=4.16.0,<5"
 support_platforms:
   - aiocqhttp
   - weixin_oc
 repo: https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg
-
 
 
 

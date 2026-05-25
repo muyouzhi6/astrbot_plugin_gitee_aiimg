@@ -97,6 +97,9 @@ class GiteeAIImagePlugin(Star):
     # Gitee AI 支持的图片比例
     SUPPORTED_RATIOS: dict[str, list[str]] = GITEE_SUPPORTED_RATIOS
     IMAGE_AS_FILE_THRESHOLD_BYTES: int = 20 * 1024 * 1024
+    WEIXIN_SEND_TEMP_PATTERN: str = "weixin_send_*.jpg"
+    WEIXIN_SEND_TEMP_MAX_FILES: int = 64
+    WEIXIN_SEND_TEMP_TTL_SECONDS: int = 24 * 60 * 60
 
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
@@ -759,6 +762,85 @@ class GiteeAIImagePlugin(Star):
         except Exception as exc:
             logger.debug("[GiteeAIImagePlugin] 设置 weixin_oc 超时失败: %s", exc)
 
+    def _get_weixin_send_temp_dir(self) -> Path:
+        return Path(self.data_dir) / "Temp"
+
+    def _is_weixin_send_temp_path(self, image_path: Path) -> bool:
+        try:
+            p = Path(image_path).resolve(strict=False)
+            temp_dir = self._get_weixin_send_temp_dir().resolve(strict=False)
+            return (
+                p.parent == temp_dir
+                and p.name.startswith("weixin_send_")
+                and p.suffix.lower() == ".jpg"
+            )
+        except Exception:
+            return False
+
+    def _cleanup_weixin_send_temp_images_sync(self) -> None:
+        temp_dir = self._get_weixin_send_temp_dir()
+        try:
+            if not temp_dir.exists():
+                return
+
+            now = time.time()
+            entries: list[tuple[Path, float]] = []
+            for p in temp_dir.glob(self.WEIXIN_SEND_TEMP_PATTERN):
+                try:
+                    if not p.is_file():
+                        continue
+                    st = p.stat()
+                except OSError:
+                    continue
+                entries.append((p, st.st_mtime))
+
+            stale = [
+                p
+                for p, mtime in entries
+                if now - mtime > self.WEIXIN_SEND_TEMP_TTL_SECONDS
+            ]
+            stale_keys = {str(p.resolve(strict=False)) for p in stale}
+            remaining = [
+                item
+                for item in entries
+                if str(item[0].resolve(strict=False)) not in stale_keys
+            ]
+            if len(remaining) > self.WEIXIN_SEND_TEMP_MAX_FILES:
+                remaining.sort(key=lambda item: item[1])
+                overflow = len(remaining) - self.WEIXIN_SEND_TEMP_MAX_FILES
+                stale.extend(p for p, _ in remaining[:overflow])
+
+            seen: set[str] = set()
+            for p in stale:
+                try:
+                    key = str(p.resolve(strict=False))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    p.unlink(missing_ok=True)
+                except Exception as exc:
+                    logger.debug(
+                        "[GiteeAIImagePlugin] 清理 weixin_oc 临时图片失败: %s, err=%s",
+                        p,
+                        exc,
+                    )
+        except Exception as exc:
+            logger.debug("[GiteeAIImagePlugin] 扫描 weixin_oc 临时图片失败: %s", exc)
+
+    def _remove_weixin_send_temp_image_sync(self, image_path: Path) -> None:
+        p = Path(image_path)
+        if not self._is_weixin_send_temp_path(p):
+            return
+        try:
+            p.unlink(missing_ok=True)
+            logger.debug("[GiteeAIImagePlugin] 已清理 weixin_oc 发送临时图片: %s", p)
+        except Exception as exc:
+            logger.debug(
+                "[GiteeAIImagePlugin] 删除 weixin_oc 发送临时图片失败: %s, err=%s",
+                p,
+                exc,
+            )
+
     def _compress_image_for_weixin_sync(self, image_path: Path) -> Path:
         conf = self._get_send_conf()
         if not self._as_bool(conf.get("weixin_compress_images", True), default=True):
@@ -809,13 +891,14 @@ class GiteeAIImagePlugin(Star):
 
                 temp_dir = Path(self.data_dir) / "Temp"
                 temp_dir.mkdir(parents=True, exist_ok=True)
+                self._cleanup_weixin_send_temp_images_sync()
                 digest_src = (
                     f"{p}:{raw_size}:{p.stat().st_mtime}:{max_side}:{max_kb}".encode(
                         "utf-8", errors="ignore"
                     )
                 )
                 digest = hashlib.md5(digest_src).hexdigest()[:12]
-                out_path = temp_dir / f"weixin_send_{digest}.jpg"
+                out_path = temp_dir / f"weixin_send_{digest}_{time.time_ns()}.jpg"
 
                 for quality in (95, 93, 90, 88, 85, 82, 78, 74, 70):
                     im.save(
@@ -919,11 +1002,24 @@ class GiteeAIImagePlugin(Star):
 
         Avoids wasting generation credits when platform send fails transiently.
         """
-        p = await self._prepare_image_for_send(event, Path(image_path))
+        original_path = Path(image_path)
+        p = await self._prepare_image_for_send(event, original_path)
+        should_cleanup_temp = self._is_weixin_send_temp_path(p) and (
+            p.resolve(strict=False) != original_path.resolve(strict=False)
+        )
+
+        async def finish(result: SendImageResult) -> SendImageResult:
+            if should_cleanup_temp:
+                await asyncio.to_thread(self._remove_weixin_send_temp_image_sync, p)
+                if result.cached_path == p:
+                    result.cached_path = original_path
+            return result
 
         if not p.exists():
             logger.warning("[send_image] file not found: %s", p)
-            return SendImageResult(ok=False, reason="file_not_found", cached_path=p)
+            return await finish(
+                SendImageResult(ok=False, reason="file_not_found", cached_path=p)
+            )
 
         # Large original images (e.g. 4K 20MB+) are likely to fail rich-media upload.
         # Prefer sending as a normal file first so the original bytes are preserved.
@@ -960,7 +1056,9 @@ class GiteeAIImagePlugin(Star):
 
         if size_bytes > self.IMAGE_AS_FILE_THRESHOLD_BYTES:
             if await try_send_as_file("size_threshold"):
-                return SendImageResult(ok=True, cached_path=p, used_fallback=True)
+                return await finish(
+                    SendImageResult(ok=True, cached_path=p, used_fallback=True)
+                )
 
         delay = 1.5
         last_exc: Exception | None = None
@@ -976,7 +1074,9 @@ class GiteeAIImagePlugin(Star):
 
             try:
                 await event.send(event.chain_result([Image.fromFileSystem(str(p))]))
-                return SendImageResult(ok=True, cached_path=p, used_fallback=False)
+                return await finish(
+                    SendImageResult(ok=True, cached_path=p, used_fallback=False)
+                )
             except Exception as e:
                 fs_exc = e
                 last_exc = e
@@ -998,7 +1098,9 @@ class GiteeAIImagePlugin(Star):
                         attempt,
                         attempts,
                     )
-                return SendImageResult(ok=True, cached_path=p, used_fallback=True)
+                return await finish(
+                    SendImageResult(ok=True, cached_path=p, used_fallback=True)
+                )
             except Exception as e:
                 bytes_exc = e
                 last_exc = e
@@ -1014,7 +1116,9 @@ class GiteeAIImagePlugin(Star):
                 fs_exc
             ) or self._is_rich_media_transfer_failed(bytes_exc):
                 if await try_send_as_file("rich_media_transfer_failed"):
-                    return SendImageResult(ok=True, cached_path=p, used_fallback=True)
+                    return await finish(
+                        SendImageResult(ok=True, cached_path=p, used_fallback=True)
+                    )
 
             # Extra fallback for repeated rich-media failures: compress and retry by bytes.
             if self._is_rich_media_transfer_failed(
@@ -1041,8 +1145,10 @@ class GiteeAIImagePlugin(Star):
                             attempt,
                             attempts,
                         )
-                        return SendImageResult(
-                            ok=True, cached_path=p, used_fallback=True
+                        return await finish(
+                            SendImageResult(
+                                ok=True, cached_path=p, used_fallback=True
+                            )
                         )
                     except Exception as e:
                         compact_exc = e
@@ -1105,11 +1211,13 @@ class GiteeAIImagePlugin(Star):
         logger.error(
             "[send_image] failed after retries: reason=%s, err=%s", reason, last_exc
         )
-        return SendImageResult(
-            ok=False,
-            reason=reason,
-            cached_path=p,
-            last_error=str(last_exc or ""),
+        return await finish(
+            SendImageResult(
+                ok=False,
+                reason=reason,
+                cached_path=p,
+                last_error=str(last_exc or ""),
+            )
         )
 
     def _register_preset_commands(self):
