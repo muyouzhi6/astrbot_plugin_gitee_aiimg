@@ -1,5 +1,26 @@
 # 更新日志
 
+## [v4.3.1] - 2026-05-24
+
+### 新增
+
+- 新增个人微信 `weixin_oc` 图片发送前优化配置：
+  - `send.weixin_compress_images`
+  - `send.weixin_image_max_side`
+  - `send.weixin_image_max_size_kb`
+  - `send.weixin_api_timeout_seconds`
+- 发送图片前会识别当前事件平台；仅当平台为 `weixin_oc` 时，才生成高质量 JPEG 发送副本并调整适配器 API/CDN 上传超时。
+
+### 稳定性
+
+- 降低个人微信发送 4K / 大体积生成图时触发 `upload_to_cdn TimeoutError` 的概率。
+- QQ / OneBot 原有图片发送、文件兜底、compact bytes 兜底逻辑保持不变。
+
+### 文档与元数据
+
+- README 补充个人微信发送前处理配置、平台限制和超时排障说明。
+- `metadata.yaml` 增加 `weixin_oc` 支持平台提示。
+
 ## [v4.3.0] - 2026-04-26
 
 ### 新增

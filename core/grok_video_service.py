@@ -18,7 +18,7 @@ import re
 import time
 from collections import deque
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 import httpx
 
@@ -94,6 +94,16 @@ def _is_valid_video_url(url: str) -> bool:
         return False
     if any(ext in lowered for ext in (".mp4", ".webm", ".mov")):
         return True
+
+    try:
+        parsed = urlsplit(url)
+        if (parsed.path or "").rstrip("/") == "/v1/files/video" and parse_qs(
+            parsed.query
+        ).get("id"):
+            return True
+    except Exception:
+        pass
+
     if _looks_like_proxy_video_url(url):
         return True
     return False

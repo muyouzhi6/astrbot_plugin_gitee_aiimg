@@ -1,16 +1,16 @@
 # AstrBot Gitee AI 图像生成插件
 
-[![Plugin Version](https://img.shields.io/badge/Version-v4.3.0-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
+[![Plugin Version](https://img.shields.io/badge/Version-v4.3.1-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16.0%2C%20%3C5-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![Platform](https://img.shields.io/badge/Primary-aiocqhttp-4caf50?style=for-the-badge)](#平台与限制)
 
-多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件，支持命令调用、`LLM tool` 调用、预设提示词、批量出图、请求模式控制、多 `API Key`轮询、失败兜底与超时配置。
+多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件，支持命令调用、`LLM tool` 调用、预设提示词、批量出图、请求模式控制、多 `API Key` 轮询、失败兜底与超时配置。
 
 > [!IMPORTANT]
-> 这份文档对应 `v4.3.0` 配置结构。
-> 
-> - `v4` 与旧版 `v3 / v2` 配置不兼容，升级后请重新检查 **AstrBot 管理面板中的插件配置**。
-> - 插件主维护场景是 `QQ / aiocqhttp`。
+> 这份文档对应 `v4.3.1` 配置结构。
+>
+> - `v4` 与旧版 `v3 / v2` 配置不兼容，升级后请重新检查 WebUI 配置。
+> - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了发送图片前优化。
 > - 批量结果的“合并转发”当前只有 `aiocqhttp` 原生支持；其他平台会在开启回退时自动改为普通消息逐条发送。
 > - 历史更新内容见 [CHANGELOG.md](./CHANGELOG.md)。
 
@@ -23,6 +23,7 @@
 - 文生图批量并发和改图 / 自拍批量并发拆开配置
 - Provider 级新增 `generate_request_mode` / `edit_request_mode`
 - 请求模式兼容旧配置：`auto` 不会再覆盖旧的 `enable_stream_*` 布尔配置
+- 个人微信 `weixin_oc` 发送图片前可自动优化 4K 大图，并把适配器上传超时调高到配置值
 
 ## 功能概览
 
@@ -75,12 +76,6 @@
 
 - `features.<mode>.enabled`：是否启用该能力
 - `features.<mode>.llm_tool_enabled`：是否允许 `LLM` 通过工具调用该能力
-
-## 配置说明
-
-> [!TIP]
-> **本插件没有独立 WebUI 界面。** 所有的配置都在 **AstrBot 的管理面板**（默认 `http://localhost:6185`）中进行。
-> 登录面板后，在左侧菜单点击“插件”，找到本插件并点击进入配置表单即可。
 
 ## 命令速查
 
@@ -234,7 +229,7 @@ Q版化:Convert to chibi illustration style
 /自拍参考 设置
 ```
 
-2. 直接在 WebUI（AstrBot 管理面板）的 `features.selfie.reference_images` 上传
+2. 直接在 WebUI 的 `features.selfie.reference_images` 上传
 
 ### 查看和删除
 
@@ -252,8 +247,8 @@ Q版化:Convert to chibi illustration style
 
 说明：
 
-- 如果面板里已经上传了参考照，优先使用面板配置
-- 如果同时没有面板参考照，也没有通过命令保存参考照，`/自拍` 会直接报错
+- 如果 WebUI 里已经上传了参考照，优先使用 WebUI 配置
+- 如果同时没有 WebUI 参考照，也没有通过命令保存参考照，`/自拍` 会直接报错
 - 自拍链路为空时，可通过 `features.selfie.use_edit_chain_when_empty=true` 复用改图链路
 
 ## 视频生成
@@ -348,6 +343,15 @@ Q版化:Convert to chibi illustration style
 - `max_user_concurrency`：同一用户同时执行的图像任务上限
 - `max_user_video_concurrency`：同一用户同时执行的视频任务上限
 
+### 发送前处理
+
+- `send.weixin_compress_images`：个人微信发送前压缩图片，默认开启，仅对 `weixin_oc` 生效。
+- `send.weixin_image_max_side`：个人微信图片最长边，默认 `4096`。
+- `send.weixin_image_max_size_kb`：个人微信图片目标大小，默认 `10240KB`。
+- `send.weixin_api_timeout_seconds`：个人微信发送超时，默认 `60` 秒。
+
+这组配置只影响 `weixin_oc`。QQ / OneBot 仍使用原有发送与兜底逻辑。若个人微信发送 4K 图片时出现 `upload_to_cdn TimeoutError`，优先调高 `send.weixin_api_timeout_seconds`，或降低 `send.weixin_image_max_size_kb`。
+
 ### 功能开关
 
 - `features.draw.enabled`
@@ -362,12 +366,14 @@ Q版化:Convert to chibi illustration style
 
 - `AstrBot >= 4.16.0, < 5`
 - 主要维护平台：`QQ / aiocqhttp`
+- 兼容平台：个人微信 `weixin_oc` 发送图片前优化
 
 ### 已知平台限制
 
 - 批量结果默认就是普通消息逐张发送
 - 视频发送依赖适配器是否支持 `Video.fromFileSystem` 或 `Video.fromURL`
 - 某些需要 URL 回退输入的后端，依赖当前 AstrBot 环境具备文件服务能力
+- `weixin_oc` 官方适配器仅支持个人私聊，不支持微信群聊；大图发送受微信 CDN 上传耗时影响。
 
 ### 关于“其他平台能不能跑”
 
@@ -422,6 +428,17 @@ Q版化:Convert to chibi illustration style
 ### 为什么 `request_mode=stream` 没起作用
 
 并不是所有 provider 模板都支持“双路径请求模式”。单路径后端会忽略这个设置，插件会在校验时提示你。
+
+### 个人微信生成图为什么发送失败或超时
+
+个人微信 `weixin_oc` 发送图片会先上传到微信 CDN。即使图片低于 10MB，也可能因为网络或默认超时过短导致 `upload_to_cdn TimeoutError`。
+
+建议：
+
+- 保持 `send.weixin_compress_images=true`
+- 将 `send.weixin_api_timeout_seconds` 设置为 `60-120`
+- 如果仍超时，降低 `send.weixin_image_max_size_kb`
+- 视频发送能力取决于当前 `weixin_oc` 适配器是否支持对应 `Video` 组件
 
 ## 原仓库展示内容（保留）
 

@@ -352,6 +352,52 @@
       }
     }
   },
+  "send": {
+    "description": "图片发送前处理",
+    "hint": "用于不同平台发送前的图片处理与超时设置。个人微信 weixin_oc 发送大图时建议保持开启。",
+    "type": "object",
+    "items": {
+      "weixin_compress_images": {
+        "description": "个人微信发送前压缩图片",
+        "type": "bool",
+        "default": true,
+        "hint": "仅对 weixin_oc 生效。开启后发送前会生成一份高质量 JPEG 副本，降低个人微信 CDN 上传超时概率；QQ/OneBot 不受影响。"
+      },
+      "weixin_image_max_side": {
+        "description": "个人微信图片最大分辨率",
+        "type": "int",
+        "default": 4096,
+        "slider": {
+          "min": 1600,
+          "max": 8192,
+          "step": 128
+        },
+        "hint": "仅对 weixin_oc 生效。默认保留 4K 最大分辨率；图片超过该值时才缩小。"
+      },
+      "weixin_image_max_size_kb": {
+        "description": "个人微信图片目标大小(KB)",
+        "type": "int",
+        "default": 10240,
+        "slider": {
+          "min": 512,
+          "max": 40960,
+          "step": 512
+        },
+        "hint": "仅对 weixin_oc 生效。默认目标约 10240KB/10MB；超过该大小时优先降低 JPEG 质量。"
+      },
+      "weixin_api_timeout_seconds": {
+        "description": "个人微信发送超时(秒)",
+        "type": "int",
+        "default": 60,
+        "slider": {
+          "min": 15,
+          "max": 300,
+          "step": 5
+        },
+        "hint": "仅对 weixin_oc 生效。发送前会把个人微信适配器的 API/CDN 上传超时调到该值。AstrBot 源码默认通常是 15 秒，大图建议 60-120 秒。"
+      }
+    }
+  },
   "debounce_interval": {
     "description": "防抖时长(秒)",
     "hint": "防抖时间内无法重复提交生成/改图请求，每个用户单独计时",
