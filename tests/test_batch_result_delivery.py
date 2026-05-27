@@ -127,6 +127,10 @@ class _DummyMessageComponent:
     def fromFileSystem(path: str):
         return _DummyMessageComponent(path=path)
 
+    @staticmethod
+    def fromURL(url: str):
+        return _DummyMessageComponent(url=url)
+
 
 class _DummyStar:
     def __init__(self, context):
@@ -387,6 +391,128 @@ def _make_success_result(mod, index: int, image_name: str, mode: str = "selfie_r
 
 
 class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_auto_video_send_prefers_url_before_file_download(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={"features": {"video": {"send_mode": "auto"}}},
+        )
+        calls: list[str] = []
+
+        class _Video:
+            @staticmethod
+            def fromURL(url: str):
+                calls.append("url_component")
+                return ("video_url", url)
+
+            @staticmethod
+            def fromFileSystem(path: str):
+                calls.append("file_component")
+                return ("video_file", path)
+
+        class _Event(_DummyEvent):
+            async def send(self, payload):
+                calls.append("send")
+                await super().send(payload)
+
+        async def _download_video(*args, **kwargs):
+            calls.append("download")
+            raise AssertionError("auto mode should not download when URL send succeeds")
+
+        mod.Video = _Video
+        plugin.videomgr = types.SimpleNamespace(download_video=_download_video)
+        event = _Event()
+
+        await plugin._send_video_result(event, "https://cdn.example/video.mp4")
+
+        self.assertEqual(calls, ["url_component", "send"])
+        self.assertEqual(
+            event.sent,
+            [("chain", [("video_url", "https://cdn.example/video.mp4")])],
+        )
+
+    async def test_auto_video_send_falls_back_to_file_after_url_failure(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={"features": {"video": {"send_mode": "auto"}}},
+        )
+        calls: list[str] = []
+
+        class _Video:
+            @staticmethod
+            def fromURL(url: str):
+                calls.append("url_component")
+                return ("video_url", url)
+
+            @staticmethod
+            def fromFileSystem(path: str):
+                calls.append("file_component")
+                return ("video_file", path)
+
+        class _Event(_DummyEvent):
+            async def send(self, payload):
+                kind = payload[1][0][0]
+                calls.append(f"send_{kind}")
+                if kind == "video_url":
+                    raise RuntimeError("URL send failed")
+                await super().send(payload)
+
+        async def _download_video(*args, **kwargs):
+            calls.append("download")
+            return Path("/tmp/video.mp4")
+
+        mod.Video = _Video
+        plugin.videomgr = types.SimpleNamespace(download_video=_download_video)
+        event = _Event()
+
+        await plugin._send_video_result(event, "https://cdn.example/video.mp4")
+
+        self.assertEqual(
+            calls,
+            [
+                "url_component",
+                "send_video_url",
+                "download",
+                "file_component",
+                "send_video_file",
+            ],
+        )
+        self.assertEqual(
+            event.sent,
+            [("chain", [("video_file", "/tmp/video.mp4")])],
+        )
+
+    async def test_video_send_ignores_invalid_timeout_config_values(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={
+                "features": {
+                    "video": {
+                        "send_mode": "url",
+                        "send_timeout_seconds": "not-a-number",
+                        "download_timeout_seconds": "not-a-number",
+                    }
+                }
+            },
+        )
+
+        class _Video:
+            @staticmethod
+            def fromURL(url: str):
+                return ("video_url", url)
+
+        mod.Video = _Video
+        event = _DummyEvent()
+
+        await plugin._send_video_result(event, "https://cdn.example/video.mp4")
+
+        self.assertEqual(
+            event.sent,
+            [("chain", [("video_url", "https://cdn.example/video.mp4")])],
+        )
+
     async def test_batch_results_ignore_legacy_merge_setting_and_send_images_only(self):
         mod = _load_module()
         plugin = mod.GiteeAIImagePlugin(

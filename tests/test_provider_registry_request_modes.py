@@ -131,6 +131,48 @@ def _load_module():
 
 
 class ProviderRegistryRequestModeTests(unittest.TestCase):
+    def test_registry_resolves_x666_sora2_video_provider(self):
+        mod = _load_module()
+        registry = mod.ProviderRegistry(
+            config={
+                "providers": [
+                    {
+                        "id": "x666_sora2",
+                        "base_url": "https://x666.me",
+                        "api_keys": ["test-key"],
+                        "model": "sora-2",
+                    }
+                ]
+            },
+            imgr=object(),
+            data_dir=Path("/tmp"),
+        )
+
+        backend = registry.get_video_backend("x666_sora2")
+
+        self.assertEqual(backend.__class__.__name__, "Sora2VideoService")
+
+    def test_validate_requires_sora2_api_key_source(self):
+        mod = _load_module()
+        registry = mod.ProviderRegistry(
+            config={
+                "providers": [
+                    {
+                        "id": "x666_sora2",
+                        "__template_key": "sora2_video",
+                        "base_url": "https://x666.me",
+                        "model": "sora-2",
+                    }
+                ]
+            },
+            imgr=object(),
+            data_dir=Path("/tmp"),
+        )
+
+        errors = registry.validate()
+
+        self.assertEqual(errors, ["provider 'x666_sora2' missing api_keys"])
+
     def test_registry_keeps_legacy_generate_flag_when_new_mode_is_auto(self):
         mod = _load_module()
         registry = mod.ProviderRegistry(

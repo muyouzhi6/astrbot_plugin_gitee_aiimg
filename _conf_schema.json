@@ -1795,6 +1795,133 @@
           }
         }
       },
+      "sora2_video": {
+        "name": "Sora2 视频 (/v1/videos)",
+        "description": "用于 Sora2/OpenAI 兼容异步视频任务（POST /v1/videos 后轮询任务状态）。",
+        "hint": "适配 x666.me：POST /v1/videos 返回 task_id，随后 GET /v1/videos/{task_id} 获取 video_url。支持文生视频；参考图会被忽略。",
+        "items": {
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "x666_sora2"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": "x666 Sora2"
+          },
+          "base_url": {
+            "type": "string",
+            "description": "API 服务地址",
+            "hint": "例如：https://x666.me（内部补全 /v1/videos）",
+            "default": "https://x666.me"
+          },
+          "api_keys": {
+            "type": "list",
+            "description": "API Key 池",
+            "default": [],
+            "obvious_hint": true
+          },
+          "api_key": {
+            "type": "string",
+            "description": "单个 API Key（api_keys 为空时使用）",
+            "default": "",
+            "obvious_hint": true
+          },
+          "api_key_env": {
+            "type": "string",
+            "description": "API Key 环境变量名",
+            "hint": "可填 X666_API_KEY；优先级高于 api_keys/api_key，避免把密钥写入配置。",
+            "default": "",
+            "obvious_hint": true
+          },
+          "model": {
+            "type": "string",
+            "description": "模型 ID",
+            "default": "sora-2"
+          },
+          "seconds": {
+            "type": "string",
+            "description": "视频秒数",
+            "hint": "x666.me 要求字符串，例如 5 不要填数字类型。",
+            "default": "5"
+          },
+          "size": {
+            "type": "string",
+            "description": "视频尺寸",
+            "hint": "例如：720x1280 / 1280x720",
+            "default": "720x1280"
+          },
+          "n": {
+            "type": "int",
+            "description": "生成数量",
+            "default": 1
+          },
+          "timeout_seconds": {
+            "type": "int",
+            "description": "任务总超时(秒)",
+            "slider": {
+              "min": 30,
+              "max": 3600,
+              "step": 30
+            },
+            "default": 300
+          },
+          "poll_interval_seconds": {
+            "type": "int",
+            "description": "轮询间隔(秒)",
+            "slider": {
+              "min": 1,
+              "max": 120,
+              "step": 1
+            },
+            "default": 10
+          },
+          "request_timeout_seconds": {
+            "type": "int",
+            "description": "单次请求超时(秒)",
+            "default": 60
+          },
+          "max_retries": {
+            "type": "int",
+            "description": "请求失败重试次数",
+            "slider": {
+              "min": 0,
+              "max": 10,
+              "step": 1
+            },
+            "default": 2
+          },
+          "create_max_retries": {
+            "type": "int",
+            "description": "创建任务重试次数",
+            "hint": "默认 0，避免上游已创建任务但本地超时后重复扣费。",
+            "slider": {
+              "min": 0,
+              "max": 3,
+              "step": 1
+            },
+            "default": 0
+          },
+          "retry_delay": {
+            "type": "int",
+            "description": "重试基础间隔(秒)",
+            "slider": {
+              "min": 0,
+              "max": 60,
+              "step": 1
+            },
+            "default": 2
+          },
+          "extra_body": {
+            "type": "object",
+            "description": "额外请求参数",
+            "hint": "会合并到 POST /v1/videos JSON 中。",
+            "default": {},
+            "items": {}
+          }
+        }
+      },
       "modelscope_openai_images": {
         "name": "魔搭 Images",
         "description": "魔搭社区 OpenAI 兼容的 Images API（具体能力以网关实现为准）。",

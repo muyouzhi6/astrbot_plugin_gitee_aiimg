@@ -3002,10 +3002,12 @@ class GiteeAIImagePlugin(Star):
         if mode not in {"auto", "url", "file"}:
             mode = "auto"
 
-        send_timeout = int(vconf.get("send_timeout_seconds", 90) or 90)
+        send_timeout = self._as_int(vconf.get("send_timeout_seconds", 90), default=90)
         send_timeout = max(10, min(send_timeout, 300))
 
-        download_timeout = int(vconf.get("download_timeout_seconds", 300) or 300)
+        download_timeout = self._as_int(
+            vconf.get("download_timeout_seconds", 300), default=300
+        )
         download_timeout = max(1, min(download_timeout, 3600))
 
         async def _send_file(url: str) -> bool:
@@ -3048,10 +3050,9 @@ class GiteeAIImagePlugin(Star):
             await event.send(event.plain_result(video_url))
             return
 
-        # auto: prefer file first (most platforms won't render URL as playable video)
-        if await _send_file(video_url):
-            return
         if await _send_url(video_url):
+            return
+        if await _send_file(video_url):
             return
         await event.send(event.plain_result(video_url))
 
