@@ -1798,7 +1798,7 @@
       "sora2_video": {
         "name": "Sora2 视频 (/v1/videos)",
         "description": "用于 Sora2/OpenAI 兼容异步视频任务（POST /v1/videos 后轮询任务状态）。",
-        "hint": "适配 x666.me：POST /v1/videos 返回 task_id，随后 GET /v1/videos/{task_id} 获取 video_url。支持文生视频；参考图会被忽略。",
+        "hint": "适配 x666.me：POST /v1/videos 返回 task_id，随后 GET /v1/videos/{task_id} 获取 video_url。无图走文生视频；有图时会作为 input_reference 上传。",
         "items": {
           "id": {
             "type": "string",

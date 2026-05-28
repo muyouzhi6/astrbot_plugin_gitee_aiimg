@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import email.utils
+import json
 import os
 import random
 import time
@@ -12,6 +13,8 @@ from urllib.parse import quote, urljoin, urlsplit
 import httpx
 
 from astrbot.api import logger
+
+from .image_format import guess_image_mime_and_ext
 
 
 def _clamp_int(value: Any, *, default: int, min_value: int, max_value: int) -> int:
@@ -62,6 +65,22 @@ def _origin_from_url(url: str) -> str:
     if not parts.scheme or not parts.netloc:
         return ""
     return f"{parts.scheme}://{parts.netloc}"
+
+
+def _form_value(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _to_form_fields(payload: dict[str, Any]) -> dict[str, str]:
+    return {
+        str(key): _form_value(value)
+        for key, value in payload.items()
+        if value is not None
+    }
 
 
 def _parse_retry_after_seconds(value: Any) -> float | None:
@@ -302,8 +321,17 @@ class Sora2VideoService:
         *,
         headers: dict[str, str],
         json_body: dict[str, Any] | None = None,
+        data_fields: dict[str, str] | None = None,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
     ) -> Any:
-        resp = await client.request(method, url, headers=headers, json=json_body)
+        resp = await client.request(
+            method,
+            url,
+            headers=headers,
+            json=json_body,
+            data=data_fields,
+            files=files,
+        )
         if resp.status_code >= 400:
             detail = resp.text[:500]
             if resp.status_code == 401:
@@ -336,6 +364,8 @@ class Sora2VideoService:
         *,
         headers: dict[str, str],
         json_body: dict[str, Any] | None = None,
+        data_fields: dict[str, str] | None = None,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
         label: str,
         max_retries: int | None = None,
         retry_key_errors: bool = True,
@@ -345,7 +375,13 @@ class Sora2VideoService:
         for attempt in range(retries + 1):
             try:
                 return await self._request_json(
-                    client, method, url, headers=headers, json_body=json_body
+                    client,
+                    method,
+                    url,
+                    headers=headers,
+                    json_body=json_body,
+                    data_fields=data_fields,
+                    files=files,
                 )
             except Exception as e:
                 last_exc = e
@@ -373,8 +409,6 @@ class Sora2VideoService:
         final_prompt = (prompt or "").strip()
         if not final_prompt:
             raise ValueError("缺少视频提示词")
-        if image_bytes:
-            logger.info("[Sora2Video] 当前网关按文生视频处理，已忽略参考图输入")
 
         payload: dict[str, Any] = dict(self.extra_body)
         payload.update(
@@ -386,6 +420,16 @@ class Sora2VideoService:
                 "n": self.n,
             }
         )
+        request_json_body: dict[str, Any] | None = payload
+        request_data_fields: dict[str, str] | None = None
+        request_files: dict[str, tuple[str, bytes, str]] | None = None
+        if image_bytes:
+            mime, ext = guess_image_mime_and_ext(image_bytes)
+            request_json_body = None
+            request_data_fields = _to_form_fields(payload)
+            request_files = {
+                "input_reference": (f"input_reference.{ext}", image_bytes, mime)
+            }
 
         timeout = httpx.Timeout(
             connect=10.0,
@@ -412,17 +456,18 @@ class Sora2VideoService:
             key_errors: list[str] = []
             key_candidates = self._key_candidates()
             for candidate_offset, (key_index, api_key) in enumerate(key_candidates):
-                headers = {
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}",
-                }
+                headers = {"Authorization": f"Bearer {api_key}"}
+                if request_json_body is not None:
+                    headers["Content-Type"] = "application/json"
                 try:
                     data = await self._request_json_with_retries(
                         client,
                         "POST",
                         self.api_url,
                         headers=headers,
-                        json_body=payload,
+                        json_body=request_json_body,
+                        data_fields=request_data_fields,
+                        files=request_files,
                         label="创建视频任务",
                         max_retries=self.create_max_retries,
                         retry_key_errors=False,

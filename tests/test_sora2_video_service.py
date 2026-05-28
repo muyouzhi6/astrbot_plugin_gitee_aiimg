@@ -7,7 +7,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE_NAME = "sora2_video_service_test"
+PACKAGE_NAME = "sora2_video_service_testpkg"
+CORE_PACKAGE_NAME = f"{PACKAGE_NAME}.core"
+MODULE_NAME = f"{CORE_PACKAGE_NAME}.sora2_video_service"
 
 
 class _Logger:
@@ -19,8 +21,17 @@ class _Logger:
 
 
 def _load_module():
-    for name in [MODULE_NAME, "astrbot", "astrbot.api"]:
-        sys.modules.pop(name, None)
+    for name in list(sys.modules):
+        if name.startswith(PACKAGE_NAME) or name in {"astrbot", "astrbot.api"}:
+            sys.modules.pop(name, None)
+
+    pkg = types.ModuleType(PACKAGE_NAME)
+    pkg.__path__ = [str(ROOT)]
+    sys.modules[PACKAGE_NAME] = pkg
+
+    core_pkg = types.ModuleType(CORE_PACKAGE_NAME)
+    core_pkg.__path__ = [str(ROOT / "core")]
+    sys.modules[CORE_PACKAGE_NAME] = core_pkg
 
     astrbot_mod = types.ModuleType("astrbot")
     sys.modules["astrbot"] = astrbot_mod
@@ -112,6 +123,46 @@ class Sora2VideoServiceTests(unittest.IsolatedAsyncioTestCase):
         await service.generate_video_url("prompt")
 
         self.assertEqual(create_retry_values, [0])
+
+    async def test_reference_image_uses_multipart_input_reference(self):
+        mod = _load_module()
+        calls = []
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+
+        class Service(mod.Sora2VideoService):
+            async def _request_json_with_retries(self, *args, **kwargs):
+                calls.append(kwargs)
+                return {"video_url": "https://cdn.example/video.mp4"}
+
+        service = Service(
+            settings={
+                "api_keys": ["key-a"],
+                "model": "sora-2",
+                "seconds": "5",
+                "size": "720x1280",
+            }
+        )
+
+        result = await service.generate_video_url("prompt", image_bytes=png_bytes)
+
+        self.assertEqual(result, "https://cdn.example/video.mp4")
+        call = calls[0]
+        self.assertIsNone(call["json_body"])
+        self.assertNotIn("Content-Type", call["headers"])
+        self.assertEqual(
+            call["data_fields"],
+            {
+                "model": "sora-2",
+                "prompt": "prompt",
+                "seconds": "5",
+                "size": "720x1280",
+                "n": "1",
+            },
+        )
+        filename, file_bytes, mime = call["files"]["input_reference"]
+        self.assertEqual(filename, "input_reference.png")
+        self.assertEqual(file_bytes, png_bytes)
+        self.assertEqual(mime, "image/png")
 
     async def test_create_request_falls_back_to_next_key_on_auth_failure(self):
         mod = _load_module()
