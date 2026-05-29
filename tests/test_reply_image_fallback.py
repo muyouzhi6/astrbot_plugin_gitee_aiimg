@@ -100,6 +100,12 @@ class _DummyEvent:
         return self._group_id
 
 
+class _RawDummyEvent(_DummyEvent):
+    def __init__(self, chain, raw_message, api=None, **kwargs):
+        super().__init__(chain, api=api, **kwargs)
+        self.message_obj.raw_message = raw_message
+
+
 def _clear_modules():
     for name in [
         UTILS_MODULE_NAME,
@@ -315,6 +321,54 @@ class ReplyImageFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(images), 1)
         self.assertEqual(images[0].url, "https://example.com/from-parser.png")
         self.assertEqual(api.calls, [])
+
+    async def test_collects_avatar_from_raw_onebot_at_segment(self):
+        utils = _load_utils_module()
+
+        async def fake_get_avatar(user_id: str):
+            self.assertEqual(user_id, "123456")
+            return b"avatar-bytes"
+
+        utils.get_avatar = fake_get_avatar
+        event = _RawDummyEvent(
+            [],
+            [{"type": "at", "data": {"qq": "123456"}}],
+            self_id="99",
+        )
+
+        images = await utils.get_images_from_event(event, include_avatar=True)
+
+        self.assertEqual(len(images), 1)
+        self.assertTrue(images[0].file.startswith("base64://"))
+
+    async def test_collects_avatar_from_raw_cq_at_message(self):
+        utils = _load_utils_module()
+
+        async def fake_get_avatar(user_id: str):
+            self.assertEqual(user_id, "654321")
+            return b"avatar-bytes"
+
+        utils.get_avatar = fake_get_avatar
+        event = _RawDummyEvent(
+            [],
+            "[CQ:at,qq=654321] /手办",
+            self_id="99",
+        )
+
+        images = await utils.get_images_from_event(event, include_avatar=True)
+
+        self.assertEqual(len(images), 1)
+        self.assertTrue(images[0].file.startswith("base64://"))
+
+    async def test_collect_at_user_ids_ignores_self_and_all(self):
+        utils = _load_utils_module()
+        event = _RawDummyEvent(
+            [_At("99"), _At("all")],
+            [{"type": "at", "data": {"qq": "123456"}}],
+            self_id="99",
+        )
+
+        self.assertEqual(utils.collect_at_user_ids(event), ["123456"])
 
 
 if __name__ == "__main__":

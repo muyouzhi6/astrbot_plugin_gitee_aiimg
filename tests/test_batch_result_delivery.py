@@ -359,6 +359,7 @@ def _load_module():
     _install_stub_module(
         f"{CORE_PACKAGE_NAME}.utils",
         close_session=lambda *args, **kwargs: None,
+        collect_at_user_ids=lambda *args, **kwargs: [],
         get_images_from_event=lambda *args, **kwargs: [],
     )
     _install_stub_module(

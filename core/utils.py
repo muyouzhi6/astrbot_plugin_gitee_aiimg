@@ -6,6 +6,7 @@ import asyncio
 import base64
 import io
 import os
+import re
 from typing import Any, Awaitable, Callable
 
 import aiohttp
@@ -15,6 +16,17 @@ from astrbot.core.message.components import At, Image, Reply
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 
 from .net_safety import URLFetchPolicy, ensure_url_allowed
+
+_AT_NESTED_KEYS = (
+    "message",
+    "messages",
+    "raw_message",
+    "chain",
+    "content",
+    "elements",
+    "segments",
+)
+_AT_USER_ID_KEYS = ("qq", "user_id", "uid", "id")
 
 try:
     from astrbot.core.utils.quoted_message_parser import (
@@ -175,10 +187,148 @@ def _get_event_chain(event: AstrMessageEvent) -> list[Any]:
     return chain if isinstance(chain, list) else []
 
 
+def collect_at_user_ids(event: AstrMessageEvent) -> list[str]:
+    """Collect mentioned user IDs from normalized and raw message payloads."""
+    self_id = ""
+    if hasattr(event, "get_self_id"):
+        try:
+            self_id = str(event.get_self_id()).strip()
+        except Exception:
+            pass
+
+    at_user_ids: list[str] = []
+    chain = _get_event_chain(event)
+    _extract_at_user_ids_from_structure(chain, at_user_ids, self_id=self_id)
+
+    message_obj = getattr(event, "message_obj", None)
+    if message_obj is not None:
+        for attr in ("raw_message", "message"):
+            _extract_at_user_ids_from_structure(
+                getattr(message_obj, attr, None),
+                at_user_ids,
+                self_id=self_id,
+            )
+
+    for attr in ("raw_message", "message"):
+        _extract_at_user_ids_from_structure(
+            getattr(event, attr, None),
+            at_user_ids,
+            self_id=self_id,
+        )
+
+    return at_user_ids
+
+
 def _append_unique_string(target: list[str], value: Any) -> None:
     s = str(value or "").strip()
     if s and s not in target:
         target.append(s)
+
+
+def _append_unique_user_id(
+    target: list[str],
+    value: Any,
+    *,
+    self_id: str = "",
+) -> None:
+    uid = str(value or "").strip()
+    if not uid or uid.lower() == "all" or uid == self_id:
+        return
+    if uid not in target:
+        target.append(uid)
+
+
+def _extract_cq_at_user_ids(text: str, target: list[str], *, self_id: str = "") -> None:
+    for match in re.finditer(r"\[CQ:at,([^\]]+)\]", str(text or "")):
+        params = match.group(1)
+        qq_match = re.search(r"(?:^|,)qq=([^,\]]+)", params)
+        if qq_match:
+            _append_unique_user_id(target, qq_match.group(1), self_id=self_id)
+
+
+def _extract_at_data_user_id(data: Any, target: list[str], *, self_id: str = "") -> None:
+    if isinstance(data, dict):
+        for key in _AT_USER_ID_KEYS:
+            if key in data:
+                _append_unique_user_id(target, data.get(key), self_id=self_id)
+                return
+        return
+    _append_unique_user_id(target, data, self_id=self_id)
+
+
+def _extract_nested_at_user_ids(
+    value: Any,
+    target: list[str],
+    *,
+    self_id: str = "",
+    seen: set[int] | None = None,
+) -> None:
+    for key in _AT_NESTED_KEYS:
+        if isinstance(value, dict):
+            if key not in value:
+                continue
+            nested = value.get(key)
+        else:
+            nested = _safe_getattr(value, key, None)
+            if nested is value:
+                continue
+        if nested is not None:
+            _extract_at_user_ids_from_structure(
+                nested,
+                target,
+                self_id=self_id,
+                seen=seen,
+            )
+
+
+def _extract_at_user_ids_from_structure(
+    value: Any,
+    target: list[str],
+    *,
+    self_id: str = "",
+    seen: set[int] | None = None,
+) -> None:
+    if value is None:
+        return
+
+    if seen is None:
+        seen = set()
+
+    try:
+        marker = id(value)
+    except Exception:
+        marker = None
+    if marker is not None:
+        if marker in seen:
+            return
+        seen.add(marker)
+
+    if isinstance(value, str):
+        _extract_cq_at_user_ids(value, target, self_id=self_id)
+        return
+
+    if isinstance(value, dict):
+        seg_type = str(value.get("type") or value.get("tag") or "").strip().lower()
+        if seg_type == "at":
+            _extract_at_data_user_id(value.get("data"), target, self_id=self_id)
+        _extract_nested_at_user_ids(value, target, self_id=self_id, seen=seen)
+        return
+
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            _extract_at_user_ids_from_structure(
+                item, target, self_id=self_id, seen=seen
+            )
+        return
+
+    if isinstance(value, At) or type(value).__name__.lower() == "at":
+        for attr in (*_AT_USER_ID_KEYS, "target_id"):
+            uid = _safe_getattr(value, attr, None)
+            if uid is not None:
+                _append_unique_user_id(target, uid, self_id=self_id)
+                break
+
+    _extract_nested_at_user_ids(value, target, self_id=self_id, seen=seen)
 
 
 def _normalize_image_ref(value: Any) -> str:
@@ -502,6 +652,8 @@ async def _extract_reply_images(
             await _build_images_from_refs(event, image_refs),
         )
     return image_segs
+
+
 async def get_images_from_event(
     event: AstrMessageEvent,
     include_avatar: bool = True,
@@ -515,19 +667,7 @@ async def get_images_from_event(
         f"[get_images] chain_len={len(chain)}, types={[type(seg).__name__ for seg in chain]}"
     )
 
-    self_id = ""
-    if hasattr(event, "get_self_id"):
-        try:
-            self_id = str(event.get_self_id()).strip()
-        except Exception:
-            pass
-
-    at_user_ids: list[str] = []
-    for seg in chain:
-        if isinstance(seg, At) and hasattr(seg, "qq") and seg.qq != "all":
-            uid = str(seg.qq)
-            if uid != self_id and uid not in at_user_ids:
-                at_user_ids.append(uid)
+    at_user_ids = collect_at_user_ids(event)
 
     for seg in chain:
         if not isinstance(seg, Reply):

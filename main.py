@@ -64,7 +64,7 @@ from .core.image_manager import ImageManager
 from .core.nanobanana import NanoBananaService
 from .core.provider_registry import ProviderRegistry
 from .core.ref_store import ReferenceStore
-from .core.utils import close_session, get_images_from_event
+from .core.utils import close_session, collect_at_user_ids, get_images_from_event
 from .core.video_manager import VideoManager
 
 
@@ -1277,6 +1277,7 @@ class GiteeAIImagePlugin(Star):
         # 移除命令名
         if msg.startswith(command_name):
             msg = msg[len(command_name) :]
+        msg = re.sub(r"@\S+\(\d+\)", " ", msg)
         # 清理多余空格
         return msg.strip()
 
@@ -1632,7 +1633,7 @@ class GiteeAIImagePlugin(Star):
         else:
             await mark_failed(event)
 
-    @filter.regex(r"(?:[/!！.。．])?(改图|图生图|修图|aiedit)", priority=-10)
+    @filter.regex(r".*(?:[/!！.。．])?(改图|图生图|修图|aiedit)", priority=-10)
     async def edit_image_regex_fallback(self, event: AstrMessageEvent):
         """兼容“图片在前、文字在后”的消息：确保 /改图 能触发。"""
         msg = (event.message_str or "").strip()
@@ -1640,7 +1641,7 @@ class GiteeAIImagePlugin(Star):
         if self._is_framework_direct_command_text(msg, command_names, allow_bare=False):
             return
         try:
-            if not await self._has_message_images(event):
+            if not await self._has_message_images_or_avatar_mentions(event):
                 return
         except Exception:
             return
@@ -1662,7 +1663,7 @@ class GiteeAIImagePlugin(Star):
             await self._do_edit(event, prompt, backend=None)
             event.stop_event()
 
-    @filter.regex(r"[/!！.。．][^\s]+", priority=-10)
+    @filter.regex(r".*[/!！.。．][^\s]+", priority=-10)
     async def preset_regex_fallback(self, event: AstrMessageEvent):
         """兼容“图片在前、预设命令在后”的消息：确保 /<预设名> 能触发。"""
         msg = (event.message_str or "").strip()
@@ -1677,9 +1678,9 @@ class GiteeAIImagePlugin(Star):
         except Exception:
             pass
 
-        # 仅当消息/引用里确实带图（不含头像兜底）时才兜底，避免误伤其它插件命令
+        # 仅当消息/引用里有图或有效 @ 头像目标时才兜底，避免误伤其它插件命令
         try:
-            if not await self._has_message_images(event):
+            if not await self._has_message_images_or_avatar_mentions(event):
                 return
         except Exception:
             return
@@ -3491,6 +3492,13 @@ class GiteeAIImagePlugin(Star):
         """仅检测用户消息/引用里的图片（不含头像兜底）。"""
         image_segs = await get_images_from_event(event, include_avatar=False)
         return bool(image_segs)
+
+    async def _has_message_images_or_avatar_mentions(
+        self, event: AstrMessageEvent
+    ) -> bool:
+        if await self._has_message_images(event):
+            return True
+        return any(str(uid).isdigit() for uid in collect_at_user_ids(event))
 
     def _is_auto_selfie_prompt(self, prompt: str) -> bool:
         text = (prompt or "").strip()
