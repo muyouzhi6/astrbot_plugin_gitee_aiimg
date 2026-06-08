@@ -560,16 +560,6 @@ class MainInitializeRequestModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(event.call_llm)
         self.assertTrue(event.stopped)
 
-    async def test_selfie_failure_message_explains_missing_reference(self):
-        mod, _ = _load_module()
-
-        message = mod.GiteeAIImagePlugin._format_selfie_failure_message(
-            RuntimeError("未设置自拍参考照。请先设置。")
-        )
-
-        self.assertIn("未设置自拍参考照", message)
-        self.assertIn("/自拍参考 设置", message)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -3765,33 +3765,6 @@ class GiteeAIImagePlugin(Star):
         )
         return image_path
 
-    @staticmethod
-    def _format_selfie_failure_message(error: Exception) -> str:
-        raw = str(error or "").strip()
-        if "未设置自拍参考照" in raw:
-            return (
-                "自拍生成失败：未设置自拍参考照。请先发送图片 + /自拍参考 设置，"
-                "或在 WebUI 的 features.selfie.reference_images 上传参考图。"
-            )
-        if "No selfie provider chain configured" in raw:
-            return (
-                "自拍生成失败：未配置自拍服务商链路。请设置 features.selfie.chain，"
-                "或开启 features.selfie.use_edit_chain_when_empty 复用改图链路。"
-            )
-        return "自拍生成失败：请查看 AstrBot 日志里的 [自拍] 失败详情。"
-
-    async def _send_selfie_failure_message(
-        self,
-        event: AstrMessageEvent,
-        error: Exception,
-    ) -> None:
-        try:
-            await event.send(
-                event.plain_result(self._format_selfie_failure_message(error))
-            )
-        except Exception:
-            logger.debug("[自拍] 失败提示发送失败", exc_info=True)
-
     async def _do_selfie(
         self,
         event: AstrMessageEvent,
@@ -3838,7 +3811,6 @@ class GiteeAIImagePlugin(Star):
             await self._save_last_image_task_meta(event, task_meta)
         except Exception as e:
             logger.error(f"[自拍] 失败: {e}", exc_info=True)
-            await self._send_selfie_failure_message(event, e)
             await mark_failed(event)
         finally:
             await self._end_user_job(user_id, kind="image")
