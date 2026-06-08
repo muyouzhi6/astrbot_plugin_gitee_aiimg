@@ -36,6 +36,10 @@ class _StubVertexSettings:
         self.kwargs = kwargs
 
 
+class Sora2VideoService(_StubBackend):
+    pass
+
+
 def _clear_modules():
     for name in list(sys.modules):
         if name.startswith(PACKAGE_NAME) or name in {"astrbot", "astrbot.api"}:
@@ -112,6 +116,10 @@ def _load_module():
     _install_stub_module(
         f"{CORE_PACKAGE_NAME}.openai_full_url_backend",
         OpenAIFullURLBackend=_StubBackend,
+    )
+    _install_stub_module(
+        f"{CORE_PACKAGE_NAME}.sora2_video_service",
+        Sora2VideoService=Sora2VideoService,
     )
     _install_stub_module(
         f"{CORE_PACKAGE_NAME}.vertex_ai_anonymous_backend",

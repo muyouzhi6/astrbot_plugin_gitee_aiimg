@@ -307,6 +307,10 @@ def _load_module():
         OpenAIFullURLBackend=_StubBackend,
     )
     _install_stub_module(
+        f"{CORE_PACKAGE_NAME}.sora2_video_service",
+        Sora2VideoService=_StubBackend,
+    )
+    _install_stub_module(
         f"{CORE_PACKAGE_NAME}.vertex_ai_anonymous_backend",
         VertexAIAnonymousBackend=_StubBackend,
         VertexAIAnonymousSettings=_StubVertexSettings,
