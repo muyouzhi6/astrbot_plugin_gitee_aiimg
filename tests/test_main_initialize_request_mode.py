@@ -249,6 +249,10 @@ def _load_module():
         OpenAIFullURLBackend=_StubBackend,
     )
     _install_stub_module(
+        f"{CORE_PACKAGE_NAME}.sora2_video_service",
+        Sora2VideoService=_StubBackend,
+    )
+    _install_stub_module(
         f"{CORE_PACKAGE_NAME}.vertex_ai_anonymous_backend",
         VertexAIAnonymousBackend=_StubBackend,
         VertexAIAnonymousSettings=_StubVertexSettings,
@@ -373,6 +377,198 @@ class MainInitializeRequestModeTests(unittest.IsolatedAsyncioTestCase):
                 for msg in logger.warning_messages
             )
         )
+
+    async def test_selfie_regex_fallback_handles_direct_slash_command(self):
+        mod, _ = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={},
+        )
+        plugin._is_selfie_enabled = lambda: True
+
+        calls = []
+
+        async def fake_do_selfie(event, prompt, backend=None):
+            calls.append((event, prompt, backend))
+
+        plugin._do_selfie = fake_do_selfie
+
+        plain = mod.Plain()
+        plain.text = "/自拍 窗边自然光"
+
+        class DummyEvent:
+            message_str = "/自拍 窗边自然光"
+
+            def __init__(self):
+                self.call_llm = False
+                self.stopped = False
+
+            def get_messages(self):
+                return [plain]
+
+            def should_call_llm(self, value):
+                self.call_llm = value
+
+            def stop_event(self):
+                self.stopped = True
+
+        event = DummyEvent()
+
+        await plugin.selfie_regex_fallback(event)
+
+        self.assertEqual(calls, [(event, "窗边自然光", None)])
+        self.assertTrue(event.call_llm)
+        self.assertTrue(event.stopped)
+
+    async def test_selfie_regex_fallback_handles_wake_stripped_command(self):
+        mod, _ = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={},
+        )
+        plugin._is_selfie_enabled = lambda: True
+
+        calls = []
+
+        async def fake_do_selfie(event, prompt, backend=None):
+            calls.append((event, prompt, backend))
+
+        plugin._do_selfie = fake_do_selfie
+
+        class DummyEvent:
+            message_str = "自拍 窗边自然光"
+            is_at_or_wake_command = True
+
+            def __init__(self):
+                self.call_llm = False
+                self.stopped = False
+
+            def get_extra(self, key, default=None):
+                return default
+
+            def should_call_llm(self, value):
+                self.call_llm = value
+
+            def stop_event(self):
+                self.stopped = True
+
+        event = DummyEvent()
+
+        await plugin.selfie_regex_fallback(event)
+
+        self.assertEqual(calls, [(event, "窗边自然光", None)])
+        self.assertTrue(event.call_llm)
+        self.assertTrue(event.stopped)
+
+    async def test_selfie_regex_fallback_skips_when_command_handler_active(self):
+        mod, _ = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={},
+        )
+        plugin._is_selfie_enabled = lambda: True
+
+        calls = []
+
+        async def fake_do_selfie(event, prompt, backend=None):
+            calls.append((event, prompt, backend))
+
+        plugin._do_selfie = fake_do_selfie
+
+        class DummyHandler:
+            handler_name = "selfie_command"
+
+        class DummyEvent:
+            message_str = "自拍 窗边自然光"
+            is_at_or_wake_command = True
+
+            def get_extra(self, key, default=None):
+                if key == "activated_handlers":
+                    return [DummyHandler()]
+                return default
+
+        await plugin.selfie_regex_fallback(DummyEvent())
+
+        self.assertEqual(calls, [])
+
+    async def test_selfie_regex_fallback_ignores_unwoken_bare_text(self):
+        mod, _ = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={},
+        )
+        plugin._is_selfie_enabled = lambda: True
+
+        calls = []
+
+        async def fake_do_selfie(event, prompt, backend=None):
+            calls.append((event, prompt, backend))
+
+        plugin._do_selfie = fake_do_selfie
+
+        class DummyEvent:
+            message_str = "自拍 窗边自然光"
+            is_at_or_wake_command = False
+
+            def get_extra(self, key, default=None):
+                return default
+
+        await plugin.selfie_regex_fallback(DummyEvent())
+
+        self.assertEqual(calls, [])
+
+    async def test_selfie_reference_regex_fallback_handles_image_prefixed_command(self):
+        mod, _ = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={},
+        )
+        plugin._is_selfie_enabled = lambda: True
+
+        calls = []
+
+        async def fake_set_selfie_reference(event):
+            calls.append(event)
+
+        plugin._set_selfie_reference = fake_set_selfie_reference
+
+        class DummyEvent:
+            message_str = "图片 /自拍参考 设置"
+            is_at_or_wake_command = False
+
+            def __init__(self):
+                self.call_llm = False
+                self.stopped = False
+
+            def get_extra(self, key, default=None):
+                return default
+
+            def should_call_llm(self, value):
+                self.call_llm = value
+
+            def stop_event(self):
+                self.stopped = True
+
+        event = DummyEvent()
+        yielded = []
+
+        async for result in plugin.selfie_reference_regex_fallback(event):
+            yielded.append(result)
+
+        self.assertEqual(calls, [event])
+        self.assertEqual(yielded, [])
+        self.assertTrue(event.call_llm)
+        self.assertTrue(event.stopped)
+
+    async def test_selfie_failure_message_explains_missing_reference(self):
+        mod, _ = _load_module()
+
+        message = mod.GiteeAIImagePlugin._format_selfie_failure_message(
+            RuntimeError("未设置自拍参考照。请先设置。")
+        )
+
+        self.assertIn("未设置自拍参考照", message)
+        self.assertIn("/自拍参考 设置", message)
 
 
 if __name__ == "__main__":

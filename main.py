@@ -1284,15 +1284,36 @@ class GiteeAIImagePlugin(Star):
     @staticmethod
     def _extract_command_arg_anywhere(message: str, command_name: str) -> str:
         """从任意位置提取“/命令 参数”，用于图片在前导致 @filter.command 不触发的场景。"""
+        _found, arg = GiteeAIImagePlugin._find_command_arg_anywhere(
+            message,
+            command_name,
+        )
+        return arg
+
+    @staticmethod
+    def _find_command_arg_anywhere(
+        message: str,
+        command_name: str,
+        *,
+        allow_bare: bool = False,
+    ) -> tuple[bool, str]:
+        """查找带前缀命令；已被 AstrBot wake_prefix 剥离时允许裸命令。"""
         msg = (message or "").strip()
         if not msg:
-            return ""
+            return False, ""
         for prefix in "/!！.。．":
             token = f"{prefix}{command_name}"
             idx = msg.find(token)
-            if idx >= 0:
-                return msg[idx + len(token) :].strip()
-        return ""
+            while idx >= 0:
+                end = idx + len(token)
+                if end == len(msg) or msg[end].isspace():
+                    return True, msg[end:].strip()
+                idx = msg.find(token, idx + 1)
+        if allow_bare and msg.startswith(command_name):
+            end = len(command_name)
+            if end == len(msg) or msg[end].isspace():
+                return True, msg[end:].strip()
+        return False, ""
 
     def _extract_command_arg_from_chain(
         self, event: AstrMessageEvent, command_name: str
@@ -1428,6 +1449,21 @@ class GiteeAIImagePlugin(Star):
             (plain == name if allow_bare else False) or plain.startswith(f"{name} ")
             for name in command_names
         )
+
+    @staticmethod
+    def _has_activated_handler(event: AstrMessageEvent, handler_name: str) -> bool:
+        """检查本轮事件是否已经激活指定 handler，用于 regex fallback 去重。"""
+        try:
+            handlers = event.get_extra("activated_handlers", [])
+        except Exception:
+            return False
+        for handler in handlers or []:
+            if str(getattr(handler, "handler_name", "") or "") == handler_name:
+                return True
+            raw_handler = getattr(handler, "handler", None)
+            if str(getattr(raw_handler, "__name__", "") or "") == handler_name:
+                return True
+        return False
 
     async def terminate(self):
         self.debouncer.clear_all()
@@ -1719,15 +1755,19 @@ class GiteeAIImagePlugin(Star):
         prompt = self._extract_extra_prompt(event, "自拍")
         await self._do_selfie(event, prompt, backend=None)
 
-    @filter.regex(r"[/!！.。．]自拍(\s|$)", priority=-10)
+    @filter.regex(r"(?:自拍|.*[/!！.。．]自拍)(?:\s|$)", priority=-10)
     async def selfie_regex_fallback(self, event: AstrMessageEvent):
         """兼容“图片在前、文字在后”的消息：确保 /自拍 能触发。"""
-        msg = (event.message_str or "").strip()
-        # 如果本来就是“首段文本命令”，交给 command handler，避免重复回复
-        if self._is_direct_command_message(event, ("自拍",)):
+        if self._has_activated_handler(event, "selfie_command"):
             return
-        prompt = self._extract_command_arg_anywhere(msg, "自拍")
-        if prompt or "/自拍" in msg or "自拍" in msg:
+        msg = (event.message_str or "").strip()
+        found, prompt = self._find_command_arg_anywhere(
+            msg,
+            "自拍",
+            allow_bare=bool(getattr(event, "is_at_or_wake_command", False)),
+        )
+        if found:
+            event.should_call_llm(True)
             if not self._is_selfie_enabled():
                 await mark_failed(event)
                 event.stop_event()
@@ -1781,17 +1821,24 @@ class GiteeAIImagePlugin(Star):
 
         await mark_failed(event)
 
-    @filter.regex(r"[/!！.。．]自拍参考(\s|$)", priority=-10)
+    @filter.regex(r"(?:自拍参考|.*[/!！.。．]自拍参考)(?:\s|$)", priority=-10)
     async def selfie_reference_regex_fallback(self, event: AstrMessageEvent):
         """兼容“图片在前、文字在后”的消息：确保 /自拍参考 能触发。"""
-        msg = (event.message_str or "").strip()
-        if self._is_direct_command_message(event, ("自拍参考",)):
+        if self._has_activated_handler(event, "selfie_reference_command"):
             return
+        msg = (event.message_str or "").strip()
+        found, arg = self._find_command_arg_anywhere(
+            msg,
+            "自拍参考",
+            allow_bare=bool(getattr(event, "is_at_or_wake_command", False)),
+        )
+        if not found:
+            return
+        event.should_call_llm(True)
         if not self._is_selfie_enabled():
             await mark_failed(event)
             event.stop_event()
             return
-        arg = self._extract_command_arg_anywhere(msg, "自拍参考")
         action, _, _rest = (arg or "").strip().partition(" ")
         action = action.strip().lower()
 
@@ -3718,6 +3765,33 @@ class GiteeAIImagePlugin(Star):
         )
         return image_path
 
+    @staticmethod
+    def _format_selfie_failure_message(error: Exception) -> str:
+        raw = str(error or "").strip()
+        if "未设置自拍参考照" in raw:
+            return (
+                "自拍生成失败：未设置自拍参考照。请先发送图片 + /自拍参考 设置，"
+                "或在 WebUI 的 features.selfie.reference_images 上传参考图。"
+            )
+        if "No selfie provider chain configured" in raw:
+            return (
+                "自拍生成失败：未配置自拍服务商链路。请设置 features.selfie.chain，"
+                "或开启 features.selfie.use_edit_chain_when_empty 复用改图链路。"
+            )
+        return "自拍生成失败：请查看 AstrBot 日志里的 [自拍] 失败详情。"
+
+    async def _send_selfie_failure_message(
+        self,
+        event: AstrMessageEvent,
+        error: Exception,
+    ) -> None:
+        try:
+            await event.send(
+                event.plain_result(self._format_selfie_failure_message(error))
+            )
+        except Exception:
+            logger.debug("[自拍] 失败提示发送失败", exc_info=True)
+
     async def _do_selfie(
         self,
         event: AstrMessageEvent,
@@ -3764,6 +3838,7 @@ class GiteeAIImagePlugin(Star):
             await self._save_last_image_task_meta(event, task_meta)
         except Exception as e:
             logger.error(f"[自拍] 失败: {e}", exc_info=True)
+            await self._send_selfie_failure_message(event, e)
             await mark_failed(event)
         finally:
             await self._end_user_job(user_id, kind="image")
