@@ -63,19 +63,71 @@
 - 你的网关路径不是标准 `/v1/...`：用 `OpenAI 兼容-完整路径`
 - 直连 Gemini 官方：用 `Gemini 原生`
 
-### 2. 再配 `features.*.chain`
+### 推荐渠道：云智 AI 中转站
 
-- `features.draw.chain`：文生图链路
-- `features.edit.chain`：改图链路
-- `features.selfie.chain`：自拍链路
-- `features.video.chain`：视频链路
+如果你想快速接入同时支持文生图和改图的 `gpt-image-2`，可以使用云智 AI 中转站：
 
-链路按顺序兜底。前面的 provider 失败后，插件会自动切到后面的 provider。
+- 注册链接：[云智 AI 中转站](https://ai.beimo.cc/register?aff=9FDGT62B49SM)
+- 当前 `gpt-image-2` 价格说明：`0.09 元/张`
+- 推荐模板：`OpenAI Images`，也就是 provider 模板里的 `openai_images`
+- 推荐模型：`gpt-image-2`
+- 推荐 Base URL：`https://www.yzcld.com/v1`
 
-### 3. 按需开关功能
+> [!NOTE]
+> 价格可能随渠道调整而变化，请以云智 AI 后台实际计费页为准。
 
-- `features.<mode>.enabled`：是否启用该能力
-- `features.<mode>.llm_tool_enabled`：是否允许 `LLM` 通过工具调用该能力
+在 WebUI 的 `providers` 里新增一个 `OpenAI Images` 服务商，建议这样填：
+
+```json
+{
+  "id": "yzcld_gpt_image_2",
+  "__template_key": "openai_images",
+  "label": "云智 AI gpt-image-2",
+  "base_url": "https://www.yzcld.com/v1",
+  "api_keys": [
+    "你的云智 AI API Key"
+  ],
+  "model": "gpt-image-2",
+  "supports_edit": true,
+  "timeout": 240,
+  "max_retries": 0,
+  "default_size": "",
+  "extra_body": {}
+}
+```
+
+然后在功能链路里引用同一个 provider：
+
+```json
+{
+  "features": {
+    "draw": {
+      "chain": [
+        {
+          "provider_id": "yzcld_gpt_image_2",
+          "output": ""
+        }
+      ]
+    },
+    "edit": {
+      "chain": [
+        {
+          "provider_id": "yzcld_gpt_image_2",
+          "output": ""
+        }
+      ]
+    },
+    "selfie": {
+      "chain": [
+        {
+          "provider_id": "yzcld_gpt_image_2",
+          "output": ""
+        }
+      ]
+    }
+  }
+}
+```
 
 ## 命令速查
 
