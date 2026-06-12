@@ -71,7 +71,7 @@
 - 当前 `gpt-image-2` 价格说明：`0.09 元/张`
 - 推荐模板：`OpenAI Images`，也就是 provider 模板里的 `openai_images`
 - 推荐模型：`gpt-image-2`
-- 推荐 Base URL：`https://www.yzcld.com/v1`
+- 推荐 Base URL：`https://www.yzcld.com`
 
 > [!NOTE]
 > 价格可能随渠道调整而变化，请以云智 AI 后台实际计费页为准。
@@ -83,7 +83,7 @@
   "id": "yzcld_gpt_image_2",
   "__template_key": "openai_images",
   "label": "云智 AI gpt-image-2",
-  "base_url": "https://www.yzcld.com/v1",
+  "base_url": "https://www.yzcld.com",
   "api_keys": [
     "你的云智 AI API Key"
   ],
