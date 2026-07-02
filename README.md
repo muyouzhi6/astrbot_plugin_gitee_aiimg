@@ -1,13 +1,13 @@
 # AstrBot Gitee AI 图像生成插件
 
-[![Plugin Version](https://img.shields.io/badge/Version-v4.3.5-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
+[![Plugin Version](https://img.shields.io/badge/Version-v4.3.6-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16.0%2C%20%3C5-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![Platform](https://img.shields.io/badge/Primary-aiocqhttp-4caf50?style=for-the-badge)](#平台与限制)
 
 多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件，支持命令调用、`LLM tool` 调用、预设提示词、批量出图、请求模式控制、多 `API Key` 轮询、失败兜底与超时配置。
 
 > [!IMPORTANT]
-> 这份文档对应 `v4.3.5` 配置结构。
+> 这份文档对应 `v4.3.6` 配置结构。
 >
 > - `v4` 与旧版 `v3 / v2` 配置不兼容，升级后请重新检查 WebUI 配置。
 > - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了发送图片前优化。
@@ -129,7 +129,67 @@
 }
 ```
 
+### 自拍推荐：WeAPI 香蕉系列模型
 
+如果你主要用 `/自拍`、`/自拍参考` 或 4K 改图，作者更推荐走 WeAPI 的香蕉系列模型，例如 `nano-banana-2`。这类模型更适合参考图编辑、自拍照链路和人像一致性场景，4K 成本也比较低。
+
+- 注册链接：[WeAPI 香蕉系列中转站](https://vg.v1api.cc/register?aff=kCxC)
+- 新号福利：注册送约 `0.5 元` 额度，按作者当前 `nano-banana-2` 4K 实测成本，足够测试几百张左右
+- 推荐模板：`Gemini 原生`，也就是 provider 模板里的 `gemini_native`
+- 推荐模型：`nano-banana-2`
+- 推荐 Base URL：`https://vg.v1api.cc`
+- 推荐分辨率：`4K`
+- 成本参考：作者实测 `nano-banana-2` 生成 / 编辑一百多张 4K 自拍图，总花费约一毛多人民币
+
+> [!NOTE]
+> 上面的注册福利和成本是作者当时的实测参考，不是固定价格承诺；实际赠送额度、计费、模型名和可用节点请以 WeAPI 后台为准。
+
+在 WebUI 的 `providers` 里新增一个 `Gemini 原生` 服务商，建议这样填：
+
+```json
+{
+  "id": "weapi_banana_2",
+  "__template_key": "gemini_native",
+  "label": "WeAPI nano-banana-2",
+  "api_url": "https://vg.v1api.cc",
+  "api_keys": [
+    "你的 WeAPI API Key"
+  ],
+  "model": "nano-banana-2",
+  "generate_request_mode": "auto",
+  "edit_request_mode": "auto",
+  "default_resolution": "4K",
+  "timeout": 600,
+  "use_proxy": false,
+  "proxy_url": ""
+}
+```
+
+如果你专门把它用于自拍模式，可以优先把 `features.selfie.chain` 指向这个 provider：
+
+```json
+{
+  "features": {
+    "selfie": {
+      "chain": [
+        {
+          "provider_id": "weapi_banana_2",
+          "output": "4K"
+        }
+      ],
+      "use_edit_chain_when_empty": true
+    },
+    "edit": {
+      "chain": [
+        {
+          "provider_id": "weapi_banana_2",
+          "output": "4K"
+        }
+      ]
+    }
+  }
+}
+```
 
 ## 命令速查
 
