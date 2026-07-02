@@ -1,5 +1,11 @@
 # 更新日志
 
+## [v4.3.6] - 2026-07-02
+
+### 修复
+
+- 修复 Gemini native 改图 / 自拍链路同时发送 `x-goog-api-key` 与错误 `Authorization: Bearer <api_key>` 导致 401 的问题。
+
 ## [v4.3.5] - 2026-06-09
 
 ### 修复

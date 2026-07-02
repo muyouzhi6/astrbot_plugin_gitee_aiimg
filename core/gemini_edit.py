@@ -339,7 +339,6 @@ class GeminiEditBackend:
         headers = {
             "Content-Type": "application/json",
             "x-goog-api-key": api_key,
-            "Authorization": f"Bearer {api_key}",
         }
 
         proxy = self._proxy()
