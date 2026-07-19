@@ -1924,8 +1924,8 @@
       },
       "modelscope_openai_images": {
         "name": "魔搭 Images",
-        "description": "魔搭社区 OpenAI 兼容的 Images API（具体能力以网关实现为准）。",
-        "hint": "若不支持 images.edit，请将 supports_edit 设为 false 并使用改图链路兜底。",
+        "description": "魔搭社区异步 Images API。",
+        "hint": "文生图会自动提交异步任务并轮询结果；当前不支持 images.edit，请使用其他改图链路。",
         "items": {
           "id": {
             "type": "string",
@@ -1989,6 +1989,20 @@
             "type": "int",
             "description": "最大重试次数",
             "default": 2
+          },
+          "poll_interval": {
+            "type": "float",
+            "description": "任务轮询间隔（秒）",
+            "default": 2.0,
+            "min": 0.5,
+            "max": 30
+          },
+          "poll_timeout": {
+            "type": "int",
+            "description": "任务轮询总超时（秒）",
+            "default": 600,
+            "min": 10,
+            "max": 1800
           },
           "proxy_url": {
             "type": "string",

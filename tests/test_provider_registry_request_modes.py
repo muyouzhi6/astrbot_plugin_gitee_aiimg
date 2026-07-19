@@ -106,6 +106,10 @@ def _load_module():
         JimengApiBackend=_StubBackend,
     )
     _install_stub_module(
+        f"{CORE_PACKAGE_NAME}.modelscope_async_backend",
+        ModelScopeAsyncImageBackend=_StubBackend,
+    )
+    _install_stub_module(
         f"{CORE_PACKAGE_NAME}.openai_chat_image_backend",
         OpenAIChatImageBackend=_StubBackend,
     )
@@ -139,6 +143,31 @@ def _load_module():
 
 
 class ProviderRegistryRequestModeTests(unittest.TestCase):
+    def test_registry_uses_modelscope_async_backend(self):
+        mod = _load_module()
+        registry = mod.ProviderRegistry(
+            config={
+                "providers": [
+                    {
+                        "id": "modelscope",
+                        "__template_key": "modelscope_openai_images",
+                        "base_url": "https://api-inference.modelscope.cn/v1",
+                        "api_keys": ["test-key"],
+                        "model": "Qwen/Qwen-Image",
+                        "poll_interval": 3,
+                        "poll_timeout": 480,
+                    }
+                ]
+            },
+            imgr=object(),
+            data_dir=Path("/tmp"),
+        )
+
+        backend = registry.get_backend("modelscope")
+
+        self.assertEqual(backend.kwargs["poll_interval"], 3.0)
+        self.assertEqual(backend.kwargs["poll_timeout"], 480)
+
     def test_registry_resolves_x666_sora2_video_provider(self):
         mod = _load_module()
         registry = mod.ProviderRegistry(

@@ -14,6 +14,7 @@ from .grok2api_images_backend import Grok2ApiImagesBackend
 from .grok_images_backend import GrokImagesBackend
 from .grok_video_service import GrokVideoService
 from .jimeng_api_backend import JimengApiBackend
+from .modelscope_async_backend import ModelScopeAsyncImageBackend
 from .openai_chat_image_backend import OpenAIChatImageBackend
 from .openai_compat_backend import OpenAICompatBackend
 from .openai_full_url_backend import OpenAIFullURLBackend
@@ -522,7 +523,7 @@ class ProviderRegistry:
             )
 
         if template_key == "modelscope_openai_images":
-            return OpenAICompatBackend(
+            return ModelScopeAsyncImageBackend(
                 imgr=self._imgr,
                 base_url=str(conf.get("base_url") or "").strip(),
                 api_keys=[
@@ -537,6 +538,8 @@ class ProviderRegistry:
                 supports_edit=bool(conf.get("supports_edit", False)),
                 extra_body=_as_dict(conf.get("extra_body")) or None,
                 proxy_url=str(conf.get("proxy_url") or "").strip() or None,
+                poll_interval=float(conf.get("poll_interval") or 2),
+                poll_timeout=int(conf.get("poll_timeout") or 600),
             )
 
         if template_key in {"openai_chat", "grok_chat", "gemini_openai_chat"}:
