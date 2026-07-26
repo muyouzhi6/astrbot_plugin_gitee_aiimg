@@ -1,13 +1,13 @@
 # AstrBot Gitee AI 图像生成插件
 
-[![Plugin Version](https://img.shields.io/badge/Version-v4.3.10-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
+[![Plugin Version](https://img.shields.io/badge/Version-v4.3.11-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16.0%2C%20%3C5-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![Platform](https://img.shields.io/badge/Primary-aiocqhttp-4caf50?style=for-the-badge)](#平台与限制)
 
 多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件，支持命令调用、`LLM tool` 调用、预设提示词、批量出图、请求模式控制、多 `API Key` 轮询、失败兜底与超时配置。
 
 > [!IMPORTANT]
-> 这份文档对应 `v4.3.10` 配置结构。
+> 这份文档对应 `v4.3.11` 配置结构。
 >
 > - `v4` 与旧版 `v3 / v2` 配置不兼容，升级后请重新检查 WebUI 配置。
 > - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了发送图片前优化。
@@ -189,7 +189,7 @@
 }
 ```
 
-LLM tool 会把 prompt 中的 `16:9` 等明确比例作为最高优先级参数，并通过 `generationConfig.imageConfig.aspectRatio` 发送。用户没有指定比例时才使用 provider 或功能默认值。
+LLM tool 会把 prompt 中的 `16:9` 等明确比例作为最高优先级参数，并通过 `generationConfig.imageConfig.aspectRatio` 发送。批量 LLM 任务在用户未指定比例时会为每张图独立规划比例；单张自拍在 LLM 未传比例时使用 `features.selfie.default_aspect_ratio`，默认 `3:4`，不会再把空比例交给中转站回退成 `1:1`。
 
 如果你专门把它用于自拍模式，可以优先把 `features.selfie.chain` 指向这个 provider：
 
@@ -263,7 +263,8 @@ LLM tool 会把 prompt 中的 `16:9` 等明确比例作为最高优先级参数�
 - Gemini Native 会传递自适应比例与分辨率; Vertex AI Anonymous 会传递自适应比例, 并在模型支持时传递分辨率。
 - 声明 `allowed_sizes` 的 OpenAI Images backend 会映射到最接近的合法像素尺寸。
 - 普通单图改图只有在更高优先级没有指定比例时才继承输入图比例。
-- 自拍和多图改图不会从参考图推断输出比例。
+- 自拍和多图改图不会从参考图推断输出比例；自拍缺省使用 `features.selfie.default_aspect_ratio`，默认 `3:4`。
+- 批量 LLM 任务会为每个规划项保存独立比例；用户未固定整组比例时，planner 会按构图选取至少两种比例。
 - backend 不支持的输出维度会被忽略, 最终能力以对应服务商为准。
 
 ## 文生图预设

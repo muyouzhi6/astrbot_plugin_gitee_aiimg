@@ -63,6 +63,10 @@ from .core.llm_batch_planner import (
 from .core.nanobanana import NanoBananaService
 from .core.output_spec import (
     OutputIntent,
+    aspect_ratio_from_size,
+    format_output_intent,
+    merge_output_intents,
+    normalize_aspect_ratio,
     parse_output_intent,
     resolve_llm_output_intent,
     split_prompt_output_suffix,
@@ -2206,12 +2210,17 @@ class GiteeAIImagePlugin(Star):
         - tool result 返回文本摘要，写明本次任务的 mode、effective_prompt 和 follow-up 提示
         - 不再把 ImageContent 回传给 LLM 上下文，避免额外多模态识图耗时
 
+        画面比例决策：
+        - 用户明确比例时必须原样传入 aspect_ratio
+        - 用户未指定时根据构图主动选择：人像/自拍优先 3:4、4:5、9:16，横向场景优先 4:3、3:2、16:9
+        - 除非方形构图确实合适，否则不要省略 aspect_ratio，也不要默认使用 1:1
+
         Args:
             prompt(string): 提示词
             mode(string): auto=自动判断, text=文生图, edit=改图, selfie_ref=参考照
             backend(string): auto=自动选择；也可填 provider_id（你在 WebUI providers 里配置的 id）
             output(string): 兼容输出参数。只有用户明确指定时才传；不得自行填入 1:1 或正方形默认值
-            aspect_ratio(string): 图片比例。默认 auto；用户明确要求时传 16:9、9:16、4:3 等
+            aspect_ratio(string): 图片比例。用户明确要求时照办；未指定时根据构图主动选择 16:9、9:16、4:3、3:4 等
             resolution(string): 图片分辨率。默认 auto；用户明确要求时传 1K、2K 或 4K
         """
         prompt = (prompt or "").strip()
@@ -2472,6 +2481,7 @@ class GiteeAIImagePlugin(Star):
         使用建议（给 LLM 的决策规则）：
         - 当用户明确想要一组不重复但同主题的图片时，优先调用这个工具。
         - 先规划多条不同 prompt，再批量执行，不要自己重复调用单图工具。
+        - 用户未指定比例时保持 aspect_ratio=auto，内部 planner 会为每张图按构图选择不同的合适比例。
 
         Args:
             prompt(string): 用户的总要求。应包含整组图片共同要满足的条件。
@@ -2479,7 +2489,7 @@ class GiteeAIImagePlugin(Star):
             mode(string): auto=自动判断, text=文生图, edit=改图, selfie_ref=参考照自拍
             backend(string): auto=自动选择；也可填 provider_id（你在 WebUI providers 里配置的 id）
             output(string): 兼容输出参数。只有用户明确指定时才传；不得自行填入 1:1 或正方形默认值
-            aspect_ratio(string): 整组图片比例。默认 auto；用户明确要求时传 16:9、9:16、4:3 等
+            aspect_ratio(string): 整组固定比例。默认 auto，由内部 planner 逐图选择；用户明确要求时传 16:9、9:16、4:3 等
             resolution(string): 整组图片分辨率。默认 auto；用户明确要求时传 1K、2K 或 4K
         """
         prompt = str(prompt or "").strip()
@@ -2559,6 +2569,10 @@ class GiteeAIImagePlugin(Star):
                 mode=resolved_mode,
                 user_prompt=prompt,
                 count=target_count,
+                fixed_aspect_ratio=(
+                    output_intent.aspect_ratio
+                    or aspect_ratio_from_size(output_intent.exact_size)
+                ),
             )
             specs = [
                 ImageTaskSpec(
@@ -2569,6 +2583,9 @@ class GiteeAIImagePlugin(Star):
                     effective_prompt=item.prompt,
                     source_command="llm_batch",
                     variant_title=item.title,
+                    output=format_output_intent(
+                        OutputIntent(aspect_ratio=item.aspect_ratio)
+                    ),
                 )
                 for item in planned_items
             ]
@@ -2866,9 +2883,10 @@ class GiteeAIImagePlugin(Star):
         resolution: str | None = None,
         output_intent: OutputIntent | None = None,
     ) -> ExecutedImageTask:
-        effective_output_intent = output_intent
-        if effective_output_intent is None and spec.output:
-            effective_output_intent = parse_output_intent(spec.output)
+        effective_output_intent = merge_output_intents(
+            output_intent,
+            parse_output_intent(spec.output) if spec.output else None,
+        )
 
         if spec.mode == "draw":
             prompt = str(spec.effective_prompt or spec.user_prompt or "").strip()
@@ -2999,6 +3017,7 @@ class GiteeAIImagePlugin(Star):
         mode: str,
         user_prompt: str,
         count: int,
+        fixed_aspect_ratio: str | None = None,
     ) -> list[PlannedPromptItem]:
         provider = self.context.get_using_provider()
         if provider is None or not hasattr(provider, "text_chat"):
@@ -3008,6 +3027,7 @@ class GiteeAIImagePlugin(Star):
             mode=mode,
             user_prompt=user_prompt,
             count=count,
+            fixed_aspect_ratio=fixed_aspect_ratio,
         )
         last_error: Exception | None = None
         for _ in range(3):
@@ -3028,7 +3048,9 @@ class GiteeAIImagePlugin(Star):
             try:
                 items = parse_planned_prompt_items(text)
                 validation_error = validate_planned_prompt_items(
-                    items, expected_count=count
+                    items,
+                    expected_count=count,
+                    fixed_aspect_ratio=fixed_aspect_ratio,
                 )
                 if validation_error is not None:
                     raise ValueError(validation_error)
@@ -3443,6 +3465,20 @@ class GiteeAIImagePlugin(Star):
     def _get_selfie_conf(self) -> dict:
         return self._get_feature("selfie")
 
+    def _get_selfie_default_output(self) -> str | None:
+        conf = self._get_selfie_conf()
+        default_output_text = str(conf.get("default_output") or "").strip()
+        default_aspect_ratio = normalize_aspect_ratio(
+            conf.get("default_aspect_ratio")
+        ) or "3:4"
+        default_output_intent = merge_output_intents(
+            parse_output_intent(default_output_text)
+            if default_output_text
+            else None,
+            OutputIntent(aspect_ratio=default_aspect_ratio),
+        )
+        return format_output_intent(default_output_intent) or None
+
     async def _ensure_tool_image_cache_dir(self) -> None:
         tool_image_dir = Path(get_astrbot_temp_path()) / "tool_images"
         await asyncio.to_thread(tool_image_dir.mkdir, parents=True, exist_ok=True)
@@ -3769,7 +3805,7 @@ class GiteeAIImagePlugin(Star):
         else:
             gitee_task_types = ["id", "background", "style"]
 
-        default_output = str(conf.get("default_output") or "").strip() or None
+        default_output = self._get_selfie_default_output()
 
         image_path = await self.edit.edit(
             prompt=final_prompt,

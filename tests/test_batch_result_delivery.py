@@ -66,10 +66,13 @@ class _StubVertexSettings:
 @dataclass
 class _StubImageTaskSpec:
     mode: str = ""
+    provider_id: str | None = None
     preset_name: str | None = None
     effective_prompt: str = ""
     user_prompt: str = ""
+    source_command: str = ""
     variant_title: str | None = None
+    output: str = ""
 
 
 @dataclass
@@ -82,6 +85,7 @@ class _StubPlannedPromptItem:
     title: str = ""
     prompt: str = ""
     variation_focus: str = ""
+    aspect_ratio: str = "3:4"
 
 
 class _DummyPlain:
@@ -583,6 +587,62 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(event.sent, [])
         self.assertEqual(image_paths, [Path("/tmp/one.png")])
+
+    async def test_batch_item_ratio_fills_missing_group_ratio(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(context=types.SimpleNamespace(), config={})
+        calls = []
+
+        class _Draw:
+            async def generate(self, prompt, **kwargs):
+                calls.append((prompt, kwargs))
+                return Path("/tmp/planned.png")
+
+        plugin.draw = _Draw()
+        spec = mod.ImageTaskSpec(
+            mode="draw",
+            provider_id=None,
+            preset_name=None,
+            effective_prompt="cinematic portrait",
+            user_prompt="cinematic portrait",
+            source_command="llm_batch",
+            variant_title="portrait",
+            output="16:9",
+        )
+
+        result = await plugin._execute_image_task_spec(
+            _DummyEvent(),
+            spec,
+            output_intent=mod.OutputIntent(resolution="4K"),
+        )
+
+        self.assertEqual(result.image_path, Path("/tmp/planned.png"))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            calls[0][1]["output_intent"],
+            mod.OutputIntent(aspect_ratio="16:9", resolution="4K"),
+        )
+
+    def test_selfie_default_output_always_contains_an_aspect_ratio(self):
+        mod = _load_module()
+        fallback = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={"features": {"selfie": {"default_output": "4K"}}},
+        )
+        configured = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={
+                "features": {
+                    "selfie": {
+                        "default_output": "4K",
+                        "default_aspect_ratio": "16:9",
+                    }
+                }
+            },
+        )
+
+        self.assertEqual(fallback._get_selfie_default_output(), "3:4 4K")
+        self.assertEqual(configured._get_selfie_default_output(), "16:9 4K")
 
     async def test_weixin_send_temp_file_is_removed_after_send(self):
         mod = _load_module()

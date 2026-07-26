@@ -204,8 +204,26 @@
           "default_output": {
             "type": "string",
             "description": "默认输出尺寸/分辨率",
-            "hint": "例：16:9 / 4K / 16:9 4K / 2048x1152。自拍不会继承参考照比例。",
+            "hint": "例：4K / 16:9 4K / 2048x1152。分辨率可单独设置；比例未填写时使用下方自拍默认比例。",
             "default": "4K"
+          },
+          "default_aspect_ratio": {
+            "type": "string",
+            "description": "自拍默认比例",
+            "hint": "用户和 LLM 都未指定比例时使用。批量 LLM 任务会为每张图独立规划比例，不受此默认值限制。",
+            "options": [
+              "1:1",
+              "16:9",
+              "9:16",
+              "4:3",
+              "3:4",
+              "3:2",
+              "2:3",
+              "5:4",
+              "4:5",
+              "21:9"
+            ],
+            "default": "3:4"
           },
           "chain": {
             "type": "template_list",

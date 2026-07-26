@@ -72,6 +72,13 @@ class _StubVideoManager(_StubService):
 @dataclass
 class _StubImageTaskSpec:
     mode: str = ""
+    provider_id: str | None = None
+    preset_name: str | None = None
+    effective_prompt: str = ""
+    user_prompt: str = ""
+    source_command: str = ""
+    variant_title: str | None = None
+    output: str = ""
 
 
 @dataclass
@@ -84,6 +91,7 @@ class _StubPlannedPromptItem:
     title: str = ""
     prompt: str = ""
     variation_focus: str = ""
+    aspect_ratio: str = "3:4"
 
 
 class _DummyMessageComponent:
