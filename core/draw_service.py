@@ -7,6 +7,7 @@ from astrbot.api import logger
 
 from .output_spec import (
     OutputIntent,
+    extract_output_intent_from_prompt,
     merge_output_intents,
     output_intent_from_legacy,
     parse_output_intent,
@@ -81,6 +82,7 @@ class ImageDrawService:
         request_intent = merge_output_intents(
             output_intent,
             output_intent_from_legacy(size, resolution),
+            extract_output_intent_from_prompt(prompt),
         )
 
         last_error: Exception | None = None

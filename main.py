@@ -2207,7 +2207,7 @@ class GiteeAIImagePlugin(Star):
             prompt(string): 提示词
             mode(string): auto=自动判断, text=文生图, edit=改图, selfie_ref=参考照
             backend(string): auto=自动选择；也可填 provider_id（你在 WebUI providers 里配置的 id）
-            output(string): 输出尺寸/分辨率。例: 2048x2048 或 4K（不同后端支持能力不同，留空用默认）
+            output(string): 输出尺寸/分辨率。例: 2048x2048、16:9 或 4K；留空时也会从 prompt 自动识别（不同后端支持能力不同）
         """
         prompt = (prompt or "").strip()
         m = (mode or "auto").strip().lower()
@@ -2462,7 +2462,7 @@ class GiteeAIImagePlugin(Star):
             count(number): 目标数量。建议 2-8。
             mode(string): auto=自动判断, text=文生图, edit=改图, selfie_ref=参考照自拍
             backend(string): auto=自动选择；也可填 provider_id（你在 WebUI providers 里配置的 id）
-            output(string): 输出尺寸/分辨率。例: 2048x2048 或 4K（不同后端支持能力不同，留空用默认）
+            output(string): 输出尺寸/分辨率。例: 2048x2048、16:9 或 4K；留空时也会从 prompt 自动识别（不同后端支持能力不同）
         """
         prompt = str(prompt or "").strip()
         if not prompt:

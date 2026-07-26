@@ -6,6 +6,7 @@ from PIL import Image as PILImage
 from core.output_spec import (
     OutputIntent,
     detect_aspect_ratio_from_image,
+    extract_output_intent_from_prompt,
     format_output_intent,
     merge_output_intents,
     parse_output,
@@ -48,6 +49,16 @@ def test_split_prompt_output_suffix_only_consumes_trailing_controls():
     assert limited_intent == OutputIntent(aspect_ratio="16:9", resolution="4K")
 
 
+def test_extract_output_intent_from_natural_prompt():
+    assert extract_output_intent_from_prompt(
+        "电影感海边日落, 画面比例 16:9, 输出 4K 高清"
+    ) == OutputIntent(aspect_ratio="16:9", resolution="4K")
+    assert extract_output_intent_from_prompt("横屏海报 2048x1152") == OutputIntent(
+        exact_size="2048x1152"
+    )
+    assert extract_output_intent_from_prompt("普通方形图") == OutputIntent()
+
+
 def test_merge_output_intents_fills_only_missing_adaptive_fields():
     merged = merge_output_intents(
         OutputIntent(aspect_ratio="16:9"),
@@ -61,6 +72,12 @@ def test_merge_output_intents_fills_only_missing_adaptive_fields():
 
     assert merged == OutputIntent(aspect_ratio="16:9", resolution="4K")
     assert exact == OutputIntent(exact_size="2048x1152")
+
+    default_size = merge_output_intents(
+        OutputIntent(aspect_ratio="16:9"),
+        OutputIntent(exact_size="1024x1024"),
+    )
+    assert default_size == OutputIntent(aspect_ratio="16:9", resolution="1K")
 
 
 def test_select_allowed_size_uses_ratio_and_resolution_target():

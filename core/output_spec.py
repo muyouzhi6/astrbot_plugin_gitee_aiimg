@@ -11,6 +11,11 @@ from PIL import Image as PILImage
 _EXACT_SIZE_RE = re.compile(r"(\d{2,5})[xXx](\d{2,5})")
 _ASPECT_RATIO_RE = re.compile(r"(\d{1,4}):(\d{1,4})")
 _RESOLUTION_RE = re.compile(r"[1-9]\d*[kK]")
+_PROMPT_EXACT_SIZE_RE = re.compile(
+    r"(?<!\d)(\d{2,5})\s*[xX×]\s*(\d{2,5})(?!\d)"
+)
+_PROMPT_ASPECT_RATIO_RE = re.compile(r"(?<!\d)(\d{1,4})\s*:\s*(\d{1,4})(?!\d)")
+_PROMPT_RESOLUTION_RE = re.compile(r"(?<![A-Za-z0-9])([124][kK])(?![A-Za-z0-9])")
 
 COMMON_ASPECT_RATIOS = (
     "1:1",
@@ -152,9 +157,13 @@ def merge_output_intents(*intents: OutputIntent | None) -> OutputIntent:
         if intent is None or intent.is_empty:
             continue
         if intent.exact_size:
-            if aspect_ratio or resolution:
-                continue
-            return intent
+            if not aspect_ratio and not resolution:
+                return intent
+            if aspect_ratio is None:
+                aspect_ratio = aspect_ratio_from_size(intent.exact_size)
+            if resolution is None:
+                resolution = resolution_from_size(intent.exact_size)
+            continue
         if aspect_ratio is None and intent.aspect_ratio:
             aspect_ratio = intent.aspect_ratio
         if resolution is None and intent.resolution:
@@ -170,6 +179,32 @@ def format_output_intent(intent: OutputIntent | None) -> str:
     return " ".join(
         item for item in (intent.aspect_ratio, intent.resolution) if item
     )
+
+
+def extract_output_intent_from_prompt(text: str | None) -> OutputIntent:
+    """Extract explicit image controls embedded in a natural-language prompt."""
+    raw = str(text or "")
+    if not raw.strip():
+        return OutputIntent()
+
+    exact_matches = list(_PROMPT_EXACT_SIZE_RE.finditer(raw))
+    if exact_matches:
+        match = exact_matches[-1]
+        return OutputIntent(
+            exact_size=normalize_exact_size(
+                f"{match.group(1)}x{match.group(2)}"
+            )
+        )
+
+    aspect_ratio: str | None = None
+    for match in _PROMPT_ASPECT_RATIO_RE.finditer(raw):
+        candidate = normalize_aspect_ratio(f"{match.group(1)}:{match.group(2)}")
+        if candidate in COMMON_ASPECT_RATIOS:
+            aspect_ratio = candidate
+
+    resolution_matches = list(_PROMPT_RESOLUTION_RE.finditer(raw))
+    resolution = resolution_matches[-1].group(1).upper() if resolution_matches else None
+    return OutputIntent(aspect_ratio=aspect_ratio, resolution=resolution)
 
 
 def split_prompt_output_suffix(text: str | None) -> tuple[str, OutputIntent]:

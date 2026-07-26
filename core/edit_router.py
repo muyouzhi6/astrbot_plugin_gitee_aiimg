@@ -11,6 +11,7 @@ from .gitee_edit import GiteeEditBackend
 from .output_spec import (
     OutputIntent,
     detect_aspect_ratio_from_image,
+    extract_output_intent_from_prompt,
     merge_output_intents,
     output_intent_from_legacy,
     parse_output_intent,
@@ -156,6 +157,7 @@ class EditRouter:
         request_intent = merge_output_intents(
             output_intent,
             output_intent_from_legacy(size, resolution),
+            extract_output_intent_from_prompt(prompt),
         )
         source_intent: OutputIntent | None = None
         if infer_source_aspect and len(images) == 1:

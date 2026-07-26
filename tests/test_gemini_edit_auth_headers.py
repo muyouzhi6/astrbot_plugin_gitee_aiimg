@@ -1,3 +1,4 @@
+import importlib
 import importlib.util
 import sys
 import types
@@ -138,6 +139,34 @@ class GeminiEditAuthHeaderTests(unittest.IsolatedAsyncioTestCase):
             [{"text": "draw"}],
             resolution="4K",
             aspect_ratio="16:9",
+        )
+
+        image_config = session.last_json["generationConfig"]["imageConfig"]
+        self.assertEqual(
+            image_config,
+            {"imageSize": "4K", "aspectRatio": "16:9"},
+        )
+
+    async def test_gemini_native_payload_uses_prompt_output_intent(self):
+        mod = _load_module()
+        output_spec = importlib.import_module(f"{CORE_PACKAGE_NAME}.output_spec")
+        backend = mod.GeminiEditBackend(
+            imgr=object(),
+            settings={"api_keys": ["test-key"], "api_url": "https://example.com"},
+        )
+        session = _FakeSession()
+
+        async def fake_get_session():
+            return session
+
+        backend._get_session = fake_get_session
+
+        intent = output_spec.extract_output_intent_from_prompt(
+            "电影感海边日落, 16:9, 4K"
+        )
+        await backend._request(
+            [{"text": "draw"}],
+            **backend.resolve_output_intent(intent),
         )
 
         image_config = session.last_json["generationConfig"]["imageConfig"]

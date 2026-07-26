@@ -1,13 +1,13 @@
 # AstrBot Gitee AI 图像生成插件
 
-[![Plugin Version](https://img.shields.io/badge/Version-v4.3.8-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
+[![Plugin Version](https://img.shields.io/badge/Version-v4.3.9-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16.0%2C%20%3C5-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![Platform](https://img.shields.io/badge/Primary-aiocqhttp-4caf50?style=for-the-badge)](#平台与限制)
 
 多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件，支持命令调用、`LLM tool` 调用、预设提示词、批量出图、请求模式控制、多 `API Key` 轮询、失败兜底与超时配置。
 
 > [!IMPORTANT]
-> 这份文档对应 `v4.3.8` 配置结构。
+> 这份文档对应 `v4.3.9` 配置结构。
 >
 > - `v4` 与旧版 `v3 / v2` 配置不兼容，升级后请重新检查 WebUI 配置。
 > - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了发送图片前优化。
@@ -225,13 +225,14 @@
 - 分辨率：`4K`
 - 自适应比例与分辨率：`16:9 4K`
 
-命令只会把提示词末尾最多两个合法控制 token 当作输出参数, 正文里的 `16:9` 或 `4K` 描述不会被全局扫描。示例：
+命令会识别提示词中的明确比例、分辨率和精确尺寸; 末尾控制 token 仍会从提示词中移除, LLM tool 直接传入的自然提示词也会自动提取参数。示例：
 
 ```text
 /aiimg 电影感海边日落 16:9 4K
 /aiedit 保持人物不变，替换为夜景街道 4K
 /自拍 黑色外套，楼梯间，低头看镜头 9:16 2K
 /批量4 aiimg 同一主题的不同镜头 16:9 4K
+/aiimg 电影感海边日落, 画面比例 16:9, 输出 4K
 ```
 
 输出优先级为：用户参数 > 当前 provider 的 `chain.output` > 功能的 `default_output` > 普通单图改图的输入图比例 > provider 默认值。

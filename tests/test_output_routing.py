@@ -190,6 +190,29 @@ def test_draw_does_not_send_aspect_ratio_to_strict_legacy_backend(modules):
     assert backend.calls == [("draw", None)]
 
 
+def test_draw_extracts_prompt_controls_before_exact_default(modules):
+    _, draw_service, _ = modules
+    backend = _AdaptiveDrawBackend()
+    service = draw_service.ImageDrawService(
+        {
+            "features": {
+                "draw": {
+                    "chain": ["adaptive"],
+                    "default_output": "1024x1024",
+                }
+            }
+        },
+        imgr=object(),
+        data_dir=Path("/tmp"),
+        registry=_Registry({"adaptive": backend}),
+    )
+
+    result = asyncio.run(service.generate("电影海报, 16:9, 4K"))
+
+    assert result == Path("/tmp/generated.png")
+    assert backend.calls == [("电影海报, 16:9, 4K", "16:9", "4K")]
+
+
 def _png_bytes(size: tuple[int, int]) -> bytes:
     output = io.BytesIO()
     PILImage.new("RGB", size, "white").save(output, format="PNG")
