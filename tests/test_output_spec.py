@@ -11,6 +11,7 @@ from core.output_spec import (
     merge_output_intents,
     parse_output,
     parse_output_intent,
+    resolve_llm_output_intent,
     select_allowed_size,
     split_prompt_output_suffix,
 )
@@ -57,6 +58,28 @@ def test_extract_output_intent_from_natural_prompt():
         exact_size="2048x1152"
     )
     assert extract_output_intent_from_prompt("普通方形图") == OutputIntent()
+
+
+def test_resolve_llm_output_intent_prefers_explicit_prompt_controls():
+    assert resolve_llm_output_intent(
+        "电影海报, 画面比例 16:9",
+        output="1024x1024",
+    ) == OutputIntent(aspect_ratio="16:9", resolution="1K")
+
+
+def test_resolve_llm_output_intent_uses_structured_fields_and_ignores_auto():
+    assert resolve_llm_output_intent(
+        "竖屏人像",
+        output="auto",
+        aspect_ratio="9:16",
+        resolution="2K",
+    ) == OutputIntent(aspect_ratio="9:16", resolution="2K")
+    assert resolve_llm_output_intent(
+        "普通图片",
+        output="default",
+        aspect_ratio="auto",
+        resolution="auto",
+    ) == OutputIntent()
 
 
 def test_merge_output_intents_fills_only_missing_adaptive_fields():

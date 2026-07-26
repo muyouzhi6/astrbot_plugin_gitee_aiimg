@@ -1,5 +1,22 @@
 # 更新日志
 
+## [v4.3.10] - 2026-07-26
+
+### 修复
+
+- 修复 LLM tool 猜测的正方形 `output` 覆盖 prompt 明确比例的问题。
+- 修复批量 LLM tool 在提示词规划后可能丢失整组比例和分辨率的问题。
+
+### 优化
+
+- 单图和批量 LLM tool 新增独立 `aspect_ratio` / `resolution` 参数，并兼容旧 `output`。
+- 增加 Meinianda Gemini Native 配置说明和最终输出参数日志。
+
+### 测试
+
+- 使用 Meinianda 临时 Key 实测 Gemini Native `16:9 1K` 输出为 `1376x768`。
+- 新增 LLM 参数冲突和 `auto` 处理回归测试；全量测试 `101 passed`。
+
 ## [v4.3.9] - 2026-07-26
 
 ### 修复

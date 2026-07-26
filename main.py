@@ -64,6 +64,7 @@ from .core.nanobanana import NanoBananaService
 from .core.output_spec import (
     OutputIntent,
     parse_output_intent,
+    resolve_llm_output_intent,
     split_prompt_output_suffix,
 )
 from .core.provider_registry import ProviderRegistry
@@ -2190,6 +2191,8 @@ class GiteeAIImagePlugin(Star):
         mode: str = "auto",
         backend: str = "auto",
         output: str = "",
+        aspect_ratio: str = "auto",
+        resolution: str = "auto",
     ):
         """统一图片生成/改图/生活照（参考照）工具。
 
@@ -2207,7 +2210,9 @@ class GiteeAIImagePlugin(Star):
             prompt(string): 提示词
             mode(string): auto=自动判断, text=文生图, edit=改图, selfie_ref=参考照
             backend(string): auto=自动选择；也可填 provider_id（你在 WebUI providers 里配置的 id）
-            output(string): 输出尺寸/分辨率。例: 2048x2048、16:9 或 4K；留空时也会从 prompt 自动识别（不同后端支持能力不同）
+            output(string): 兼容输出参数。只有用户明确指定时才传；不得自行填入 1:1 或正方形默认值
+            aspect_ratio(string): 图片比例。默认 auto；用户明确要求时传 16:9、9:16、4:3 等
+            resolution(string): 图片分辨率。默认 auto；用户明确要求时传 1K、2K 或 4K
         """
         prompt = (prompt or "").strip()
         m = (mode or "auto").strip().lower()
@@ -2255,7 +2260,16 @@ class GiteeAIImagePlugin(Star):
         output = (output or "").strip()
 
         try:
-            output_intent = parse_output_intent(output)
+            output_intent = resolve_llm_output_intent(
+                prompt,
+                output=output,
+                aspect_ratio=aspect_ratio,
+                resolution=resolution,
+            )
+            logger.info(
+                "[aiimg_generate] resolved output intent: %s",
+                output_intent,
+            )
             await mark_processing(event)
 
             if m in {"selfie_ref", "selfie", "ref"}:
@@ -2450,6 +2464,8 @@ class GiteeAIImagePlugin(Star):
         mode: str = "auto",
         backend: str = "auto",
         output: str = "",
+        aspect_ratio: str = "auto",
+        resolution: str = "auto",
     ):
         """规划并批量生成一组图片。
 
@@ -2462,7 +2478,9 @@ class GiteeAIImagePlugin(Star):
             count(number): 目标数量。建议 2-8。
             mode(string): auto=自动判断, text=文生图, edit=改图, selfie_ref=参考照自拍
             backend(string): auto=自动选择；也可填 provider_id（你在 WebUI providers 里配置的 id）
-            output(string): 输出尺寸/分辨率。例: 2048x2048、16:9 或 4K；留空时也会从 prompt 自动识别（不同后端支持能力不同）
+            output(string): 兼容输出参数。只有用户明确指定时才传；不得自行填入 1:1 或正方形默认值
+            aspect_ratio(string): 整组图片比例。默认 auto；用户明确要求时传 16:9、9:16、4:3 等
+            resolution(string): 整组图片分辨率。默认 auto；用户明确要求时传 1K、2K 或 4K
         """
         prompt = str(prompt or "").strip()
         if not prompt:
@@ -2526,7 +2544,16 @@ class GiteeAIImagePlugin(Star):
             )
 
         try:
-            output_intent = parse_output_intent(output)
+            output_intent = resolve_llm_output_intent(
+                prompt,
+                output=output,
+                aspect_ratio=aspect_ratio,
+                resolution=resolution,
+            )
+            logger.info(
+                "[aiimg_batch_generate] resolved output intent: %s",
+                output_intent,
+            )
             await mark_processing(event)
             planned_items = await self._plan_batch_prompt_items(
                 mode=resolved_mode,

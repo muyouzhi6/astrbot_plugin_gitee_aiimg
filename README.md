@@ -1,13 +1,13 @@
 # AstrBot Gitee AI 图像生成插件
 
-[![Plugin Version](https://img.shields.io/badge/Version-v4.3.9-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
+[![Plugin Version](https://img.shields.io/badge/Version-v4.3.10-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16.0%2C%20%3C5-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![Platform](https://img.shields.io/badge/Primary-aiocqhttp-4caf50?style=for-the-badge)](#平台与限制)
 
 多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件，支持命令调用、`LLM tool` 调用、预设提示词、批量出图、请求模式控制、多 `API Key` 轮询、失败兜底与超时配置。
 
 > [!IMPORTANT]
-> 这份文档对应 `v4.3.9` 配置结构。
+> 这份文档对应 `v4.3.10` 配置结构。
 >
 > - `v4` 与旧版 `v3 / v2` 配置不兼容，升级后请重新检查 WebUI 配置。
 > - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了发送图片前优化。
@@ -168,6 +168,29 @@
 }
 ```
 
+### Meinianda Gemini 生图配置
+
+`meinianda.top` 的 Gemini 生图模型必须使用 Gemini 官方 `generateContent` 协议。不要选 `Gemini Chat图` 或 OpenAI Chat 模板，否则中转层会忽略比例并回退到 `1:1`。
+
+```json
+{
+  "id": "meinianda_gemini",
+  "__template_key": "gemini_native",
+  "label": "Meinianda Gemini",
+  "api_url": "https://meinianda.top",
+  "api_keys": [
+    "你的 Meinianda API Key"
+  ],
+  "model": "gemini-3.1-flash-image-preview",
+  "default_resolution": "1K",
+  "timeout": 180,
+  "use_proxy": false,
+  "proxy_url": ""
+}
+```
+
+LLM tool 会把 prompt 中的 `16:9` 等明确比例作为最高优先级参数，并通过 `generationConfig.imageConfig.aspectRatio` 发送。用户没有指定比例时才使用 provider 或功能默认值。
+
 如果你专门把它用于自拍模式，可以优先把 `features.selfie.chain` 指向这个 provider：
 
 ```json
@@ -235,7 +258,7 @@
 /aiimg 电影感海边日落, 画面比例 16:9, 输出 4K
 ```
 
-输出优先级为：用户参数 > 当前 provider 的 `chain.output` > 功能的 `default_output` > 普通单图改图的输入图比例 > provider 默认值。
+输出优先级为：prompt 中明确写出的参数 > LLM tool 的 `aspect_ratio` / `resolution` > 兼容 `output` > 当前 provider 的 `chain.output` > 功能的 `default_output` > 普通单图改图的输入图比例 > provider 默认值。
 
 - Gemini Native 会传递自适应比例与分辨率; Vertex AI Anonymous 会传递自适应比例, 并在模型支持时传递分辨率。
 - 声明 `allowed_sizes` 的 OpenAI Images backend 会映射到最接近的合法像素尺寸。
@@ -421,7 +444,9 @@ Q版化:Convert to chibi illustration style
 - `prompt`
 - `mode`: `auto` / `text` / `edit` / `selfie_ref`
 - `backend`: `auto` 或具体 `provider_id`
-- `output`: 例如 `2048x2048`、`16:9`、`4K`、`16:9 4K`
+- `aspect_ratio`: `auto` 或 `16:9`、`9:16`、`4:3` 等
+- `resolution`: `auto` 或 `1K`、`2K`、`4K`
+- `output`: 兼容旧调用；没有用户明确要求时应留空
 
 自动模式行为：
 

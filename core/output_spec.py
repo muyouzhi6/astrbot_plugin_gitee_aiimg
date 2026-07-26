@@ -207,6 +207,42 @@ def extract_output_intent_from_prompt(text: str | None) -> OutputIntent:
     return OutputIntent(aspect_ratio=aspect_ratio, resolution=resolution)
 
 
+def resolve_llm_output_intent(
+    prompt: str | None,
+    *,
+    output: str | None = None,
+    aspect_ratio: str | None = None,
+    resolution: str | None = None,
+) -> OutputIntent:
+    """Resolve LLM fields without letting guessed defaults override the prompt."""
+    auto_values = {"", "auto", "default", "\u9ed8\u8ba4"}
+
+    structured_tokens: list[str] = []
+    for value in (aspect_ratio, resolution):
+        text = str(value or "").strip()
+        if text.lower() not in auto_values:
+            structured_tokens.append(text)
+
+    output_text = str(output or "").strip()
+    output_intent = (
+        parse_output_intent(output_text)
+        if output_text.lower() not in auto_values
+        else OutputIntent()
+    )
+    structured_intent = (
+        parse_output_intent(
+            " ".join(structured_tokens), allow_legacy_resolution=False
+        )
+        if structured_tokens
+        else OutputIntent()
+    )
+    return merge_output_intents(
+        extract_output_intent_from_prompt(prompt),
+        structured_intent,
+        output_intent,
+    )
+
+
 def split_prompt_output_suffix(text: str | None) -> tuple[str, OutputIntent]:
     raw = str(text or "").strip()
     if not raw:

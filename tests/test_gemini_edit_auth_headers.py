@@ -161,8 +161,9 @@ class GeminiEditAuthHeaderTests(unittest.IsolatedAsyncioTestCase):
 
         backend._get_session = fake_get_session
 
-        intent = output_spec.extract_output_intent_from_prompt(
-            "电影感海边日落, 16:9, 4K"
+        intent = output_spec.resolve_llm_output_intent(
+            "电影感海边日落, 16:9, 4K",
+            output="1024x1024",
         )
         await backend._request(
             [{"text": "draw"}],

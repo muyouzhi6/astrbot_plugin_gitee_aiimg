@@ -503,8 +503,8 @@
     "templates": {
       "gemini_native": {
         "name": "Gemini 原生",
-        "description": "适用于 Gemini 官方 generateContent 接口（直连）。",
-        "hint": "官方 Gemini 接口；支持代理与反代 Base URL。",
+        "description": "适用于 Gemini 官方 generateContent 接口（直连或原生协议中转）。",
+        "hint": "官方 Gemini 接口；支持代理与反代 Base URL。Meinianda 生图必须使用此模板。",
         "items": {
           "id": {
             "type": "string",
@@ -519,7 +519,7 @@
           "api_url": {
             "type": "string",
             "description": "API Base URL",
-            "hint": "默认：https://generativelanguage.googleapis.com",
+            "hint": "默认：https://generativelanguage.googleapis.com；Meinianda 填 https://meinianda.top",
             "default": "https://generativelanguage.googleapis.com"
           },
           "api_keys": {
@@ -1331,7 +1331,7 @@
       "gemini_openai_chat": {
         "name": "Gemini Chat图",
         "description": "Gemini->OpenAI 兼容网关的 Chat 出图预设模板。",
-        "hint": "仅在不支持 Images API 时使用。",
+        "hint": "仅在网关明确支持 OpenAI Chat 生图时使用；Meinianda 会忽略该协议的比例参数，请改用 Gemini 原生。",
         "items": {
           "id": {
             "type": "string",
