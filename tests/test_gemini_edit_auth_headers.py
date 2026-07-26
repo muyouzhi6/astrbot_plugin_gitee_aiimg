@@ -4,7 +4,6 @@ import types
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "gemini_edit_auth_testpkg"
 CORE_PACKAGE_NAME = f"{PACKAGE_NAME}.core"
@@ -95,9 +94,11 @@ class _FakeResponse:
 class _FakeSession:
     def __init__(self):
         self.last_headers = None
+        self.last_json = None
 
     def post(self, *args, **kwargs):
         self.last_headers = kwargs.get("headers")
+        self.last_json = kwargs.get("json")
         return _FakeResponse()
 
 
@@ -119,6 +120,31 @@ class GeminiEditAuthHeaderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(session.last_headers["x-goog-api-key"], "test-key")
         self.assertNotIn("Authorization", session.last_headers)
+
+    async def test_gemini_native_sends_adaptive_image_config(self):
+        mod = _load_module()
+        backend = mod.GeminiEditBackend(
+            imgr=object(),
+            settings={"api_keys": ["test-key"], "api_url": "https://example.com"},
+        )
+        session = _FakeSession()
+
+        async def fake_get_session():
+            return session
+
+        backend._get_session = fake_get_session
+
+        await backend._request(
+            [{"text": "draw"}],
+            resolution="4K",
+            aspect_ratio="16:9",
+        )
+
+        image_config = session.last_json["generationConfig"]["imageConfig"]
+        self.assertEqual(
+            image_config,
+            {"imageSize": "4K", "aspectRatio": "16:9"},
+        )
 
 
 if __name__ == "__main__":

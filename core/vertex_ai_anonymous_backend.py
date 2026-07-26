@@ -17,6 +17,7 @@ except Exception:
 from astrbot.api import logger
 
 from .image_format import guess_image_mime_and_ext
+from .output_spec import OutputIntent, aspect_ratio_from_size, resolution_from_size
 from .vertex_ai_anonymous_utils import (
     DEFAULT_OPERATION_NAME,
     MAX_OUTPUT_TOKENS,
@@ -71,6 +72,18 @@ class VertexAIAnonymousBackend:
             if inspect.isawaitable(result):
                 await result
         self._session = None
+
+    @staticmethod
+    def resolve_output_intent(intent: OutputIntent) -> dict[str, str]:
+        if intent.exact_size:
+            return {
+                "aspect_ratio": aspect_ratio_from_size(intent.exact_size) or "",
+                "resolution": resolution_from_size(intent.exact_size) or "",
+            }
+        return {
+            "aspect_ratio": intent.aspect_ratio or "",
+            "resolution": intent.resolution or "",
+        }
 
     @staticmethod
     def _session_closed(session: object | None) -> bool:
@@ -144,6 +157,7 @@ class VertexAIAnonymousBackend:
         image_bytes_list: list[bytes] | None,
         size: str | None = None,
         resolution: str | None = None,
+        aspect_ratio: str | None = None,
     ) -> list[tuple[str, str]]:
         recaptcha_token = await self._get_recaptcha_token()
         if not recaptcha_token:
@@ -152,7 +166,11 @@ class VertexAIAnonymousBackend:
         last_error_message: str | None = None
         captcha_try_count = 0
         body = self._build_body(
-            prompt, image_bytes_list, size=size, resolution=resolution
+            prompt,
+            image_bytes_list,
+            size=size,
+            resolution=resolution,
+            aspect_ratio=aspect_ratio,
         )
         for attempt in range(max(1, self.settings.max_retries)):
             body["variables"]["recaptchaToken"] = recaptcha_token
@@ -203,6 +221,7 @@ class VertexAIAnonymousBackend:
         *,
         size: str | None,
         resolution: str | None,
+        aspect_ratio: str | None = None,
     ) -> dict[str, Any]:
         parts: list[dict[str, Any]] = []
         for img in image_bytes_list or []:
@@ -239,9 +258,9 @@ class VertexAIAnonymousBackend:
         }
 
         image_config = dict(context["generationConfig"]["imageConfig"])
-        aspect_ratio = size_to_aspect_ratio(size)
-        if aspect_ratio:
-            image_config["aspectRatio"] = aspect_ratio
+        final_aspect_ratio = aspect_ratio or size_to_aspect_ratio(size)
+        if final_aspect_ratio:
+            image_config["aspectRatio"] = final_aspect_ratio
         if resolution and str(resolution).strip().upper() in {"1K", "2K", "4K"}:
             if "gemini-3" in self.settings.model.lower():
                 image_config["imageSize"] = str(resolution).strip().upper()

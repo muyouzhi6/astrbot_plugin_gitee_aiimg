@@ -22,11 +22,21 @@
           "default_output": {
             "type": "string",
             "description": "默认输出尺寸/分辨率",
-            "hint": "例：4K / 2K / 1K / 2048x2048 / 4096x4096。留空则由服务商默认决定。",
+            "hint": "支持比例、分辨率、精确尺寸或组合形式。例：16:9 / 4K / 16:9 4K / 2048x1152。留空则由服务商默认决定。",
             "options": [
               "1K",
               "2K",
               "4K",
+              "1:1",
+              "16:9",
+              "9:16",
+              "4:3",
+              "3:4",
+              "3:2",
+              "2:3",
+              "1:1 4K",
+              "16:9 4K",
+              "9:16 4K",
               "256x256",
               "512x512",
               "1024x1024",
@@ -46,8 +56,8 @@
           },
           "ratio_default_sizes": {
             "type": "object",
-            "description": "比例到默认尺寸的映射（仅 /aiimg 比例生效）",
-            "hint": "键为比例（如 1:1 / 16:9），值为尺寸（如 1024x1024）。请使用 Gitee 支持的尺寸；留空使用内置默认。",
+            "description": "Gitee 比例到默认尺寸的映射",
+            "hint": "Gitee Images 收到自适应比例时使用。键为比例（如 1:1 / 16:9），值为尺寸（如 1024x1024）；留空使用内置默认。",
             "default": {},
             "items": {}
           },
@@ -68,7 +78,7 @@
                   "output": {
                     "type": "string",
                     "description": "覆盖输出",
-                    "hint": "留空使用 default_output；例：4K 或 2048x2048。",
+                    "hint": "留空使用 default_output；例：16:9、4K、16:9 4K 或 2048x1152。",
                     "default": ""
                   }
                 }
@@ -107,7 +117,7 @@
           "default_output": {
             "type": "string",
             "description": "默认输出尺寸/分辨率",
-            "hint": "例：4K / 2048x2048。留空则由服务商默认决定。",
+            "hint": "例：16:9 / 4K / 16:9 4K / 2048x1152。留空则由服务商默认决定；普通单图改图还会在未指定比例时继承输入图比例。",
             "default": "4K"
           },
           "chain": {
@@ -127,7 +137,7 @@
                   "output": {
                     "type": "string",
                     "description": "覆盖输出",
-                    "hint": "留空使用 default_output；例：4K 或 2048x2048。",
+                    "hint": "留空使用 default_output；例：16:9、4K、16:9 4K 或 2048x1152。",
                     "default": ""
                   }
                 }
@@ -194,7 +204,7 @@
           "default_output": {
             "type": "string",
             "description": "默认输出尺寸/分辨率",
-            "hint": "例：4K / 2048x2048。",
+            "hint": "例：16:9 / 4K / 16:9 4K / 2048x1152。自拍不会继承参考照比例。",
             "default": "4K"
           },
           "chain": {
@@ -213,7 +223,7 @@
                   "output": {
                     "type": "string",
                     "description": "覆盖输出",
-                    "hint": "留空使用 default_output；例：4K 或 2048x2048。",
+                    "hint": "留空使用 default_output；例：16:9、4K、16:9 4K 或 2048x1152。",
                     "default": ""
                   }
                 }

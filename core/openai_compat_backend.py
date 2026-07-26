@@ -7,13 +7,13 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from astrbot.api import logger
 from openai import AsyncOpenAI
 from openai.types.images_response import ImagesResponse
 
-from astrbot.api import logger
-
 from .gitee_sizes import normalize_size_text, ratio_defaults_from_sizes, size_to_ratio
 from .image_format import guess_image_mime_and_ext
+from .output_spec import OutputIntent, select_allowed_size
 
 
 def _looks_like_size(s: str) -> bool:
@@ -338,6 +338,19 @@ class OpenAICompatBackend:
             fallback = self.allowed_sizes[0]
 
         return fallback or raw, raw, True
+
+    def resolve_output_intent(self, intent: OutputIntent) -> dict[str, str]:
+        if intent.exact_size:
+            return {"size": intent.exact_size}
+        if self.allowed_sizes:
+            selected = select_allowed_size(
+                intent,
+                self.allowed_sizes,
+                default_size=self.default_size,
+            )
+            if selected:
+                return {"size": selected}
+        return intent.to_legacy_kwargs()
 
     async def close(self) -> None:
         for client in self._clients.values():

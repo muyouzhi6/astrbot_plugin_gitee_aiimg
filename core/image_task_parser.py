@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .output_spec import format_output_intent, split_prompt_output_suffix
 
 COMMAND_PREFIXES = "/!！.。．"
 DRAW_COMMANDS = {"aiimg", "文生图"}
@@ -18,6 +19,7 @@ class ImageTaskSpec:
     effective_prompt: str
     source_command: str
     variant_title: str = ""
+    output: str = ""
 
 
 @dataclass(slots=True)
@@ -120,7 +122,7 @@ def parse_image_request(
         if command == "文生图":
             first_token, extra_prompt = split_first_token_and_rest(content)
             if first_token and first_token in draw_presets:
-                user_prompt = extra_prompt.strip()
+                user_prompt, output_intent = split_prompt_output_suffix(extra_prompt)
                 effective_prompt = build_draw_preset_prompt(
                     draw_presets[first_token], user_prompt
                 )
@@ -131,10 +133,11 @@ def parse_image_request(
                     user_prompt=user_prompt,
                     effective_prompt=effective_prompt,
                     source_command=command,
+                    output=format_output_intent(output_intent),
                 )
                 return ParsedImageRequest(batch_count=batch_count, spec=spec)
 
-        user_prompt = content.strip()
+        user_prompt, output_intent = split_prompt_output_suffix(content)
         spec = ImageTaskSpec(
             mode="draw",
             provider_id=provider_id,
@@ -142,12 +145,13 @@ def parse_image_request(
             user_prompt=user_prompt,
             effective_prompt=user_prompt,
             source_command=command,
+            output=format_output_intent(output_intent),
         )
         return ParsedImageRequest(batch_count=batch_count, spec=spec)
 
     if command in EDIT_COMMANDS:
         provider_id, content = parse_provider_override_prefix(rest, known_provider_ids)
-        user_prompt = content.strip()
+        user_prompt, output_intent = split_prompt_output_suffix(content)
         spec = ImageTaskSpec(
             mode="edit",
             provider_id=provider_id,
@@ -155,12 +159,13 @@ def parse_image_request(
             user_prompt=user_prompt,
             effective_prompt=user_prompt,
             source_command=command,
+            output=format_output_intent(output_intent),
         )
         return ParsedImageRequest(batch_count=batch_count, spec=spec)
 
     if command in SELFIE_COMMANDS:
         provider_id, content = parse_provider_override_prefix(rest, known_provider_ids)
-        user_prompt = content.strip()
+        user_prompt, output_intent = split_prompt_output_suffix(content)
         spec = ImageTaskSpec(
             mode="selfie_ref",
             provider_id=provider_id,
@@ -168,11 +173,12 @@ def parse_image_request(
             user_prompt=user_prompt,
             effective_prompt=user_prompt,
             source_command=command,
+            output=format_output_intent(output_intent),
         )
         return ParsedImageRequest(batch_count=batch_count, spec=spec)
 
     if command in edit_presets:
-        user_prompt = rest.strip()
+        user_prompt, output_intent = split_prompt_output_suffix(rest)
         spec = ImageTaskSpec(
             mode="edit",
             provider_id=None,
@@ -182,6 +188,7 @@ def parse_image_request(
                 edit_presets[command], user_prompt
             ),
             source_command="edit_preset",
+            output=format_output_intent(output_intent),
         )
         return ParsedImageRequest(batch_count=batch_count, spec=spec)
 

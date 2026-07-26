@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Any
 
 import mcp
-
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import (
@@ -43,6 +42,13 @@ from .core.debouncer import Debouncer
 from .core.draw_service import ImageDrawService
 from .core.edit_router import EditRouter
 from .core.emoji_feedback import mark_failed, mark_processing, mark_success
+from .core.gitee_sizes import (
+    GITEE_SUPPORTED_RATIOS,
+    normalize_size_text,
+    resolve_ratio_size,
+)
+from .core.image_format import decode_base64_image_payload, guess_image_mime_and_ext
+from .core.image_manager import ImageManager
 from .core.image_task_parser import (
     ImageTaskSpec,
     ParsedImageRequest,
@@ -54,19 +60,16 @@ from .core.llm_batch_planner import (
     parse_planned_prompt_items,
     validate_planned_prompt_items,
 )
-from .core.gitee_sizes import (
-    GITEE_SUPPORTED_RATIOS,
-    normalize_size_text,
-    resolve_ratio_size,
-)
-from .core.image_format import decode_base64_image_payload, guess_image_mime_and_ext
-from .core.image_manager import ImageManager
 from .core.nanobanana import NanoBananaService
+from .core.output_spec import (
+    OutputIntent,
+    parse_output_intent,
+    split_prompt_output_suffix,
+)
 from .core.provider_registry import ProviderRegistry
 from .core.ref_store import ReferenceStore
 from .core.utils import close_session, collect_at_user_ids, get_images_from_event
 from .core.video_manager import VideoManager
-
 
 _BATCH_COMMAND_PATTERN = re.compile(r"[/!！.。．]批量(?:\s*\d+|\d+)")
 _async_pause = asyncio.sleep
@@ -1542,13 +1545,12 @@ class GiteeAIImagePlugin(Star):
             await mark_failed(event)
             return
 
-        prompt = arg.strip()
-        size: str | None = None
-        parts = arg.split()
-        if parts and parts[-1] in self.SUPPORTED_RATIOS:
-            ratio = parts[-1]
-            prompt = " ".join(parts[:-1]).strip()
-            size = self._resolve_ratio_size(ratio)
+        try:
+            prompt, output_intent = split_prompt_output_suffix(arg)
+        except ValueError as exc:
+            logger.warning("[aiimg] 输出参数无效: %s", exc)
+            await mark_failed(event)
+            return
 
         if not prompt:
             await mark_failed(event)
@@ -1571,7 +1573,9 @@ class GiteeAIImagePlugin(Star):
             await mark_processing(event)
             t_start = time.perf_counter()
             image_path = await self.draw.generate(
-                prompt, size=size, provider_id=provider_override
+                prompt,
+                output_intent=output_intent,
+                provider_id=provider_override,
             )
             t_end = time.perf_counter()
 
@@ -2249,10 +2253,9 @@ class GiteeAIImagePlugin(Star):
             target_backend = None
 
         output = (output or "").strip()
-        size = output if output and "x" in output else None
-        resolution = output if output and size is None else None
 
         try:
+            output_intent = parse_output_intent(output)
             await mark_processing(event)
 
             if m in {"selfie_ref", "selfie", "ref"}:
@@ -2277,8 +2280,7 @@ class GiteeAIImagePlugin(Star):
                     event,
                     prompt,
                     target_backend,
-                    size=size,
-                    resolution=resolution,
+                    output_intent=output_intent,
                 )
                 return await self._finalize_llm_tool_image(
                     event, image_path, task_meta=task_meta
@@ -2301,8 +2303,7 @@ class GiteeAIImagePlugin(Star):
                             event,
                             prompt,
                             target_backend,
-                            size=size,
-                            resolution=resolution,
+                            output_intent=output_intent,
                         )
                     except Exception as e:
                         logger.warning(
@@ -2323,8 +2324,7 @@ class GiteeAIImagePlugin(Star):
                             event,
                             prompt,
                             target_backend,
-                            size=size,
-                            resolution=resolution,
+                            output_intent=output_intent,
                             follow_up_meta=follow_up_selfie_meta,
                         )
                     except Exception as e:
@@ -2382,8 +2382,7 @@ class GiteeAIImagePlugin(Star):
                     prompt=prompt,
                     images=bytes_images,
                     backend=target_backend,
-                    size=size,
-                    resolution=resolution,
+                    output_intent=output_intent,
                 )
                 task_meta = self._build_image_task_meta(
                     mode="edit",
@@ -2415,8 +2414,7 @@ class GiteeAIImagePlugin(Star):
             image_path = await self.draw.generate(
                 prompt,
                 provider_id=target_backend,
-                size=size,
-                resolution=resolution,
+                output_intent=output_intent,
             )
             task_meta = self._build_image_task_meta(
                 mode="text",
@@ -2477,8 +2475,6 @@ class GiteeAIImagePlugin(Star):
         target_backend = self._resolve_target_backend(backend)
 
         output = (output or "").strip()
-        size = output if output and "x" in output else None
-        resolution = output if output and size is None else None
 
         if resolved_mode == "draw":
             draw_conf = self._get_feature("draw")
@@ -2530,6 +2526,7 @@ class GiteeAIImagePlugin(Star):
             )
 
         try:
+            output_intent = parse_output_intent(output)
             await mark_processing(event)
             planned_items = await self._plan_batch_prompt_items(
                 mode=resolved_mode,
@@ -2551,8 +2548,7 @@ class GiteeAIImagePlugin(Star):
             results = await self._run_batch_specs(
                 event,
                 specs,
-                size=size,
-                resolution=resolution,
+                output_intent=output_intent,
             )
             await self._send_batch_results(
                 event,
@@ -2841,7 +2837,12 @@ class GiteeAIImagePlugin(Star):
         prepared_edit_images: list[bytes] | None = None,
         size: str | None = None,
         resolution: str | None = None,
+        output_intent: OutputIntent | None = None,
     ) -> ExecutedImageTask:
+        effective_output_intent = output_intent
+        if effective_output_intent is None and spec.output:
+            effective_output_intent = parse_output_intent(spec.output)
+
         if spec.mode == "draw":
             prompt = str(spec.effective_prompt or spec.user_prompt or "").strip()
             if not prompt:
@@ -2851,6 +2852,7 @@ class GiteeAIImagePlugin(Star):
                 provider_id=spec.provider_id,
                 size=size,
                 resolution=resolution,
+                output_intent=effective_output_intent,
             )
             task_meta = self._build_image_task_meta(
                 mode="text",
@@ -2873,6 +2875,7 @@ class GiteeAIImagePlugin(Star):
                 preset=spec.preset_name,
                 size=size,
                 resolution=resolution,
+                output_intent=effective_output_intent,
             )
             task_meta = self._build_image_task_meta(
                 mode="edit",
@@ -2895,6 +2898,7 @@ class GiteeAIImagePlugin(Star):
                 spec.provider_id,
                 size=size,
                 resolution=resolution,
+                output_intent=effective_output_intent,
             )
             return ExecutedImageTask(spec=spec, image_path=image_path, task_meta=task_meta)
 
@@ -2907,6 +2911,7 @@ class GiteeAIImagePlugin(Star):
         *,
         size: str | None = None,
         resolution: str | None = None,
+        output_intent: OutputIntent | None = None,
     ) -> list[BatchRunResult[ExecutedImageTask]]:
         if not specs:
             return []
@@ -2924,6 +2929,7 @@ class GiteeAIImagePlugin(Star):
                 prepared_edit_images=prepared_edit_images,
                 size=size,
                 resolution=resolution,
+                output_intent=output_intent,
             )
 
         return await run_batch(specs, concurrency=concurrency, runner=_runner)
@@ -3229,6 +3235,12 @@ class GiteeAIImagePlugin(Star):
         if override:
             backend = override
             prompt = rest
+        try:
+            prompt, output_intent = split_prompt_output_suffix(prompt)
+        except ValueError as exc:
+            logger.warning("[改图] 输出参数无效: %s", exc)
+            await mark_failed(event)
+            return
 
         # 获取图片
         image_segs = await get_images_from_event(
@@ -3270,6 +3282,7 @@ class GiteeAIImagePlugin(Star):
                 images=bytes_images,
                 backend=backend,
                 preset=preset,
+                output_intent=output_intent,
             )
             t_end = time.perf_counter()
 
@@ -3322,6 +3335,12 @@ class GiteeAIImagePlugin(Star):
         if override:
             backend = override
             prompt = rest
+        try:
+            prompt, output_intent = split_prompt_output_suffix(prompt)
+        except ValueError as exc:
+            logger.warning("[改图] 输出参数无效: %s", exc)
+            await mark_failed(event)
+            return
 
         # 预设自动检测: prompt 完全匹配预设名时，自动转为预设
         if not preset and prompt:
@@ -3367,6 +3386,7 @@ class GiteeAIImagePlugin(Star):
                 images=bytes_images,
                 backend=backend,
                 preset=preset,
+                output_intent=output_intent,
             )
             t_end = time.perf_counter()
 
@@ -3652,6 +3672,7 @@ class GiteeAIImagePlugin(Star):
         *,
         size: str | None = None,
         resolution: str | None = None,
+        output_intent: OutputIntent | None = None,
         follow_up_meta: dict[str, Any] | None = None,
     ) -> tuple[Path, dict[str, Any]]:
         conf = self._get_selfie_conf()
@@ -3730,8 +3751,10 @@ class GiteeAIImagePlugin(Star):
             task_types=gitee_task_types,
             size=size,
             resolution=resolution,
+            output_intent=output_intent,
             default_output=default_output,
             chain_override=chain_override,
+            infer_source_aspect=False,
         )
         task_meta = self._build_image_task_meta(
             mode="selfie_ref",
@@ -3755,6 +3778,7 @@ class GiteeAIImagePlugin(Star):
         *,
         size: str | None = None,
         resolution: str | None = None,
+        output_intent: OutputIntent | None = None,
     ) -> Path:
         image_path, _ = await self._generate_selfie_image_with_meta(
             event,
@@ -3762,6 +3786,7 @@ class GiteeAIImagePlugin(Star):
             backend,
             size=size,
             resolution=resolution,
+            output_intent=output_intent,
         )
         return image_path
 
@@ -3783,20 +3808,29 @@ class GiteeAIImagePlugin(Star):
             await mark_failed(event)
             return
 
-        if not await self._begin_user_job(user_id, kind="image"):
-            await mark_failed(event)
-            return
-
         p = (prompt or "").strip()
         override, rest = self._parse_provider_override_prefix(p)
         if override:
             backend = override
             prompt = rest
+        try:
+            prompt, output_intent = split_prompt_output_suffix(prompt)
+        except ValueError as exc:
+            logger.warning("[自拍] 输出参数无效: %s", exc)
+            await mark_failed(event)
+            return
+
+        if not await self._begin_user_job(user_id, kind="image"):
+            await mark_failed(event)
+            return
 
         try:
             await mark_processing(event)
             image_path, task_meta = await self._generate_selfie_image_with_meta(
-                event, prompt, backend
+                event,
+                prompt,
+                backend,
+                output_intent=output_intent,
             )
             self._remember_last_image(event, image_path)
             sent = await self._send_image_with_fallback(event, image_path)

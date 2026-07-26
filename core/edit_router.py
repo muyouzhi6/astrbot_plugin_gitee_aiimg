@@ -8,7 +8,14 @@ from pathlib import Path
 from astrbot.api import logger
 
 from .gitee_edit import GiteeEditBackend
-from .output_spec import parse_output
+from .output_spec import (
+    OutputIntent,
+    detect_aspect_ratio_from_image,
+    merge_output_intents,
+    output_intent_from_legacy,
+    parse_output_intent,
+    resolve_backend_output,
+)
 from .provider_chain import as_dict, as_list, candidates_from_chain
 from .provider_registry import ProviderRegistry
 
@@ -106,8 +113,10 @@ class EditRouter:
         *,
         size: str | None = None,
         resolution: str | None = None,
+        output_intent: OutputIntent | None = None,
         default_output: str | None = None,
         chain_override: list | None = None,
+        infer_source_aspect: bool = True,
     ) -> Path:
         feature = self._feature_conf()
         if not bool(feature.get("enabled", True)):
@@ -144,6 +153,15 @@ class EditRouter:
         final_task_types = (
             list(task_types) if list(task_types) else gitee_default_task_types
         )
+        request_intent = merge_output_intents(
+            output_intent,
+            output_intent_from_legacy(size, resolution),
+        )
+        source_intent: OutputIntent | None = None
+        if infer_source_aspect and len(images) == 1:
+            detected_ratio = detect_aspect_ratio_from_image(images[0])
+            if detected_ratio:
+                source_intent = OutputIntent(aspect_ratio=detected_ratio)
 
         max_attempts = 1
 
@@ -158,22 +176,26 @@ class EditRouter:
                 logger.warning("[edit] Provider build failed: %s: %s", pid, e)
                 continue
 
-            if size or resolution:
-                final_size = size
-                final_res = resolution
-            else:
-                output = out_override or effective_default_output
-                out_size, out_res = parse_output(output)
-                final_size = out_size
-                final_res = out_res
-
             for attempt in range(max_attempts):
                 try:
+                    candidate_intent = merge_output_intents(
+                        request_intent,
+                        parse_output_intent(out_override) if out_override else None,
+                        parse_output_intent(effective_default_output)
+                        if effective_default_output
+                        else None,
+                        source_intent,
+                    )
+                    output_kwargs = resolve_backend_output(
+                        backend_obj, candidate_intent
+                    )
                     logger.info(
-                        "[edit] Provider=%s attempt=%s/%s",
+                        "[edit] Provider=%s attempt=%s/%s output_intent=%s kwargs=%s",
                         pid,
                         attempt + 1,
                         max_attempts,
+                        candidate_intent,
+                        output_kwargs,
                     )
                     edit_fn = getattr(backend_obj, "edit", None)
                     if not callable(edit_fn):
@@ -186,8 +208,7 @@ class EditRouter:
                         result = await edit_fn(
                             prompt,
                             images,
-                            size=final_size,
-                            resolution=final_res,
+                            **output_kwargs,
                         )
                     if not result:
                         raise RuntimeError("Provider returned empty edit result")

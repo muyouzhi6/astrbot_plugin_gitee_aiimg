@@ -5,7 +5,13 @@ from pathlib import Path
 
 from astrbot.api import logger
 
-from .output_spec import parse_output
+from .output_spec import (
+    OutputIntent,
+    merge_output_intents,
+    output_intent_from_legacy,
+    parse_output_intent,
+    resolve_backend_output,
+)
 from .provider_chain import as_dict, as_list, candidates_from_chain
 from .provider_registry import ProviderRegistry
 
@@ -50,6 +56,7 @@ class ImageDrawService:
         *,
         size: str | None = None,
         resolution: str | None = None,
+        output_intent: OutputIntent | None = None,
         provider_id: str | None = None,
     ) -> Path:
         feature = self._feature_conf()
@@ -71,6 +78,10 @@ class ImageDrawService:
         logger.debug("[draw] candidates=%s", [pid for pid, _ in candidates])
 
         default_output = self._default_output()
+        request_intent = merge_output_intents(
+            output_intent,
+            output_intent_from_legacy(size, resolution),
+        )
 
         last_error: Exception | None = None
         for pid, out_override in candidates:
@@ -81,21 +92,24 @@ class ImageDrawService:
                 logger.warning("[draw] Provider build failed: %s: %s", pid, e)
                 continue
 
-            output = out_override or default_output
-            if size or resolution:
-                final_size = size
-                final_res = resolution
-            else:
-                out_size, out_res = parse_output(output)
-                final_size = out_size
-                final_res = out_res
-
             t0 = time.perf_counter()
             try:
+                candidate_intent = merge_output_intents(
+                    request_intent,
+                    parse_output_intent(out_override) if out_override else None,
+                    parse_output_intent(default_output) if default_output else None,
+                )
+                output_kwargs = resolve_backend_output(backend, candidate_intent)
+                logger.debug(
+                    "[draw] Provider=%s output_intent=%s kwargs=%s",
+                    pid,
+                    candidate_intent,
+                    output_kwargs,
+                )
                 gen = getattr(backend, "generate", None)
                 if not callable(gen):
                     raise RuntimeError("Provider does not support generate()")
-                result = await gen(prompt, size=final_size, resolution=final_res)
+                result = await gen(prompt, **output_kwargs)
                 if not result:
                     raise RuntimeError("Provider returned empty generate result")
                 logger.info(

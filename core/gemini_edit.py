@@ -17,10 +17,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import aiohttp
-
 from astrbot.api import logger
 
 from .image_format import guess_image_mime_and_ext
+from .output_spec import (
+    OutputIntent,
+    aspect_ratio_from_size,
+    resolution_from_size,
+)
 
 if TYPE_CHECKING:
     from .image_manager import ImageManager
@@ -309,18 +313,26 @@ class GeminiEditBackend:
         return downloaded
 
     async def _request(
-        self, parts: list[dict], *, resolution: str | None = None
+        self,
+        parts: list[dict],
+        *,
+        resolution: str | None = None,
+        aspect_ratio: str | None = None,
     ) -> dict:
         api_key = await self._next_key()
         url = self._build_url()
         image_size = str(resolution or self.resolution or "4K").strip() or "4K"
+
+        image_config = {"imageSize": image_size}
+        if aspect_ratio:
+            image_config["aspectRatio"] = str(aspect_ratio).strip()
 
         payload = {
             "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {
                 "maxOutputTokens": 8192,
                 "responseModalities": ["TEXT", "IMAGE"],
-                "imageConfig": {"imageSize": image_size},
+                "imageConfig": image_config,
             },
             "safetySettings": [
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -473,8 +485,24 @@ class GeminiEditBackend:
 
         return "; ".join(parts)
 
+    def resolve_output_intent(self, intent: OutputIntent) -> dict[str, str]:
+        if intent.exact_size:
+            return {
+                "aspect_ratio": aspect_ratio_from_size(intent.exact_size) or "",
+                "resolution": resolution_from_size(intent.exact_size) or "",
+            }
+        return {
+            "aspect_ratio": intent.aspect_ratio or "",
+            "resolution": intent.resolution or "",
+        }
+
     async def generate(
-        self, prompt: str, *, resolution: str | None = None, **_
+        self,
+        prompt: str,
+        *,
+        resolution: str | None = None,
+        aspect_ratio: str | None = None,
+        **_,
     ) -> Path:
         t_start = time.perf_counter()
         parts = [
@@ -486,7 +514,11 @@ class GeminiEditBackend:
                 )
             }
         ]
-        data = await self._request(parts, resolution=resolution)
+        data = await self._request(
+            parts,
+            resolution=resolution,
+            aspect_ratio=aspect_ratio,
+        )
         all_images = await self._extract_images_with_fallback(data)
         if not all_images:
             reason = self._build_no_image_reason(data)
@@ -547,6 +579,7 @@ class GeminiEditBackend:
         *,
         size: str | None = None,
         resolution: str | None = None,
+        aspect_ratio: str | None = None,
         **_,
     ) -> Path:
         """
@@ -592,7 +625,11 @@ class GeminiEditBackend:
                 }
             )
 
-        data = await self._request(parts, resolution=final_resolution)
+        data = await self._request(
+            parts,
+            resolution=final_resolution,
+            aspect_ratio=aspect_ratio or aspect_ratio_from_size(size),
+        )
         try:
             all_images = await self._extract_images_with_fallback(data)
         except Exception as e:

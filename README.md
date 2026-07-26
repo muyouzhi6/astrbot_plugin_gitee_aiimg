@@ -1,13 +1,13 @@
 # AstrBot Gitee AI 图像生成插件
 
-[![Plugin Version](https://img.shields.io/badge/Version-v4.3.7-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
+[![Plugin Version](https://img.shields.io/badge/Version-v4.3.8-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16.0%2C%20%3C5-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![Platform](https://img.shields.io/badge/Primary-aiocqhttp-4caf50?style=for-the-badge)](#平台与限制)
 
 多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件，支持命令调用、`LLM tool` 调用、预设提示词、批量出图、请求模式控制、多 `API Key` 轮询、失败兜底与超时配置。
 
 > [!IMPORTANT]
-> 这份文档对应 `v4.3.7` 配置结构。
+> 这份文档对应 `v4.3.8` 配置结构。
 >
 > - `v4` 与旧版 `v3 / v2` 配置不兼容，升级后请重新检查 WebUI 配置。
 > - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了发送图片前优化。
@@ -16,6 +16,9 @@
 
 ## 新版本重点
 
+- 输出参数统一支持精确尺寸、比例、分辨率和组合形式, 例如 `2048x1152`、`16:9`、`4K`、`16:9 4K`
+- 普通单图改图在没有显式比例时自动继承输入图比例, 自拍和多图改图不会被参考图比例锁定
+- fallback 到不同 provider 时会按各 backend 能力重新解析输出参数
 - 新增文生图预设：`/文生图 预设名 补充提示词`
 - 新增统一批量命令：`/批量n aiimg ...`、`/批量n aiedit ...`、`/批量n 自拍 ...`
 - 支持批量配合预设：`/批量n 文生图 预设名 补充提示词`、`/批量n 改图预设名 补充提示词`
@@ -195,23 +198,49 @@
 
 | 功能 | 命令 |
 | --- | --- |
-| 普通文生图 | `/aiimg [@provider_id] <提示词> [比例]` |
-| 文生图预设 | `/文生图 [@provider_id] <预设名> [补充提示词]` |
-| 改图 | `发送或引用图片 + /aiedit [@provider_id] <提示词>` |
-| 改图预设 | `发送或引用图片 + /预设名 [@provider_id] [额外提示词]` |
-| 自拍 | `/自拍 [@provider_id] <提示词>` |
+| 普通文生图 | `/aiimg [@provider_id] <提示词> [输出]` |
+| 文生图预设 | `/文生图 [@provider_id] <预设名> [补充提示词] [输出]` |
+| 改图 | `发送或引用图片 + /aiedit [@provider_id] <提示词> [输出]` |
+| 改图预设 | `发送或引用图片 + /预设名 [@provider_id] [额外提示词] [输出]` |
+| 自拍 | `/自拍 [@provider_id] <提示词> [输出]` |
 | 自拍参考图管理 | `发送图片 + /自拍参考 设置`、`/自拍参考 查看`、`/自拍参考 删除` |
-| 批量文生图 | `/批量n aiimg [@provider_id] <提示词>` |
-| 批量改图 | `发送或引用图片 + /批量n aiedit [@provider_id] <提示词>` |
-| 批量自拍 | `/批量n 自拍 [@provider_id] <提示词>` |
-| 批量文生图预设 | `/批量n 文生图 [@provider_id] <预设名> [补充提示词]` |
-| 批量改图预设 | `发送或引用图片 + /批量n <改图预设名> [额外提示词]` |
+| 批量文生图 | `/批量n aiimg [@provider_id] <提示词> [输出]` |
+| 批量改图 | `发送或引用图片 + /批量n aiedit [@provider_id] <提示词> [输出]` |
+| 批量自拍 | `/批量n 自拍 [@provider_id] <提示词> [输出]` |
+| 批量文生图预设 | `/批量n 文生图 [@provider_id] <预设名> [补充提示词] [输出]` |
+| 批量改图预设 | `发送或引用图片 + /批量n <改图预设名> [额外提示词] [输出]` |
 | 视频 | `发送或引用图片 + /视频 [@provider_id] <提示词或预设名>` |
 | 文生图预设列表 | `/文生图预设列表` |
 | 改图预设列表 | `/预设列表` |
 | 视频预设列表 | `/视频预设列表` |
 | 重发最近结果 | `/重发图片` |
 | 查看改图帮助 | `/改图帮助` |
+
+## 输出尺寸与比例
+
+命令和 LLM 工具的 `output` 支持以下形式：
+
+- 精确尺寸：`2048x1152`
+- 自适应比例：`16:9`
+- 分辨率：`4K`
+- 自适应比例与分辨率：`16:9 4K`
+
+命令只会把提示词末尾最多两个合法控制 token 当作输出参数, 正文里的 `16:9` 或 `4K` 描述不会被全局扫描。示例：
+
+```text
+/aiimg 电影感海边日落 16:9 4K
+/aiedit 保持人物不变，替换为夜景街道 4K
+/自拍 黑色外套，楼梯间，低头看镜头 9:16 2K
+/批量4 aiimg 同一主题的不同镜头 16:9 4K
+```
+
+输出优先级为：用户参数 > 当前 provider 的 `chain.output` > 功能的 `default_output` > 普通单图改图的输入图比例 > provider 默认值。
+
+- Gemini Native 会传递自适应比例与分辨率; Vertex AI Anonymous 会传递自适应比例, 并在模型支持时传递分辨率。
+- 声明 `allowed_sizes` 的 OpenAI Images backend 会映射到最接近的合法像素尺寸。
+- 普通单图改图只有在更高优先级没有指定比例时才继承输入图比例。
+- 自拍和多图改图不会从参考图推断输出比例。
+- backend 不支持的输出维度会被忽略, 最终能力以对应服务商为准。
 
 ## 文生图预设
 
@@ -300,7 +329,7 @@ Q版化:Convert to chibi illustration style
 其中 `n` 是数量，例如：
 
 ```text
-/批量4 aiimg 一个粉发少女，4 个不同镜头角度
+/批量4 aiimg 一个粉发少女，4 个不同镜头角度 16:9 4K
 /批量6 aiedit 把这张照片分别改成不同灯光和情绪
 /批量8 自拍 同一套穿搭，不同姿势、表情和俯仰角
 /批量5 文生图 手办 将这辆车做成桌面手办
@@ -391,7 +420,7 @@ Q版化:Convert to chibi illustration style
 - `prompt`
 - `mode`: `auto` / `text` / `edit` / `selfie_ref`
 - `backend`: `auto` 或具体 `provider_id`
-- `output`: 例如 `2048x2048`、`4K`
+- `output`: 例如 `2048x2048`、`16:9`、`4K`、`16:9 4K`
 
 自动模式行为：
 
@@ -409,7 +438,7 @@ Q版化:Convert to chibi illustration style
 - `count`：默认 `4`，建议 `2-8`，最终不会超过 `features.batch.max_count`
 - `mode`: `auto` / `text` / `edit` / `selfie_ref`
 - `backend`
-- `output`
+- `output`: 与单图工具相同, 支持精确尺寸、比例、分辨率和组合形式
 
 工具行为：
 

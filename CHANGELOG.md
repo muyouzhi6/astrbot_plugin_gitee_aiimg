@@ -1,5 +1,25 @@
 # 更新日志
 
+## [v4.3.8] - 2026-07-26
+
+### 新增
+
+- 新增统一输出意图解析, 支持精确尺寸 `2048x1152`、分辨率 `4K`、比例 `16:9` 以及组合形式 `16:9 4K`。
+- 命令、批量命令和 LLM 工具统一支持末尾输出参数, 只解析提示词末尾最多两个控制 token, 不误吞正文中的比例或分辨率描述。
+- 普通单图改图在没有显式比例时自动继承输入图比例; 多图改图和自拍参考照不执行该推断。
+
+### 优化
+
+- 输出参数按“用户参数 > 当前 provider 链路覆盖 > 功能默认值 > 单图输入比例 > provider 默认值”合并。
+- 每次 fallback 到下一个 provider 时重新解析输出参数, 避免不同 backend 之间复用不兼容 kwargs。
+- Gemini Native 使用 `aspectRatio + imageSize`; Vertex AI Anonymous 传递 `aspectRatio`, 并在模型支持时传递 `imageSize`; 声明固定尺寸集合的 OpenAI Images backend 会把比例与分辨率映射为最合适的像素尺寸。
+- 补充 Pillow 运行依赖声明, 与现有图片读取和比例检测逻辑保持一致。
+
+### 测试
+
+- 补充输出解析、provider fallback、严格 kwargs、单图比例推断、自拍禁用推断、Gemini payload 和批量命令解析测试。
+- 全量测试 `96 passed`。
+
 ## [v4.3.7] - 2026-07-19
 
 ### 修复
