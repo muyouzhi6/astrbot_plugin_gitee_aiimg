@@ -555,6 +555,18 @@ class GiteeAIImagePlugin(Star):
         self._video_inflight: dict[str, int] = {}
         self._video_tasks: set[asyncio.Task] = set()
 
+        # 读取 AstrBot 配置的唤醒前缀，用于限制命令匹配范围
+        try:
+            raw = self.context.base_config.get("wake_prefix", ["/"])
+            if isinstance(raw, str):
+                self._wake_prefixes: tuple[str, ...] = (raw,) if raw else ("/",)
+            elif isinstance(raw, list):
+                self._wake_prefixes = tuple(str(p) for p in raw if p) or ("/",)
+            else:
+                self._wake_prefixes = ("/",)
+        except Exception:
+            self._wake_prefixes = ("/",)
+
         self._patch_tool_image_cache_runtime()
 
         # 动态注册预设命令 (方案C: /手办化 直接触发)
@@ -1289,12 +1301,17 @@ class GiteeAIImagePlugin(Star):
         # 清理多余空格
         return msg.strip()
 
+    def _cmd_prefixes(self) -> tuple[str, ...]:
+        """Return configured AstrBot wake prefixes for command matching."""
+        return getattr(self, "_wake_prefixes", None) or ("/",)
+
     @staticmethod
-    def _extract_command_arg_anywhere(message: str, command_name: str) -> str:
-        """从任意位置提取“/命令 参数”，用于图片在前导致 @filter.command 不触发的场景。"""
+    def _extract_command_arg_anywhere(message: str, command_name: str, *, prefixes: tuple[str, ...] | None = None) -> str:
+        """从任意位置提取"/命令 参数"，用于图片在前导致 @filter.command 不触发的场景。"""
         _found, arg = GiteeAIImagePlugin._find_command_arg_anywhere(
             message,
             command_name,
+            prefixes=prefixes,
         )
         return arg
 
@@ -1304,12 +1321,16 @@ class GiteeAIImagePlugin(Star):
         command_name: str,
         *,
         allow_bare: bool = False,
+        prefixes: tuple[str, ...] | None = None,
     ) -> tuple[bool, str]:
-        """查找带前缀命令；已被 AstrBot wake_prefix 剥离时允许裸命令。"""
+        """查找带前缀命令；已被 AstrBot wake_prefix 剥离时允许裸命令。
+        prefixes 为 None 时回退到全量集合（兼容静态调用场景）。
+        """
         msg = (message or "").strip()
         if not msg:
             return False, ""
-        for prefix in "/!！.。．":
+        effective_prefixes = prefixes if prefixes is not None else ("/", "!", "！", ".", "。", "．")
+        for prefix in effective_prefixes:
             token = f"{prefix}{command_name}"
             idx = msg.find(token)
             while idx >= 0:
@@ -1328,7 +1349,7 @@ class GiteeAIImagePlugin(Star):
     ) -> tuple[bool, str]:
         """从消息链中提取命令后的提示词。
 
-        用于修复“/命令 + 图片 + 文本”时，平台把文本段无空格拼接到 `message_str`
+        用于修复"/命令 + 图片 + 文本"时，平台把文本段无空格拼接到 `message_str`
         导致 command filter 和字符串提取都失效的问题。
         """
         try:
@@ -1405,11 +1426,12 @@ class GiteeAIImagePlugin(Star):
         return None, s
 
     @staticmethod
-    def _plain_starts_with_command(text: str, command_name: str) -> bool:
+    def _plain_starts_with_command(text: str, command_name: str, *, prefixes: tuple[str, ...] | None = None) -> bool:
         plain = (text or "").lstrip()
         if not plain:
             return False
-        for prefix in "/!！.。．":
+        effective_prefixes = prefixes if prefixes is not None else ("/", "!", "！", ".", "。", "．")
+        for prefix in effective_prefixes:
             if plain.startswith(f"{prefix}{command_name}"):
                 return True
         return False
@@ -1417,10 +1439,10 @@ class GiteeAIImagePlugin(Star):
     def _is_direct_command_message(
         self, event: AstrMessageEvent, command_names: tuple[str, ...]
     ) -> bool:
-        """仅当“首个有效文本段”直接是命令时返回 True。
+        """仅当"首个有效文本段"直接是命令时返回 True。
 
         用于 regex 兜底去重：避免正常 /命令 被重复处理；
-        同时允许“图片在前、命令在后”的消息继续走兜底逻辑。
+        同时允许"图片在前、命令在后"的消息继续走兜底逻辑。
         """
         try:
             chain = event.get_messages()
@@ -1440,7 +1462,8 @@ class GiteeAIImagePlugin(Star):
         if not first_plain:
             return False
         return any(
-            self._plain_starts_with_command(first_plain, name) for name in command_names
+            self._plain_starts_with_command(first_plain, name, prefixes=self._cmd_prefixes())
+            for name in command_names
         )
 
     @staticmethod
@@ -1680,7 +1703,7 @@ class GiteeAIImagePlugin(Star):
 
     @filter.regex(r".*(?:[/!！.。．])?(改图|图生图|修图|aiedit)", priority=-10)
     async def edit_image_regex_fallback(self, event: AstrMessageEvent):
-        """兼容“图片在前、文字在后”的消息：确保 /改图 能触发。"""
+        """兼容"图片在前、文字在后"的消息：确保 /改图 能触发。"""
         msg = (event.message_str or "").strip()
         command_names = ("改图", "图生图", "修图", "aiedit")
         if self._is_framework_direct_command_text(msg, command_names, allow_bare=False):
@@ -1694,7 +1717,7 @@ class GiteeAIImagePlugin(Star):
         prompt = ""
         matched = False
         for name in command_names:
-            prompt = self._extract_command_arg_anywhere(msg, name)
+            prompt = self._extract_command_arg_anywhere(msg, name, prefixes=self._cmd_prefixes())
             found_in_chain, chain_prompt = self._extract_command_arg_from_chain(
                 event, name
             )
@@ -1710,7 +1733,7 @@ class GiteeAIImagePlugin(Star):
 
     @filter.regex(r".*[/!！.。．][^\s]+", priority=-10)
     async def preset_regex_fallback(self, event: AstrMessageEvent):
-        """兼容“图片在前、预设命令在后”的消息：确保 /<预设名> 能触发。"""
+        """兼容"图片在前、预设命令在后"的消息：确保 /<预设名> 能触发。"""
         msg = (event.message_str or "").strip()
         preset_names = self.edit.get_preset_names()
         if not preset_names:
@@ -1733,7 +1756,7 @@ class GiteeAIImagePlugin(Star):
         # 在任意位置找到第一个匹配的预设命令
         used_preset: str | None = None
         for name in preset_names:
-            for prefix in "/!！.。．":
+            for prefix in self._cmd_prefixes():
                 if f"{prefix}{name}" in msg:
                     used_preset = name
                     break
@@ -1743,7 +1766,7 @@ class GiteeAIImagePlugin(Star):
         if not used_preset:
             return
 
-        extra_prompt = self._extract_command_arg_anywhere(msg, used_preset)
+        extra_prompt = self._extract_command_arg_anywhere(msg, used_preset, prefixes=self._cmd_prefixes())
         await self._do_edit_direct(event, extra_prompt, preset=used_preset)
         event.stop_event()
 
@@ -1751,7 +1774,7 @@ class GiteeAIImagePlugin(Star):
 
     @filter.command("自拍")
     async def selfie_command(self, event: AstrMessageEvent):
-        """使用“自拍参考照”生成 Bot 自拍。
+        """使用"自拍参考照"生成 Bot 自拍。
 
         用法:
         - /自拍 <提示词>
@@ -1766,7 +1789,7 @@ class GiteeAIImagePlugin(Star):
 
     @filter.regex(r"(?:自拍|.*[/!！.。．]自拍)(?:\s|$)", priority=-10)
     async def selfie_regex_fallback(self, event: AstrMessageEvent):
-        """兼容“图片在前、文字在后”的消息：确保 /自拍 能触发。"""
+        """兼容"图片在前、文字在后"的消息：确保 /自拍 能触发。"""
         if self._has_activated_handler(event, "selfie_command"):
             return
         msg = (event.message_str or "").strip()
@@ -1774,6 +1797,7 @@ class GiteeAIImagePlugin(Star):
             msg,
             "自拍",
             allow_bare=bool(getattr(event, "is_at_or_wake_command", False)),
+            prefixes=self._cmd_prefixes(),
         )
         if found:
             event.should_call_llm(True)
@@ -1832,7 +1856,7 @@ class GiteeAIImagePlugin(Star):
 
     @filter.regex(r"(?:自拍参考|.*[/!！.。．]自拍参考)(?:\s|$)", priority=-10)
     async def selfie_reference_regex_fallback(self, event: AstrMessageEvent):
-        """兼容“图片在前、文字在后”的消息：确保 /自拍参考 能触发。"""
+        """兼容"图片在前、文字在后"的消息：确保 /自拍参考 能触发。"""
         if self._has_activated_handler(event, "selfie_reference_command"):
             return
         msg = (event.message_str or "").strip()
@@ -1840,6 +1864,7 @@ class GiteeAIImagePlugin(Star):
             msg,
             "自拍参考",
             allow_bare=bool(getattr(event, "is_at_or_wake_command", False)),
+            prefixes=self._cmd_prefixes(),
         )
         if not found:
             return
@@ -1949,13 +1974,13 @@ class GiteeAIImagePlugin(Star):
 
     @filter.regex(r"[/!！.。．]视频(\s|$)", priority=-10)
     async def generate_video_regex_fallback(self, event: AstrMessageEvent):
-        """兼容“图片在前、文字在后”的消息：确保 /视频 能触发。"""
+        """兼容"图片在前、文字在后"的消息：确保 /视频 能触发。"""
         msg = (event.message_str or "").strip()
         if self._is_direct_command_message(event, ("视频",)):
             return
 
-        arg = self._extract_command_arg_anywhere(msg, "视频")
-        if not arg and "/视频" not in msg:
+        arg = self._extract_command_arg_anywhere(msg, "视频", prefixes=self._cmd_prefixes())
+        if not arg and not any(f"{p}视频" in msg for p in self._cmd_prefixes()):
             return
 
         event.should_call_llm(True)
@@ -3783,7 +3808,7 @@ class GiteeAIImagePlugin(Star):
                         "No selfie provider chain configured. Please set features.selfie.chain or enable features.selfie.use_edit_chain_when_empty."
                     )
             elif use_edit_chain:
-                # 自拍链路可作为主链，改图链路作为补充兜底，避免“自拍链仅一项导致无兜底”。
+                # 自拍链路可作为主链，改图链路作为补充兜底，避免"自拍链仅一项导致无兜底"。
                 chain_override = self._merge_selfie_chain_with_edit_chain(
                     chain_override
                 )
