@@ -147,7 +147,7 @@
           "gitee_task_types": {
             "type": "list",
             "description": "Gitee 异步改图默认任务类型",
-            "hint": "仅对 providers 中的 gitee_async 类型生效。默认：id/background/style。",
+            "hint": "仅对 gitee_async 类型的 provider 生效。可用值：id（保留人物特征）、background（替换背景）、style（风格化）。默认三者都启用；删减某项可减少 Gitee 处理维度。",
             "default": [
               "id",
               "background",
@@ -251,7 +251,7 @@
           "gitee_task_types": {
             "type": "list",
             "description": "Gitee 异步自拍默认任务类型",
-            "hint": "仅对 providers 中的 gitee_async 类型生效。默认：id/background/style。",
+            "hint": "仅对 gitee_async 类型的 provider 生效。可用值：id（保留人物特征）、background（替换背景）、style（风格化）。默认三者都启用。",
             "default": [
               "id",
               "background",
@@ -261,7 +261,7 @@
           "prompt_prefix": {
             "type": "text",
             "description": "自拍提示词前缀",
-            "hint": "留空使用内置默认。",
+            "hint": "每次自拍时自动拼接到用户提示词之前。适合写死 Bot 的外貌描述或固定风格，如：A young woman with long black hair, realistic style, high quality, 。留空使用内置默认。",
             "default": ""
           }
         }

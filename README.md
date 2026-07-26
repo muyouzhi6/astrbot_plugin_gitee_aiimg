@@ -1,13 +1,13 @@
 # AstrBot Gitee AI 图像生成插件
 
-[![Plugin Version](https://img.shields.io/badge/Version-v4.3.11-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
+[![Plugin Version](https://img.shields.io/badge/Version-v4.3.12-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16.0%2C%20%3C5-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![Platform](https://img.shields.io/badge/Primary-aiocqhttp-4caf50?style=for-the-badge)](#平台与限制)
 
 多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件，支持命令调用、`LLM tool` 调用、预设提示词、批量出图、请求模式控制、多 `API Key` 轮询、失败兜底与超时配置。
 
 > [!IMPORTANT]
-> 这份文档对应 `v4.3.11` 配置结构。
+> 这份文档对应 `v4.3.12` 配置结构。
 >
 > - `v4` 与旧版 `v3 / v2` 配置不兼容，升级后请重新检查 WebUI 配置。
 > - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了发送图片前优化。
@@ -42,29 +42,49 @@
 
 核心设计是把 **服务商实例 `providers`** 和 **功能链路 `features.*.chain`** 分开。你可以给同一类能力挂多个 provider，插件会按链路顺序兜底切换。
 
+## 配置概念：providers 与 chain
+
+新用户最常见的卡点：只填了 `providers`，忘了填 `features.*.chain`，导致什么都没有生效。
+
+```
+providers（定义后端）          features.*.chain（选用哪个后端）
+┌──────────────────────┐       ┌──────────────────────────────────┐
+│ id: "my_gpt"         │◄──────│ provider_id: "my_gpt"            │
+│ model: "gpt-image-2" │       │ output: "4K"                     │
+│ api_keys: [...]      │       ├──────────────────────────────────┤
+│ base_url: "..."      │       │ provider_id: "my_gemini"  (兜底) │
+└──────────────────────┘       └──────────────────────────────────┘
+```
+
+**三步完成配置：**
+
+1. 在页面底部的 `providers` 里新增一个服务商，设置唯一 `id`，填写 `api_keys`、`model`、`base_url`
+2. 在 `features.draw.chain`（文生图）、`features.edit.chain`（改图）等对应功能里，填入刚才的 `provider_id`
+3. 重启/重载插件，发 `/aiimg 测试` 验证
+
+chain 里可以填多个 provider，第一个是主用，后面的是自动兜底，主用失败时无需手动干预。
+
 ## 快速上手
 
-### 1. 先配 `providers`
+### 第一步：选模板，配置 provider
 
-每个 provider 都需要一个唯一的 `id`。目前内置了多类模板，例如：
+每个 provider 都需要一个唯一的 `id`。根据你的服务商接口类型选对模板：
 
-- Gemini 原生 `generateContent`
-- Vertex AI Anonymous
-- OpenAI 兼容 `Images API`
-- OpenAI 兼容 `Chat` 出图解析
-- OpenAI 兼容完整路径
-- Flow2API
-- Grok / Grok2API
-- Gitee / Gitee 异步改图
-- 即梦 / 豆包聚合
-- 视频后端
+| 接口类型 | 选用模板 |
+| --- | --- |
+| 标准 `POST /v1/images/generations` 或 `/edits` | `openai_images` |
+| Chat 回复里包含图片 URL / base64 | `openai_chat` 或 `flow2api` |
+| 自定义完整路径（非标准 `/v1/...`） | `openai_full_url_images` |
+| 直连 Gemini 官方 / Meinianda 香蕉系列 | `gemini_native` |
+| 即梦 / 豆包 | `jimeng` |
+| Gitee AI 文生图 | `gitee_images` |
+| Gitee AI 异步改图 | `gitee_async` |
+| Grok / xAI | `grok_images` 或 `grok_chat` |
+| 视频生成 | `grok_video` / `flow2api_video` / `sora2_video` |
 
-一般选择建议：
+### 第二步：在功能 chain 里引用 provider
 
-- 标准 `POST /v1/images/generations` / `POST /v1/images/edits`：用 `OpenAI 兼容通用（Images）`
-- 只在 `chat.completions` 回复里回图片：用 `OpenAI 兼容（Chat 出图解析）`
-- 你的网关路径不是标准 `/v1/...`：用 `OpenAI 兼容-完整路径`
-- 直连 Gemini 官方：用 `Gemini 原生`
+### 第二步：在功能 chain 里引用 provider
 
 ### 推荐渠道：云智 AI 中转站
 
@@ -131,6 +151,32 @@
   }
 }
 ```
+
+### 即梦（豆包）配置
+
+即梦使用 Cookie 登录，不需要付费 API Key，适合低频个人使用。
+
+**获取 Cookie 和 conversation_id：**
+
+1. 浏览器登录 [即梦 AI](https://jimeng.jianying.com/)，打开任意对话
+2. 复制地址栏 URL 中的 conversation_id（格式类似 `7431xxxxxxxxxxxxxxxxxx`）
+3. 打开浏览器开发者工具 → Network 标签，找到任意请求，复制 `Cookie` 请求头的完整值
+
+**provider 配置示例：**
+
+```json
+{
+  "id": "jimeng_1",
+  "__template_key": "jimeng",
+  "label": "即梦",
+  "cookie_list": [
+    "7431xxxxxxxxxxxxxxxxxx:sessionid=xxx; passport_csrf_token=xxx; ..."
+  ],
+  "timeout": 240
+}
+```
+
+`cookie_list` 格式固定为 `conversation_id:完整Cookie字符串`，可配多条做轮询。
 
 ### Meinianda Gemini 生图配置
 
@@ -395,6 +441,14 @@ Q版化:Convert to chibi illustration style
 - 如果同时没有 WebUI 参考照，也没有通过命令保存参考照，`/自拍` 会直接报错
 - 自拍链路为空时，可通过 `features.selfie.use_edit_chain_when_empty=true` 复用改图链路
 
+### 自拍提示词前缀
+
+`features.selfie.prompt_prefix` 可以设置一段固定的提示词前缀，在每次自拍时自动拼接到用户输入之前。适合把 Bot 的外貌描述、固定风格要求写死，不必每次都重复输入。
+
+示例值：`A young woman with long black hair, realistic style, high quality, `
+
+留空则使用插件内置的默认前缀。
+
 ## 视频生成
 
 发送或引用图片后：
@@ -483,6 +537,12 @@ Q版化:Convert to chibi illustration style
 - `features.draw.batch_concurrency`：文生图批量并发
 - `features.edit.batch_concurrency`：改图 / 自拍批量并发
 
+### 视频发送
+
+- `features.video.send_mode`：视频发送方式。`auto`=优先通过 URL 发送，URL 失败再下载本地；`url`=仅通过 URL 发送；`file`=下载后以本地文件发送
+- `features.video.send_timeout_seconds`：发送 Video 组件等待超时，默认 `90` 秒
+- `features.video.download_timeout_seconds`：`send_mode=file/auto` 触发下载时的超时，默认 `300` 秒
+
 ### 并发与防抖
 
 - `debounce_interval`：防抖时间，防止同一用户短时间重复提交同类任务
@@ -497,6 +557,19 @@ Q版化:Convert to chibi illustration style
 - `send.weixin_api_timeout_seconds`：个人微信发送超时，默认 `60` 秒。
 
 这组配置只影响 `weixin_oc`。QQ / OneBot 仍使用原有发送与兜底逻辑。若个人微信发送 4K 图片时出现 `upload_to_cdn TimeoutError`，优先调高 `send.weixin_api_timeout_seconds`，或降低 `send.weixin_image_max_size_kb`。
+
+### 存储与缓存
+
+- `storage.max_cached_images`：本地图片最大缓存数，默认 `50`；超出时自动清理一半旧缓存
+- `storage.max_cached_videos`：本地视频最大缓存数，默认 `20`；仅在 `send_mode=file/auto` 触发下载时生效（`0`=不清理）
+
+### 网络安全
+
+- `network.media_allow_private`：是否允许从私有/内网地址下载图片或视频，默认 **关闭**（防止 SSRF 攻击）。自建服务且服务端在内网时可开启
+- `network.max_image_bytes`：图片下载大小上限，默认 `50MB`（52428800 字节）
+- `network.max_video_bytes`：视频下载大小上限，默认 `50MB`
+- `network.max_redirects`：最大 HTTP 重定向次数，默认 `5`
+- `network.dns_resolve_timeout_seconds`：DNS 解析超时，默认 `2` 秒
 
 ### 功能开关
 
@@ -589,20 +662,6 @@ Q版化:Convert to chibi illustration style
 ## 原仓库展示内容（保留）
 
 这一节保留原仓库 README 里的推广与展示内容，方便插件市场页和仓库首页继续正常展示。
-
-### Gitee AI API Key 获取方法（原展示）
-
-1. 访问 <https://ai.gitee.com/serverless-api?model=z-image-turbo>
-
-2. ![PixPin_2025-12-05_16-56-27](https://github.com/user-attachments/assets/77f9a713-e7ac-4b02-8603-4afc25991841)
-
-3. 免费额度
-
-![PixPin_2025-12-05_16-56-49](https://github.com/user-attachments/assets/6efde7c4-24c6-456a-8108-e78d7613f4fb)
-
-4. 可以涩涩，警惕违规被举报
-
-5. 好用可以给个 💗
 
 ### 出图展示区（原展示）
 
