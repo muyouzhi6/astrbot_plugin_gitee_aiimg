@@ -170,7 +170,19 @@
 
 ### Meinianda Gemini 生图配置
 
-`meinianda.top` 的 Gemini 生图模型必须使用 Gemini 官方 `generateContent` 协议。不要选 `Gemini Chat图` 或 OpenAI Chat 模板，否则中转层会忽略比例并回退到 `1:1`。
+如果你需要稳定的 Gemini 生图中转，作者推荐 Meinianda。站内提供香蕉系列和 `GPT-Image-2` 系列；其中 `nano-banana-2` 生成一张 4K 大图的成本参考约为 `0.05 元`。
+
+- 推荐注册链接（AFF）：[Meinianda 生图中转站](https://meinianda.top/sign-up?aff=Qs4O)
+- 推荐模型：`nano-banana-2` 等香蕉系列
+- 可用系列：香蕉系列、`GPT-Image-2` 系列
+- 推荐模板：香蕉系列必须选择 `Gemini 原生`，也就是 provider 模板里的 `gemini_native`
+- 推荐 Base URL：`https://meinianda.top`
+- 成本参考：`nano-banana-2` 生成一张 4K 大图约 `0.05 元`
+
+> [!NOTE]
+> 上面的链接包含作者 AFF 推荐标识；价格和模型可用性是作者当前使用体验的参考，不是固定价格承诺，请以 Meinianda 后台实时计费为准。
+
+`meinianda.top` 的 Gemini 生图模型必须使用 Gemini 官方 `generateContent` 协议。不要选 `Gemini Chat图` 或 OpenAI Chat 模板，否则中转层会忽略比例并回退到 `1:1`。`GPT-Image-2` 系列请按对应接口协议选择 OpenAI Images 或 OpenAI Chat 模板，不要套用 Gemini 原生模板。
 
 ```json
 {
@@ -199,7 +211,7 @@ LLM tool 会把 prompt 中的 `16:9` 等明确比例作为最高优先级参数�
     "selfie": {
       "chain": [
         {
-          "provider_id": "weapi_banana_2",
+          "provider_id": "meinianda_gemini",
           "output": "4K"
         }
       ],
@@ -208,7 +220,7 @@ LLM tool 会把 prompt 中的 `16:9` 等明确比例作为最高优先级参数�
     "edit": {
       "chain": [
         {
-          "provider_id": "weapi_banana_2",
+          "provider_id": "meinianda_gemini",
           "output": "4K"
         }
       ]
