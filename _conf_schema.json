@@ -695,8 +695,8 @@
       },
       "vertex_ai_anonymous": {
         "name": "Vertex 匿名",
-        "description": "无需 API Key；通过 recaptcha + cloudconsole GraphQL 生成图片（需能访问 Google）。",
-        "hint": "默认配置一般只需填写 model；若网络受限，可配置 proxy_url 或把 base_api 改成反代。",
+        "description": "通过 recaptcha + cloudconsole GraphQL 生成图片; 需自行配置 GraphQL key（需能访问 Google）。",
+        "hint": "必须填写你自己的 GraphQL key; 若网络受限，可配置 proxy_url 或把 base_api 改成反代。",
         "items": {
           "id": {
             "type": "string",
@@ -767,8 +767,8 @@
           "graphql_api_key": {
             "type": "string",
             "description": "GraphQL key（高级）",
-            "hint": "一般无需修改；除非上游变更。",
-            "default": "[REMOVED_GOOGLE_API_KEY]"
+            "hint": "必须填写你自己的 key; 不要使用来源不明的共享 key。",
+            "default": ""
           },
           "query_signature": {
             "type": "string",

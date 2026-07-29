@@ -210,6 +210,53 @@ class ProviderRegistryRequestModeTests(unittest.TestCase):
 
         self.assertEqual(errors, ["provider 'x666_sora2' missing api_keys"])
 
+    def test_validate_requires_vertex_graphql_api_key(self):
+        mod = _load_module()
+        registry = mod.ProviderRegistry(
+            config={
+                "providers": [
+                    {
+                        "id": "vertex",
+                        "__template_key": "vertex_ai_anonymous",
+                        "model": "gemini-3-pro-image-preview",
+                    }
+                ]
+            },
+            imgr=object(),
+            data_dir=Path("/tmp"),
+        )
+
+        self.assertEqual(
+            registry.validate(), ["provider 'vertex' missing graphql_api_key"]
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "missing graphql_api_key"):
+            registry.get_backend("vertex")
+
+    def test_registry_passes_explicit_vertex_graphql_api_key(self):
+        mod = _load_module()
+        registry = mod.ProviderRegistry(
+            config={
+                "providers": [
+                    {
+                        "id": "vertex",
+                        "__template_key": "vertex_ai_anonymous",
+                        "model": "gemini-3-pro-image-preview",
+                        "graphql_api_key": "user-configured-key",
+                    }
+                ]
+            },
+            imgr=object(),
+            data_dir=Path("/tmp"),
+        )
+
+        backend = registry.get_backend("vertex")
+
+        self.assertEqual(
+            backend.kwargs["settings"].kwargs["graphql_api_key"],
+            "user-configured-key",
+        )
+
     def test_registry_keeps_legacy_generate_flag_when_new_mode_is_auto(self):
         mod = _load_module()
         registry = mod.ProviderRegistry(

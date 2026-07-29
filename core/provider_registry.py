@@ -382,6 +382,8 @@ class ProviderRegistry:
             if template_key in {"vertex_ai_anonymous"}:
                 if not str(item.get("model") or "").strip():
                     errors.append(f"provider '{provider_id}' missing model")
+                if not str(item.get("graphql_api_key") or "").strip():
+                    errors.append(f"provider '{provider_id}' missing graphql_api_key")
             if template_key in {"openai_full_url_images"}:
                 full_generate_url = str(item.get("full_generate_url") or "").strip()
                 if not full_generate_url:
@@ -633,6 +635,9 @@ class ProviderRegistry:
             )
 
         if template_key == "vertex_ai_anonymous":
+            graphql_api_key = str(conf.get("graphql_api_key") or "").strip()
+            if not graphql_api_key:
+                raise RuntimeError(f"Provider '{pid}' missing graphql_api_key")
             settings = VertexAIAnonymousSettings(
                 model=str(conf.get("model") or "gemini-3-pro-image-preview").strip(),
                 timeout_seconds=int(conf.get("timeout") or 300),
@@ -647,8 +652,7 @@ class ProviderRegistry:
                 system_prompt=str(conf.get("system_prompt") or "").strip() or None,
                 query_signature=str(conf.get("query_signature") or "").strip()
                 or "2/l8eCsMMY49imcDQ/lwwXyL8cYtTjxZBF2dNqy69LodY=",
-                graphql_api_key=str(conf.get("graphql_api_key") or "").strip()
-                or "[REMOVED_GOOGLE_API_KEY]",
+                graphql_api_key=graphql_api_key,
                 output_format=str(conf.get("output_format") or "jpeg"),
             )
             return VertexAIAnonymousBackend(imgr=self._imgr, settings=settings)
