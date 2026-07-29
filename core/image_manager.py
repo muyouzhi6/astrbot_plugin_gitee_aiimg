@@ -82,7 +82,7 @@ class ImageManager:
             await self._session.close()
             self._session = None
 
-    async def download_image(self, url: str) -> Path:
+    async def download_image(self, url: str, *, output_format: str = "jpeg") -> Path:
         """下载远程图片并保存到本地，返回文件路径"""
         t0 = time.time()
         session = await self._session_get()
@@ -132,11 +132,64 @@ class ImageManager:
             f"[ImageManager] 网络下载耗时: {time.time() - t0:.2f}s, 大小: {len(data)} bytes"
         )
 
-        return await self.save_image(data)
+        return await self.save_image(data, output_format=output_format)
 
-    async def save_image(self, data: bytes) -> Path:
-        """保存 bytes 图片到本地"""
+    async def save_image(self, data: bytes, *, output_format: str = "jpeg") -> Path:
+        """保存 bytes 图片到本地
+
+        Args:
+            data: 图片二进制数据
+            output_format: 输出格式 ("jpeg" / "png" / "auto")，默认 "jpeg"
+        """
         t0 = time.time()
+
+        # 格式转换逻辑
+        fmt = str(output_format or "jpeg").strip().lower()
+        original_data = data
+        conversion_applied = False
+
+        if fmt in ("jpeg", "jpg"):
+            # 检测是否已经是 JPEG，避免重复转换
+            if not (len(data) >= 3 and data[:3] == b"\xff\xd8\xff"):
+                # 尝试转换为 JPEG
+                try:
+                    from PIL import Image as PILImage
+                    import io
+
+                    with PILImage.open(io.BytesIO(data)) as im:
+                        # 转换为 RGB（JPEG 不支持透明度）
+                        if im.mode in ("RGBA", "LA", "P"):
+                            # 创建白色背景
+                            if im.mode == "P" and "transparency" in im.info:
+                                im = im.convert("RGBA")
+                            if im.mode in ("RGBA", "LA"):
+                                bg = PILImage.new("RGB", im.size, (255, 255, 255))
+                                if im.mode == "LA":
+                                    im = im.convert("RGBA")
+                                bg.paste(im, mask=im.split()[-1] if len(im.split()) > 3 else None)
+                                im = bg
+                            else:
+                                im = im.convert("RGB")
+                        elif im.mode != "RGB":
+                            im = im.convert("RGB")
+
+                        # 保存为高质量 JPEG
+                        buf = io.BytesIO()
+                        im.save(buf, format="JPEG", quality=95, optimize=True)
+                        converted_data = buf.getvalue()
+
+                        if converted_data:
+                            data = converted_data
+                            conversion_applied = True
+                            logger.debug(
+                                f"[ImageManager] 格式转换: {len(original_data)} bytes → {len(data)} bytes (JPEG q=95)"
+                            )
+                except Exception as e:
+                    logger.warning(
+                        f"[ImageManager] 格式转换失败，使用原图: {e}"
+                    )
+                    data = original_data
+
         _, ext = guess_image_mime_and_ext(data)
         filename = f"{int(time.time())}_{id(data)}.{ext}"
         path = self.image_dir / filename
@@ -148,14 +201,15 @@ class ImageManager:
         await self.cleanup_old_images()
         logger.info(
             f"[ImageManager] 保存耗时: {t1 - t0:.2f}s, 清理耗时: {time.time() - t1:.2f}s"
+            + (f", 已转换为 JPEG" if conversion_applied else "")
         )
 
         return path
 
-    async def save_base64_image(self, b64: str) -> Path:
+    async def save_base64_image(self, b64: str, *, output_format: str = "jpeg") -> Path:
         """保存 base64 图片到本地"""
         data = base64.b64decode(b64)
-        return await self.save_image(data)
+        return await self.save_image(data, output_format=output_format)
 
     async def cleanup_old_images(self) -> None:
         """清理旧图片（按比例清理，默认清一半）"""

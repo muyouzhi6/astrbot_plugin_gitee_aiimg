@@ -198,6 +198,7 @@ class OpenAICompatBackend:
         proxy_url: str | None = None,
         allowed_sizes: list[str] | None = None,
         ratio_default_sizes: dict[str, str] | None = None,
+        output_format: str = "jpeg",
     ):
         self.imgr = imgr
         self.base_url = normalize_openai_compat_base_url(base_url)
@@ -210,6 +211,7 @@ class OpenAICompatBackend:
         )
         self.supports_edit = bool(supports_edit)
         self.extra_body = extra_body or {}
+        self.output_format = str(output_format or "jpeg").strip().lower()
         self.proxy_url = str(proxy_url or "").strip() or None
         self.allowed_sizes = [
             normalize_size_text(s)
@@ -450,9 +452,9 @@ class OpenAICompatBackend:
             b64_json = await _resolve_awaitable(getattr(img, "b64_json", None))
 
         if url:
-            return await self.imgr.download_image(str(url))
+            return await self.imgr.download_image(str(url, output_format=self.output_format))
         if b64_json:
-            return await self.imgr.save_base64_image(str(b64_json))
+            return await self.imgr.save_base64_image(str(b64_json), output_format=self.output_format)
         raise RuntimeError("返回数据不包含图片")
 
     async def generate(

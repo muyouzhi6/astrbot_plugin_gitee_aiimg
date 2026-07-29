@@ -24,7 +24,7 @@ class NanoBananaService:
         self.use_proxy = bool(nb_conf.get("use_proxy", False))
         self.proxy_url = str(nb_conf.get("proxy_url", "")).strip()
         self.max_images = int(nb_conf.get("max_images", 8))
-        self.max_concurrency = int(nb_conf.get("max_concurrency", 2))
+        self.output_format = str(nb_conf.get("output_format", "jpeg") or "jpeg").strip().lower()
 
         raw_keys = nb_conf.get("api_keys", [])
         self.api_keys = [str(k).strip() for k in raw_keys if str(k).strip()]
@@ -133,7 +133,7 @@ class NanoBananaService:
         if not images:
             raise RuntimeError("NanoBanana returned no image data")
 
-        return await self.imgr.save_image(images[-1])
+        return await self.imgr.save_image(images[-1], output_format=self.output_format)
 
     async def generate(
         self, prompt: str, count: int = 4, ratio: str | None = None

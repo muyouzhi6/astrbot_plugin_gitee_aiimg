@@ -28,6 +28,7 @@ from .openai_compat_backend import (
     normalize_openai_compat_base_url,
     resolution_to_size,
 )
+from .output_spec import OutputIntent
 
 
 def _origin(url: str) -> str:
@@ -247,6 +248,7 @@ class Grok2ApiImagesBackend:
         default_model: str = "",
         default_size: str = "1024x1024",
         extra_body: dict | None = None,
+        output_format: str = "jpeg",
     ):
         self.imgr = imgr
         self.base_url = str(base_url or "").strip()
@@ -255,6 +257,7 @@ class Grok2ApiImagesBackend:
         self.default_model = str(default_model or "").strip()
         self.default_size = str(default_size or "4096x4096").strip()
         self.extra_body = extra_body or {}
+        self.output_format = str(output_format or "jpeg").strip().lower()
 
         self._endpoint_generate = _normalize_images_generations_url(self.base_url)
         self._endpoint_edit = _normalize_images_edits_url(self.base_url)
@@ -291,6 +294,14 @@ class Grok2ApiImagesBackend:
             return json.dumps(v, ensure_ascii=False)
         except Exception:
             return str(v)
+
+    def resolve_output_intent(self, intent: OutputIntent) -> dict[str, str]:
+        if intent.exact_size:
+            return {"size": intent.exact_size}
+        result: dict[str, str] = {}
+        if intent.resolution:
+            result["resolution"] = intent.resolution
+        return result
 
     async def generate(
         self,
@@ -508,19 +519,21 @@ class Grok2ApiImagesBackend:
             image_bytes = _decode_base64_bytes((b64_data or "").strip())
             if not image_bytes:
                 raise RuntimeError("data:image base64 解码失败")
-            return await self.imgr.save_image(image_bytes)
+            return await self.imgr.save_image(image_bytes, output_format=self.output_format)
 
         if ref.startswith(("http://", "https://")):
-            return await self.imgr.download_image(ref)
+            return await self.imgr.download_image(ref, output_format=self.output_format)
 
         # Relative URL like "/images/xxx.png"
         if self._origin and ref.startswith("/"):
             return await self.imgr.download_image(
-                urljoin(self._origin + "/", ref.lstrip("/"))
+                urljoin(self._origin + "/", ref.lstrip("/")), output_format=self.output_format
             )
 
         # Other relative forms
         if self._origin:
-            return await self.imgr.download_image(urljoin(self._origin + "/", ref))
+            return await self.imgr.download_image(
+                urljoin(self._origin + "/", ref), output_format=self.output_format
+            )
 
         raise RuntimeError(f"不支持的图片 URL: {ref}")

@@ -597,6 +597,17 @@
             "type": "string",
             "description": "代理地址",
             "default": ""
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "options": [
+              "jpeg",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
           }
         }
       },
@@ -668,6 +679,17 @@
             "type": "string",
             "description": "代理地址",
             "default": ""
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "options": [
+              "jpeg",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
           }
         }
       },
@@ -759,6 +781,17 @@
             "description": "系统提示词（可选）",
             "hint": "留空则不传 systemInstruction。",
             "default": ""
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "options": [
+              "jpeg",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
           }
         }
       },
@@ -847,6 +880,17 @@
             "description": "额外请求体（高级）",
             "items": {},
             "default": {}
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "options": [
+              "jpeg",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
           }
         }
       },
@@ -935,6 +979,17 @@
             "description": "额外请求体（高级）",
             "items": {},
             "default": {}
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "options": [
+              "jpeg",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
           }
         }
       },
@@ -1018,6 +1073,17 @@
             "description": "额外请求体（高级）",
             "items": {},
             "default": {}
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "options": [
+              "jpeg",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
           }
         }
       },
@@ -1104,6 +1170,17 @@
             "description": "额外请求体（高级）",
             "items": {},
             "default": {}
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "options": [
+              "jpeg",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
           }
         }
       },
@@ -1185,6 +1262,17 @@
             "description": "额外请求体（高级）",
             "items": {},
             "default": {}
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "options": [
+              "jpeg",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
           }
         }
       },
@@ -1257,6 +1345,17 @@
             "description": "额外请求体（高级）",
             "items": {},
             "default": {}
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "options": [
+              "jpeg",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
           }
         }
       },
@@ -1343,6 +1442,17 @@
             "description": "额外请求体（高级）",
             "items": {},
             "default": {}
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "options": [
+              "jpeg",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
           }
         }
       },
@@ -1424,6 +1534,17 @@
             "description": "额外请求体（高级）",
             "items": {},
             "default": {}
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "options": [
+              "jpeg",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
           }
         }
       },
@@ -1525,6 +1646,17 @@
             "type": "text",
             "description": "负面提示词",
             "default": ""
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "options": [
+              "jpeg",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
           }
         }
       },
@@ -1620,6 +1752,17 @@
               "max": 600,
               "step": 10
             }
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "options": [
+              "jpeg",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
           }
         }
       },
@@ -1697,6 +1840,17 @@
             "type": "int",
             "description": "超时(秒)",
             "default": 120
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "options": [
+              "jpeg",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
           }
         }
       },
@@ -1771,6 +1925,17 @@
               "step": 1
             },
             "default": 2
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "options": [
+              "jpeg",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
           }
         }
       },
@@ -1820,6 +1985,17 @@
             "type": "string",
             "description": "代理地址",
             "default": ""
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "options": [
+              "jpeg",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
           }
         }
       },
@@ -1947,6 +2123,17 @@
             "hint": "会合并到 POST /v1/videos JSON 中。",
             "default": {},
             "items": {}
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "options": [
+              "jpeg",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
           }
         }
       },
@@ -2047,6 +2234,17 @@
             "description": "额外请求体（高级）",
             "items": {},
             "default": {}
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "options": [
+              "jpeg",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
           }
         }
       }

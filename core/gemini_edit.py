@@ -45,6 +45,7 @@ class GeminiEditBackend:
         self.timeout = conf.get("timeout", 120)
         self.use_proxy = conf.get("use_proxy", False)
         self.proxy_url = conf.get("proxy_url", "")
+        self.output_format = str(conf.get("output_format", "jpeg") or "jpeg").strip().lower()
 
         raw_keys = conf.get("api_keys", [])
         self.api_keys = [str(k).strip() for k in raw_keys if str(k).strip()]
@@ -529,7 +530,7 @@ class GeminiEditBackend:
             raise RuntimeError("Gemini 未返回图片")
 
         result_bytes = all_images[-1]
-        result_path = await self.imgr.save_image(result_bytes)
+        result_path = await self.imgr.save_image(result_bytes, output_format=self.output_format)
         t_end = time.perf_counter()
         logger.info(f"[Gemini] 生图完成: 耗时={t_end - t_start:.2f}s")
         return result_path
@@ -653,7 +654,7 @@ class GeminiEditBackend:
 
         # 保存图片
         t_save = time.perf_counter()
-        result_path = await self.imgr.save_image(result_bytes)
+        result_path = await self.imgr.save_image(result_bytes, output_format=self.output_format)
         t_end = time.perf_counter()
 
         logger.info(

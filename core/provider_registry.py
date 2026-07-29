@@ -453,6 +453,7 @@ class ProviderRegistry:
                 "timeout": conf.get("timeout", 120),
                 "use_proxy": bool(conf.get("use_proxy", False)),
                 "proxy_url": conf.get("proxy_url", ""),
+                "output_format": conf.get("output_format", "jpeg"),
             }
             return GeminiEditBackend(imgr=self._imgr, settings=settings)
 
@@ -465,6 +466,7 @@ class ProviderRegistry:
                 "timeout": conf.get("timeout", 120),
                 "use_proxy": bool(conf.get("use_proxy", False)),
                 "proxy_url": conf.get("proxy_url", ""),
+                "output_format": conf.get("output_format", "jpeg"),
             }
             return GeminiFlow2ApiBackend(imgr=self._imgr, settings=settings)
 
@@ -484,6 +486,7 @@ class ProviderRegistry:
                 supports_edit=bool(conf.get("supports_edit", True)),
                 extra_body=_as_dict(conf.get("extra_body")) or None,
                 proxy_url=str(conf.get("proxy_url") or "").strip() or None,
+                output_format=str(conf.get("output_format") or "jpeg"),
             )
 
         if template_key in {"openai_images", "gemini_openai_images"}:
@@ -502,6 +505,7 @@ class ProviderRegistry:
                 supports_edit=bool(conf.get("supports_edit", True)),
                 extra_body=_as_dict(conf.get("extra_body")) or None,
                 proxy_url=str(conf.get("proxy_url") or "").strip() or None,
+                output_format=str(conf.get("output_format") or "jpeg"),
             )
 
         if template_key == "openai_full_url_images":
@@ -520,6 +524,7 @@ class ProviderRegistry:
                 default_size=str(conf.get("default_size") or "4096x4096").strip(),
                 supports_edit=bool(conf.get("supports_edit", True)),
                 extra_body=_as_dict(conf.get("extra_body")) or None,
+                output_format=str(conf.get("output_format") or "jpeg"),
             )
 
         if template_key == "modelscope_openai_images":
@@ -540,6 +545,7 @@ class ProviderRegistry:
                 proxy_url=str(conf.get("proxy_url") or "").strip() or None,
                 poll_interval=float(conf.get("poll_interval") or 2),
                 poll_timeout=int(conf.get("poll_timeout") or 600),
+                output_format=str(conf.get("output_format") or "jpeg"),
             )
 
         if template_key in {"openai_chat", "grok_chat", "gemini_openai_chat"}:
@@ -561,6 +567,7 @@ class ProviderRegistry:
                 edit_request_mode=self._resolve_request_mode(conf, "edit"),
                 enable_stream_generate=conf.get("enable_stream_generate"),
                 enable_stream_edit=conf.get("enable_stream_edit"),
+                output_format=str(conf.get("output_format") or "jpeg"),
             )
 
         if template_key == "grok2api_images":
@@ -576,6 +583,7 @@ class ProviderRegistry:
                 default_model=str(conf.get("model") or "").strip(),
                 default_size=str(conf.get("default_size") or "4096x4096").strip(),
                 extra_body=_as_dict(conf.get("extra_body")) or None,
+                output_format=str(conf.get("output_format") or "jpeg"),
             )
 
         if template_key == "gitee_images":
@@ -603,6 +611,7 @@ class ProviderRegistry:
                 extra_body=extra_body or None,
                 allowed_sizes=GITEE_SUPPORTED_SIZES,
                 ratio_default_sizes=self._get_draw_ratio_default_sizes(),
+                output_format=str(conf.get("output_format") or "jpeg"),
             )
 
         if template_key == "gitee_async":
@@ -640,6 +649,7 @@ class ProviderRegistry:
                 or "2/l8eCsMMY49imcDQ/lwwXyL8cYtTjxZBF2dNqy69LodY=",
                 graphql_api_key=str(conf.get("graphql_api_key") or "").strip()
                 or "[REMOVED_GOOGLE_API_KEY]",
+                output_format=str(conf.get("output_format") or "jpeg"),
             )
             return VertexAIAnonymousBackend(imgr=self._imgr, settings=settings)
 

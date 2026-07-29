@@ -1,5 +1,22 @@
 # 更新日志
 
+## [v4.3.13] - 2026-07-29
+
+### 修复
+
+- 修复所有 OpenAI 兼容后端（openai_chat / grok_chat / gemini_openai_chat）的 `resolve_output_intent` 返回 `aspect_ratio` key 但 `generate`/`edit` 签名缺少该参数，导致 TypeError 崩溃的问题。
+- 修复仅传 `aspect_ratio` 而无 `size`/`resolution` 时，`_apply_gemini_image_config` 提前 return 导致比例注入被跳过的问题。
+- 修复 gemini_flow2api 后端 `resolve_output_intent` 将精确像素尺寸（如 `2048x1152`）错误地作为分辨率标签传入的问题，改为取近似分辨率级别。
+
+### 新增
+
+- 全部图片生成后端支持 `output_format` 配置（`jpeg` / `png` / `auto`），默认 `jpeg`；Gemini 4K PNG 自动转为高质量 JPEG，显著降低文件体积（20MB → 3-5MB），解决 NapCat/OneBot 平台发送大图问题。
+- 全部后端（包括 openai_chat、flow2api、grok、grok2api、openai_full_url、modelscope、vertex_ai、gitee_async、jimeng）新增 `resolve_output_intent`，LLM 指定的 `aspect_ratio`/`resolution`/`exact_size` 现可正确透传到所有后端。
+
+### 优化
+
+- `_apply_gemini_image_config` 新增 `aspectRatio` 注入逻辑，覆盖顶层 body、`image_config`、`generationConfig.imageConfig`，支持比例参数传递给 Meinianda/兼容网关。
+
 ## [v4.3.11] - 2026-07-26
 
 ### 修复

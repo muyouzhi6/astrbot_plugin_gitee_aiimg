@@ -29,7 +29,7 @@ class JimengApiBackend:
         default_style: str = "真实",
         default_ratio: str = "1:1",
         default_model: str = "Seedream 4.0",
-        timeout: int = 120,
+        output_format: str = "jpeg",
     ):
         self.imgr = imgr
         self.data_dir = Path(data_dir)
@@ -42,6 +42,7 @@ class JimengApiBackend:
         self.default_ratio = str(default_ratio or "1:1").strip()
         self.default_model = str(default_model or "Seedream 4.0").strip()
         self.timeout = int(timeout or 120)
+        self.output_format = str(output_format or "jpeg").strip().lower()
 
         self._cookie_index = 0
         self._session: aiohttp.ClientSession | None = None
@@ -159,7 +160,7 @@ class JimengApiBackend:
 
     async def generate(self, prompt: str, **kwargs) -> Path:
         urls = await self._call(desc=prompt)
-        return await self.imgr.download_image(urls[0])
+        return await self.imgr.download_image(urls[0], output_format=self.output_format)
 
     async def edit(self, prompt: str, images: list[bytes], **kwargs) -> Path:
         if not images:
@@ -167,4 +168,4 @@ class JimengApiBackend:
         # Jimeng API 只接受 url，因此把第一张图注册到文件服务
         image_url = await self._bytes_to_public_url(images[0])
         urls = await self._call(desc=prompt, image_url=image_url)
-        return await self.imgr.download_image(urls[0])
+        return await self.imgr.download_image(urls[0], output_format=self.output_format)

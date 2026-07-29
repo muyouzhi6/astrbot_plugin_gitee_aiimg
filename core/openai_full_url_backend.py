@@ -16,6 +16,7 @@ from astrbot.api import logger
 from .gitee_sizes import normalize_size_text
 from .image_format import guess_image_mime_and_ext
 from .openai_compat_backend import _build_collage, resolution_to_size
+from .output_spec import OutputIntent
 
 
 def _origin(url: str) -> str:
@@ -220,6 +221,7 @@ class OpenAIFullURLBackend:
         default_size: str = "4096x4096",
         supports_edit: bool = True,
         extra_body: dict | None = None,
+        output_format: str = "jpeg",
     ):
         self.imgr = imgr
         self.full_generate_url = str(full_generate_url or "").strip()
@@ -233,6 +235,7 @@ class OpenAIFullURLBackend:
         )
         self.supports_edit = bool(supports_edit)
         self.extra_body = extra_body or {}
+        self.output_format = str(output_format or "jpeg").strip().lower()
 
         self._key_index = 0
         self._client: httpx.AsyncClient | None = None
@@ -383,18 +386,20 @@ class OpenAIFullURLBackend:
             image_bytes = _decode_base64_bytes((b64_data or "").strip())
             if not image_bytes:
                 raise RuntimeError("data:image base64 解码失败")
-            return await self.imgr.save_image(image_bytes)
+            return await self.imgr.save_image(image_bytes, output_format=self.output_format)
 
         if _is_http_url(ref):
-            return await self.imgr.download_image(ref)
+            return await self.imgr.download_image(ref, output_format=self.output_format)
 
         origin = _origin(endpoint_url)
         if origin and ref.startswith("/"):
             return await self.imgr.download_image(
-                urljoin(origin + "/", ref.lstrip("/"))
+                urljoin(origin + "/", ref.lstrip("/")), output_format=self.output_format
             )
         if origin:
-            return await self.imgr.download_image(urljoin(origin + "/", ref))
+            return await self.imgr.download_image(
+                urljoin(origin + "/", ref), output_format=self.output_format
+            )
         raise RuntimeError(f"不支持的图片引用: {ref}")
 
     async def _save_response(self, resp: httpx.Response, *, endpoint_url: str) -> Path:
@@ -405,7 +410,7 @@ class OpenAIFullURLBackend:
 
         content_type = (resp.headers.get("content-type") or "").lower()
         if content_type.startswith("image/"):
-            return await self.imgr.save_image(resp.content)
+            return await self.imgr.save_image(resp.content, output_format=self.output_format)
 
         try:
             data = resp.json()
@@ -417,6 +422,14 @@ class OpenAIFullURLBackend:
             raise RuntimeError(f"未在响应中找到图片地址/数据: {str(data)[:200]}")
 
         return await self._save_ref(ref, endpoint_url=endpoint_url)
+
+    def resolve_output_intent(self, intent: OutputIntent) -> dict[str, str]:
+        if intent.exact_size:
+            return {"size": intent.exact_size}
+        result: dict[str, str] = {}
+        if intent.resolution:
+            result["resolution"] = intent.resolution
+        return result
 
     async def generate(
         self,

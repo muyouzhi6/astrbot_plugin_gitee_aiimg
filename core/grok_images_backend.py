@@ -14,6 +14,7 @@ from astrbot.api import logger
 
 from .image_format import guess_image_mime_and_ext
 from .openai_compat_backend import _build_collage, resolution_to_size
+from .output_spec import OutputIntent
 
 _IMAGE_RESPONSE_FORMAT_CANDIDATES = ("b64_json", "url", None)
 _RETRYABLE_HTTP_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
@@ -199,6 +200,7 @@ class GrokImagesBackend:
         supports_edit: bool = True,
         extra_body: dict | None = None,
         proxy_url: str | None = None,
+        output_format: str = "jpeg",
     ):
         self.imgr = imgr
         self.base_url = _normalize_base_url(base_url)
@@ -210,6 +212,7 @@ class GrokImagesBackend:
         self.supports_edit = bool(supports_edit)
         self.extra_body = extra_body or {}
         self.proxy_url = str(proxy_url or "").strip() or None
+        self.output_format = str(output_format or "jpeg").strip().lower()
         self._session: aiohttp.ClientSession | None = None
         self._session_lock = asyncio.Lock()
 
@@ -251,10 +254,18 @@ class GrokImagesBackend:
             raise RuntimeError("未能从响应中提取图片")
         ref, raw = results[0]
         if raw:
-            return await self.imgr.save_image(raw)
+            return await self.imgr.save_image(raw, output_format=self.output_format)
         if ref:
-            return await self.imgr.download_image(ref)
+            return await self.imgr.download_image(ref, output_format=self.output_format)
         raise RuntimeError("返回数据不包含图片")
+
+    def resolve_output_intent(self, intent: OutputIntent) -> dict[str, str]:
+        if intent.exact_size:
+            return {"size": intent.exact_size}
+        result: dict[str, str] = {}
+        if intent.resolution:
+            result["resolution"] = intent.resolution
+        return result
 
     async def generate(
         self,

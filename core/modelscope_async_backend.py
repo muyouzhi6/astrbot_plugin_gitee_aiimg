@@ -11,6 +11,7 @@ import aiohttp
 from astrbot.api import logger
 
 from .gitee_sizes import normalize_size_text
+from .output_spec import OutputIntent
 
 
 def _normalize_modelscope_base_url(raw: str) -> str:
@@ -51,6 +52,7 @@ class ModelScopeAsyncImageBackend:
         proxy_url: str | None = None,
         poll_interval: float = 2.0,
         poll_timeout: int = 600,
+        output_format: str = "jpeg",
     ):
         self.imgr = imgr
         self.base_url = _normalize_modelscope_base_url(base_url)
@@ -63,6 +65,7 @@ class ModelScopeAsyncImageBackend:
         self.extra_body = dict(extra_body or {})
         self.proxy_url = str(proxy_url or "").strip() or None
         self.poll_interval = max(0.5, min(float(poll_interval or 2.0), 30.0))
+        self.output_format = str(output_format or "jpeg").strip().lower()
         self.poll_timeout = max(10, min(int(poll_timeout or 600), 1800))
         self._key_index = 0
 
@@ -163,6 +166,14 @@ class ModelScopeAsyncImageBackend:
 
             await asyncio.sleep(self.poll_interval)
 
+    def resolve_output_intent(self, intent: OutputIntent) -> dict[str, str]:
+        if intent.exact_size:
+            return {"size": intent.exact_size}
+        result: dict[str, str] = {}
+        if intent.resolution:
+            result["resolution"] = intent.resolution
+        return result
+
     async def generate(
         self,
         prompt: str,
@@ -215,7 +226,7 @@ class ModelScopeAsyncImageBackend:
             task_id,
             time.monotonic() - started,
         )
-        return await self.imgr.download_image(image_url)
+        return await self.imgr.download_image(image_url, output_format=self.output_format)
 
     async def edit(self, *args, **kwargs) -> Path:
         raise RuntimeError("ModelScope 当前模板不支持改图/图生图")

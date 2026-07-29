@@ -22,6 +22,7 @@ from .openai_compat_backend import (
     normalize_openai_compat_base_url,
 )
 from .openai_full_url_backend import OpenAIFullURLBackend
+from .output_spec import OutputIntent
 
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[.*?\]\((.*?)\)")
 _DATA_IMAGE_RE = re.compile(r"(data:image/[^\s)]+)")
@@ -631,6 +632,7 @@ class OpenAIChatImageBackend:
         edit_request_mode: str | None = None,
         enable_stream_generate: bool | None = None,
         enable_stream_edit: bool | None = None,
+        output_format: str = "jpeg",
     ):
         self.imgr = imgr
         self.base_url = normalize_openai_compat_base_url(base_url)
@@ -641,6 +643,7 @@ class OpenAIChatImageBackend:
         self.supports_edit = bool(supports_edit)
         self.extra_body = extra_body or {}
         self.proxy_url = str(proxy_url or "").strip() or None
+        self.output_format = str(output_format or "jpeg").strip().lower()
         self.generate_request_mode = self._resolve_request_mode(
             generate_request_mode,
             legacy_stream_enabled=enable_stream_generate,
@@ -819,6 +822,7 @@ class OpenAIChatImageBackend:
         model: str | None,
         size: str | None,
         resolution: str | None,
+        aspect_ratio: str | None = None,
     ) -> dict:
         merged = dict(extra_body or {})
         model_name = str(model or "").lower()
@@ -853,6 +857,10 @@ class OpenAIChatImageBackend:
             merged["modalities"] = normalized_modalities
 
         if not image_size:
+            # 即便没有 size/resolution，aspect_ratio 仍需注入
+            if aspect_ratio:
+                merged.setdefault("aspect_ratio", aspect_ratio)
+                merged.setdefault("aspectRatio", aspect_ratio)
             return merged
 
         request_image_size = image_size
@@ -906,6 +914,20 @@ class OpenAIChatImageBackend:
             generation_config_camel["imageConfig"] = image_config_camel
         if generation_config_camel:
             merged["generationConfig"] = generation_config_camel
+
+        # 注入 aspectRatio（部分 Gemini chat 兼容网关支持）
+        if aspect_ratio:
+            merged.setdefault("aspect_ratio", aspect_ratio)
+            merged.setdefault("aspectRatio", aspect_ratio)
+            raw_ic = merged.get("image_config")
+            ic = dict(raw_ic) if isinstance(raw_ic, dict) else {}
+            ic.setdefault("aspect_ratio", aspect_ratio)
+            ic.setdefault("aspectRatio", aspect_ratio)
+            merged["image_config"] = ic
+            raw_ic_camel = merged.get("generationConfig", {}).get("imageConfig")
+            if isinstance(raw_ic_camel, dict):
+                raw_ic_camel.setdefault("aspectRatio", aspect_ratio)
+
         return merged
 
     @staticmethod
@@ -1355,7 +1377,7 @@ class OpenAIChatImageBackend:
 
         urls: list[str] = []
         for idx, image_bytes in enumerate(images):
-            saved_path = await self.imgr.save_image(image_bytes)
+            saved_path = await self.imgr.save_image(image_bytes, output_format="auto")
             img_comp = AstrImage.fromFileSystem(str(saved_path))
             register = getattr(img_comp, "register_to_file_service", None)
             if not callable(register):
@@ -1504,7 +1526,7 @@ class OpenAIChatImageBackend:
                     "chat 返回了疑似占位图片（通常是网关被强制输出 data:image 时伪造的 1x1/极小图）"
                     f"（bytes={len(image_bytes)}）：{debug_snippet}"
                 )
-            return await self.imgr.save_image(image_bytes)
+            return await self.imgr.save_image(image_bytes, output_format=self.output_format)
 
         if ref.startswith("http://") or ref.startswith("https://"):
             if _looks_like_video_url(ref):
@@ -1512,7 +1534,7 @@ class OpenAIChatImageBackend:
                     f"chat 返回了视频而不是图片：{ref}（如果想要视频请用 /视频；如果想要图片请换模型或改用 images 接口）"
                 )
             try:
-                return await self.imgr.download_image(ref)
+                return await self.imgr.download_image(ref, output_format=self.output_format)
             except Exception as exc:
                 if not self._should_trust_result_url_download(ref, exc):
                     raise
@@ -1620,7 +1642,7 @@ class OpenAIChatImageBackend:
                         if total > max_bytes:
                             raise RuntimeError("trusted image result is too large to download")
                         chunks.append(chunk)
-                    return await self.imgr.save_image(b"".join(chunks))
+                    return await self.imgr.save_image(b"".join(chunks), output_format=self.output_format)
         finally:
             if close_client:
                 await client.aclose()
@@ -1665,6 +1687,23 @@ class OpenAIChatImageBackend:
                 raise
         raise RuntimeError(f"chat 图片保存失败: {last_error}")
 
+    def resolve_output_intent(self, intent: OutputIntent) -> dict[str, str]:
+        """将 OutputIntent 转为 generate/edit 可用的 kwargs。
+
+        对于 Gemini chat 路径：同时透传 size 和 resolution，让 _apply_gemini_image_config
+        能正确注入 imageSize/imageConfig 到 extra_body；
+        对于普通 chat 路径：只透传 size（exact_size 优先，否则用 resolution 兜底）。
+        """
+        if intent.exact_size:
+            return {"size": intent.exact_size, "resolution": intent.exact_size}
+        result: dict[str, str] = {}
+        if intent.resolution:
+            result["resolution"] = intent.resolution
+        if intent.aspect_ratio:
+            # aspect_ratio 无法直接传给 chat API，但保留给 _apply_gemini_image_config 使用
+            result["aspect_ratio"] = intent.aspect_ratio
+        return result
+
     async def generate(
         self,
         prompt: str,
@@ -1672,6 +1711,7 @@ class OpenAIChatImageBackend:
         model: str | None = None,
         size: str | None = None,
         resolution: str | None = None,
+        aspect_ratio: str | None = None,
         extra_body: dict | None = None,
     ) -> Path:
         key = self._next_key()
@@ -1689,6 +1729,7 @@ class OpenAIChatImageBackend:
             model=final_model,
             size=size,
             resolution=resolution,
+            aspect_ratio=aspect_ratio,
         )
 
         stream_error: Exception | None = None
@@ -1807,6 +1848,7 @@ class OpenAIChatImageBackend:
         model: str | None = None,
         size: str | None = None,
         resolution: str | None = None,
+        aspect_ratio: str | None = None,
         extra_body: dict | None = None,
     ) -> Path:
         if not self.supports_edit:
@@ -1829,6 +1871,7 @@ class OpenAIChatImageBackend:
             model=final_model,
             size=size,
             resolution=resolution,
+            aspect_ratio=aspect_ratio,
         )
 
         prefetched_image_urls: list[str] | None = None
