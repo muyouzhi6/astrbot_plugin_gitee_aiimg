@@ -13,7 +13,12 @@ from openai.types.images_response import ImagesResponse
 
 from .gitee_sizes import normalize_size_text, ratio_defaults_from_sizes, size_to_ratio
 from .image_format import guess_image_mime_and_ext
-from .output_spec import OutputIntent, select_allowed_size
+from .output_spec import (
+    OutputIntent,
+    is_gpt_image_2_model,
+    resolve_gpt_image_2_size,
+    select_allowed_size,
+)
 
 
 def _looks_like_size(s: str) -> bool:
@@ -342,6 +347,13 @@ class OpenAICompatBackend:
         return fallback or raw, raw, True
 
     def resolve_output_intent(self, intent: OutputIntent) -> dict[str, str]:
+        if is_gpt_image_2_model(self.default_model):
+            selected = resolve_gpt_image_2_size(
+                intent,
+                default_size=self.default_size,
+            )
+            if selected:
+                return {"size": selected}
         if intent.exact_size:
             return {"size": intent.exact_size}
         if self.allowed_sizes:

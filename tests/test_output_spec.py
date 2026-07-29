@@ -11,6 +11,7 @@ from core.output_spec import (
     merge_output_intents,
     parse_output,
     parse_output_intent,
+    resolve_gpt_image_2_size,
     resolve_llm_output_intent,
     select_allowed_size,
     split_prompt_output_suffix,
@@ -130,3 +131,31 @@ def test_detect_aspect_ratio_from_image_matches_common_ratio():
 
     assert detect_aspect_ratio_from_image(output.getvalue()) == "16:9"
     assert detect_aspect_ratio_from_image(b"not-an-image") is None
+
+
+def test_resolve_gpt_image_2_size_maps_adaptive_controls():
+    assert (
+        resolve_gpt_image_2_size(
+            OutputIntent(aspect_ratio="16:9", resolution="4K")
+        )
+        == "3840x2160"
+    )
+    assert (
+        resolve_gpt_image_2_size(
+            OutputIntent(aspect_ratio="3:4", resolution="2K")
+        )
+        == "1536x2048"
+    )
+
+
+def test_resolve_gpt_image_2_size_preserves_exact_and_rejects_unknown_ratio():
+    assert (
+        resolve_gpt_image_2_size(OutputIntent(exact_size="1280x720"))
+        == "1280x720"
+    )
+    assert (
+        resolve_gpt_image_2_size(
+            OutputIntent(aspect_ratio="7:5", resolution="2K")
+        )
+        is None
+    )

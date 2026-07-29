@@ -45,11 +45,11 @@ class _DummyImageManager:
         self.downloaded_urls: list[str] = []
         self.fail_download_error = fail_download_error
 
-    async def save_image(self, data: bytes):
+    async def save_image(self, data: bytes, **kwargs):
         self.saved_inputs.append(data)
         return Path(f"/tmp/input_{len(self.saved_inputs)}.png")
 
-    async def download_image(self, url: str):
+    async def download_image(self, url: str, **kwargs):
         self.downloaded_urls.append(url)
         if self.fail_download_error is not None:
             raise self.fail_download_error
@@ -256,6 +256,78 @@ class OpenAIChatStreamRefTests(unittest.TestCase):
             1,
         )
 
+    def test_gpt_image_2_resolves_size_for_images_and_chat_backends(self):
+        mod = _load_module()
+        compat_mod = sys.modules[OPENAI_COMPAT_MODULE_NAME]
+        intent = mod.OutputIntent(aspect_ratio="16:9", resolution="4K")
+
+        images_backend = compat_mod.OpenAICompatBackend(
+            imgr=_DummyImageManager(),
+            base_url="https://api.example.com/v1",
+            api_keys=["test-key"],
+            default_model="gpt-image-2",
+        )
+        chat_backend = mod.OpenAIChatImageBackend(
+            imgr=_DummyImageManager(),
+            base_url="https://api.example.com/v1",
+            api_keys=["test-key"],
+            default_model="gpt-image-2",
+        )
+
+        self.assertEqual(
+            images_backend.resolve_output_intent(intent),
+            {"size": "3840x2160"},
+        )
+        self.assertEqual(
+            chat_backend.resolve_output_intent(intent),
+            {"size": "3840x2160"},
+        )
+        self.assertEqual(
+            chat_backend._apply_gpt_image_2_size(
+                {"existing": True, "size": "1024x1024"},
+                model="gpt-image-2",
+                size="3840x2160",
+            ),
+            {"existing": True, "size": "3840x2160"},
+        )
+
+    def test_non_gpt_image_2_output_resolution_is_unchanged(self):
+        mod = _load_module()
+        compat_mod = sys.modules[OPENAI_COMPAT_MODULE_NAME]
+        images_backend = compat_mod.OpenAICompatBackend(
+            imgr=_DummyImageManager(),
+            base_url="https://api.example.com/v1",
+            api_keys=["test-key"],
+            default_model="custom-image-model",
+        )
+        backend = mod.OpenAIChatImageBackend(
+            imgr=_DummyImageManager(),
+            base_url="https://api.example.com/v1",
+            api_keys=["test-key"],
+            default_model="custom-image-model",
+        )
+
+        self.assertEqual(
+            backend.resolve_output_intent(
+                mod.OutputIntent(aspect_ratio="16:9", resolution="4K")
+            ),
+            {"resolution": "4K", "aspect_ratio": "16:9"},
+        )
+        self.assertEqual(
+            images_backend.resolve_output_intent(
+                mod.OutputIntent(aspect_ratio="16:9", resolution="4K")
+            ),
+            {"resolution": "4K"},
+        )
+        self.assertEqual(
+            backend._apply_gpt_image_2_size(
+                {"existing": True},
+                model="custom-image-model",
+                size="3840x2160",
+            ),
+            {"existing": True},
+        )
+
     def test_rewrite_local_media_url_preserves_result_port(self):
         mod = _load_module()
 
@@ -275,6 +347,36 @@ class OpenAIChatStreamRefTests(unittest.TestCase):
 
 
 class OpenAIChatEditFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_generate_sends_gpt_image_2_size_in_chat_payload(self):
+        mod = _load_module()
+        client = _DummyClient([object()])
+        backend = mod.OpenAIChatImageBackend(
+            imgr=_DummyImageManager(),
+            base_url="https://api.example.com/v1",
+            api_keys=["test-key"],
+            default_model="gpt-image-2",
+            generate_request_mode="non_stream",
+        )
+        backend._get_client = lambda key: client
+
+        async def _extract_refs(_response):
+            return ["https://cdn.example.com/final.png"]
+
+        async def _save_ref(ref, **kwargs):
+            self.assertEqual(ref, "https://cdn.example.com/final.png")
+            return Path("/tmp/result.png")
+
+        backend._extract_image_refs_from_response = _extract_refs
+        backend._save_from_ref = _save_ref
+
+        out_path = await backend.generate("电影海报", size="3840x2160")
+
+        self.assertEqual(out_path, Path("/tmp/result.png"))
+        self.assertEqual(
+            client.chat.completions.calls[0]["extra_body"],
+            {"size": "3840x2160"},
+        )
+
     async def test_edit_retries_with_file_service_url_when_data_uri_is_rejected(self):
         mod = _load_module()
         imgr = _DummyImageManager()

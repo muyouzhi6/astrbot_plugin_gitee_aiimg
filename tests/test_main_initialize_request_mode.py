@@ -104,6 +104,12 @@ class _DummyMessageComponent:
         return _DummyMessageComponent(path=path)
 
 
+class _DummyPlain:
+    def __init__(self, text: str = "", **kwargs):
+        self.text = text
+        self.kwargs = kwargs
+
+
 class _DummyStar:
     def __init__(self, context):
         self.context = context
@@ -115,7 +121,14 @@ class _DummyStarTools:
         return Path("/tmp") / name
 
 
+class _DummyCustomFilter:
+    def __init__(self, raise_error=True, **kwargs):
+        self.raise_error = raise_error
+
+
 class _DummyFilter:
+    CustomFilter = _DummyCustomFilter
+
     def __getattr__(self, name):
         def decorator_factory(*args, **kwargs):
             def decorator(func):
@@ -193,7 +206,7 @@ def _load_module():
         Image=_DummyMessageComponent,
         Node=_DummyMessageComponent,
         Nodes=_DummyMessageComponent,
-        Plain=_DummyMessageComponent,
+        Plain=_DummyPlain,
         Reply=_DummyMessageComponent,
         Video=_DummyMessageComponent,
     )
@@ -428,7 +441,7 @@ class MainInitializeRequestModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(event.call_llm)
         self.assertTrue(event.stopped)
 
-    async def test_selfie_regex_fallback_handles_wake_stripped_command(self):
+    async def test_selfie_regex_fallback_ignores_wake_stripped_bare_command(self):
         mod, _ = _load_module()
         plugin = mod.GiteeAIImagePlugin(
             context=types.SimpleNamespace(),
@@ -464,9 +477,9 @@ class MainInitializeRequestModeTests(unittest.IsolatedAsyncioTestCase):
 
         await plugin.selfie_regex_fallback(event)
 
-        self.assertEqual(calls, [(event, "窗边自然光", None)])
-        self.assertTrue(event.call_llm)
-        self.assertTrue(event.stopped)
+        self.assertEqual(calls, [])
+        self.assertFalse(event.call_llm)
+        self.assertFalse(event.stopped)
 
     async def test_selfie_regex_fallback_skips_when_command_handler_active(self):
         mod, _ = _load_module()
@@ -567,6 +580,69 @@ class MainInitializeRequestModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(yielded, [])
         self.assertTrue(event.call_llm)
         self.assertTrue(event.stopped)
+
+    async def test_group_image_command_filter_requires_configured_raw_prefix(self):
+        mod, _ = _load_module()
+        gate = mod.ImageCommandWakePrefixFilter()
+        cfg = {"wake_prefix": ["."]}
+
+        class DummyEvent:
+            is_at_or_wake_command = True
+
+            def __init__(self, texts, *, private=False):
+                self._private = private
+                self._messages = []
+                for text in texts:
+                    plain = mod.Plain()
+                    plain.text = text
+                    self._messages.append(plain)
+
+            def is_private_chat(self):
+                return self._private
+
+            def get_messages(self):
+                return self._messages
+
+        self.assertFalse(gate.filter(DummyEvent(["绘图 一只猫"]), cfg))
+        self.assertFalse(gate.filter(DummyEvent(["/绘图 一只猫"]), cfg))
+        self.assertTrue(gate.filter(DummyEvent([".绘图 一只猫"]), cfg))
+        self.assertTrue(gate.filter(DummyEvent(["", ".改图 加点光影"]), cfg))
+        self.assertTrue(gate.filter(DummyEvent([".自拍 窗边自然光"]), cfg))
+        self.assertTrue(
+            gate.filter(DummyEvent(["绘图 一只猫"], private=True), cfg)
+        )
+
+    async def test_chain_command_extraction_rejects_bare_group_text(self):
+        mod, _ = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={},
+        )
+        plugin._wake_prefixes = (".",)
+
+        class DummyEvent:
+            def __init__(self, text):
+                plain = mod.Plain()
+                plain.text = text
+                self._messages = [plain]
+
+            def get_messages(self):
+                return self._messages
+
+        self.assertEqual(
+            plugin._extract_command_arg_from_chain(
+                DummyEvent("改图 加点光影"),
+                "改图",
+            ),
+            (False, ""),
+        )
+        self.assertEqual(
+            plugin._extract_command_arg_from_chain(
+                DummyEvent(".改图 加点光影"),
+                "改图",
+            ),
+            (True, "加点光影"),
+        )
 
 
 if __name__ == "__main__":

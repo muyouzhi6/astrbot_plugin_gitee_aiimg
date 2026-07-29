@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import ipaddress
 import inspect
+import ipaddress
 import json
 import re
 import time
@@ -11,9 +11,8 @@ from pathlib import Path
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
-from openai import AsyncOpenAI
-
 from astrbot.api import logger
+from openai import AsyncOpenAI
 
 from .image_format import guess_image_mime_and_ext
 from .net_safety import URLFetchPolicy, ensure_url_allowed
@@ -22,7 +21,11 @@ from .openai_compat_backend import (
     normalize_openai_compat_base_url,
 )
 from .openai_full_url_backend import OpenAIFullURLBackend
-from .output_spec import OutputIntent
+from .output_spec import (
+    OutputIntent,
+    is_gpt_image_2_model,
+    resolve_gpt_image_2_size,
+)
 
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[.*?\]\((.*?)\)")
 _DATA_IMAGE_RE = re.compile(r"(data:image/[^\s)]+)")
@@ -931,6 +934,18 @@ class OpenAIChatImageBackend:
         return merged
 
     @staticmethod
+    def _apply_gpt_image_2_size(
+        extra_body: dict | None,
+        *,
+        model: str | None,
+        size: str | None,
+    ) -> dict:
+        merged = dict(extra_body or {})
+        if is_gpt_image_2_model(model) and str(size or "").strip():
+            merged["size"] = str(size).strip()
+        return merged
+
+    @staticmethod
     def _is_retryable_chat_image_error(exc: Exception, *, model: str | None) -> bool:
         text = f"{exc!r} {exc}".lower()
         if not OpenAIChatImageBackend._is_gemini_chat_image_model(model):
@@ -1694,6 +1709,10 @@ class OpenAIChatImageBackend:
         能正确注入 imageSize/imageConfig 到 extra_body；
         对于普通 chat 路径：只透传 size（exact_size 优先，否则用 resolution 兜底）。
         """
+        if is_gpt_image_2_model(self.default_model):
+            selected = resolve_gpt_image_2_size(intent)
+            if selected:
+                return {"size": selected}
         if intent.exact_size:
             return {"size": intent.exact_size, "resolution": intent.exact_size}
         result: dict[str, str] = {}
@@ -1730,6 +1749,11 @@ class OpenAIChatImageBackend:
             size=size,
             resolution=resolution,
             aspect_ratio=aspect_ratio,
+        )
+        eb = self._apply_gpt_image_2_size(
+            eb,
+            model=final_model,
+            size=size,
         )
 
         stream_error: Exception | None = None
@@ -1872,6 +1896,11 @@ class OpenAIChatImageBackend:
             size=size,
             resolution=resolution,
             aspect_ratio=aspect_ratio,
+        )
+        eb = self._apply_gpt_image_2_size(
+            eb,
+            model=final_model,
+            size=size,
         )
 
         prefetched_image_urls: list[str] | None = None

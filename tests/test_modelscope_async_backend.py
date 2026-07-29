@@ -87,7 +87,7 @@ class _ImageManager:
     def __init__(self):
         self.urls = []
 
-    async def download_image(self, url):
+    async def download_image(self, url, **kwargs):
         self.urls.append(url)
         return Path("/tmp/modelscope.png")
 

@@ -79,6 +79,75 @@ from .core.video_manager import VideoManager
 _BATCH_COMMAND_PATTERN = re.compile(r"[/!！.。．]批量(?:\s*\d+|\d+)")
 _async_pause = asyncio.sleep
 
+_IMAGE_COMMAND_NAMES = (
+    "自拍参考",
+    "文生图",
+    "aiimg",
+    "生图",
+    "画图",
+    "绘图",
+    "出图",
+    "aiedit",
+    "图生图",
+    "改图",
+    "修图",
+    "自拍",
+)
+
+
+class ImageCommandWakePrefixFilter(filter.CustomFilter):
+    """Require a real configured wake prefix for image commands in group chat."""
+
+    @staticmethod
+    def _wake_prefixes(cfg: object) -> tuple[str, ...]:
+        try:
+            raw = cfg.get("wake_prefix", ["/"])
+        except Exception:
+            raw = ["/"]
+        if isinstance(raw, str):
+            return (raw,) if raw else ("/",)
+        if isinstance(raw, (list, tuple, set)):
+            return tuple(str(item) for item in raw if str(item)) or ("/",)
+        return ("/",)
+
+    @staticmethod
+    def _is_private_chat(event: AstrMessageEvent) -> bool:
+        try:
+            return bool(event.is_private_chat())
+        except Exception:
+            message_obj = getattr(event, "message_obj", None)
+            return not bool(getattr(message_obj, "group", None))
+
+    @staticmethod
+    def _plain_has_prefixed_command(text: str, prefixes: tuple[str, ...]) -> bool:
+        plain = str(text or "").lstrip()
+        for prefix in prefixes:
+            for command_name in _IMAGE_COMMAND_NAMES:
+                token = f"{prefix}{command_name}"
+                if not plain.startswith(token):
+                    continue
+                end = len(token)
+                if end == len(plain) or plain[end].isspace():
+                    return True
+        return False
+
+    def filter(self, event: AstrMessageEvent, cfg: object) -> bool:
+        if self._is_private_chat(event):
+            return True
+        prefixes = self._wake_prefixes(cfg)
+        try:
+            chain = event.get_messages()
+        except Exception:
+            chain = []
+        return any(
+            isinstance(seg, Plain)
+            and self._plain_has_prefixed_command(
+                str(getattr(seg, "text", "") or ""),
+                prefixes,
+            )
+            for seg in chain or []
+        )
+
 
 @dataclass(slots=True)
 class SendImageResult:
@@ -1369,9 +1438,19 @@ class GiteeAIImagePlugin(Star):
                 plain = str(getattr(seg, "text", "") or "").lstrip()
                 if not plain:
                     continue
-                if plain[0] in "/!！.。．":
-                    plain = plain[1:]
-                if not plain.startswith(command_name):
+                matched_prefix = next(
+                    (
+                        prefix
+                        for prefix in self._cmd_prefixes()
+                        if plain.startswith(f"{prefix}{command_name}")
+                    ),
+                    None,
+                )
+                if matched_prefix is None:
+                    continue
+                plain = plain[len(matched_prefix) :]
+                end = len(command_name)
+                if len(plain) > end and not plain[end].isspace():
                     continue
                 found = True
                 tail = plain[len(command_name) :].strip()
@@ -1515,6 +1594,7 @@ class GiteeAIImagePlugin(Star):
     # ==================== 文生图 ====================
 
     @filter.command("文生图")
+    @filter.custom_filter(ImageCommandWakePrefixFilter)
     async def generate_image_with_presets(self, event: AstrMessageEvent):
         """支持文生图预设的图片生成命令。"""
         event.should_call_llm(True)
@@ -1554,6 +1634,7 @@ class GiteeAIImagePlugin(Star):
             await self._end_user_job(user_id, kind="image")
 
     @filter.command("aiimg", alias={"生图", "画图", "绘图", "出图"})
+    @filter.custom_filter(ImageCommandWakePrefixFilter)
     async def generate_image_command(self, event: AstrMessageEvent, prompt: str):
         """生成图片指令
 
@@ -1675,6 +1756,7 @@ class GiteeAIImagePlugin(Star):
     # ==================== 图生图/改图 ====================
 
     @filter.command("aiedit", alias={"图生图", "改图", "修图"})
+    @filter.custom_filter(ImageCommandWakePrefixFilter)
     async def edit_image_default(self, event: AstrMessageEvent, prompt: str):
         """使用默认后端改图
 
@@ -1701,7 +1783,8 @@ class GiteeAIImagePlugin(Star):
         else:
             await mark_failed(event)
 
-    @filter.regex(r".*(?:[/!！.。．])?(改图|图生图|修图|aiedit)", priority=-10)
+    @filter.regex(r".*[/!！.。．](改图|图生图|修图|aiedit)(?:\s|$)", priority=-10)
+    @filter.custom_filter(ImageCommandWakePrefixFilter)
     async def edit_image_regex_fallback(self, event: AstrMessageEvent):
         """兼容"图片在前、文字在后"的消息：确保 /改图 能触发。"""
         msg = (event.message_str or "").strip()
@@ -1773,6 +1856,7 @@ class GiteeAIImagePlugin(Star):
     # ==================== Bot 自拍（参考照） ====================
 
     @filter.command("自拍")
+    @filter.custom_filter(ImageCommandWakePrefixFilter)
     async def selfie_command(self, event: AstrMessageEvent):
         """使用"自拍参考照"生成 Bot 自拍。
 
@@ -1787,7 +1871,8 @@ class GiteeAIImagePlugin(Star):
         prompt = self._extract_extra_prompt(event, "自拍")
         await self._do_selfie(event, prompt, backend=None)
 
-    @filter.regex(r"(?:自拍|.*[/!！.。．]自拍)(?:\s|$)", priority=-10)
+    @filter.regex(r".*[/!！.。．]自拍(?:\s|$)", priority=-10)
+    @filter.custom_filter(ImageCommandWakePrefixFilter)
     async def selfie_regex_fallback(self, event: AstrMessageEvent):
         """兼容"图片在前、文字在后"的消息：确保 /自拍 能触发。"""
         if self._has_activated_handler(event, "selfie_command"):
@@ -1796,7 +1881,7 @@ class GiteeAIImagePlugin(Star):
         found, prompt = self._find_command_arg_anywhere(
             msg,
             "自拍",
-            allow_bare=bool(getattr(event, "is_at_or_wake_command", False)),
+            allow_bare=False,
             prefixes=self._cmd_prefixes(),
         )
         if found:
@@ -1809,6 +1894,7 @@ class GiteeAIImagePlugin(Star):
             event.stop_event()
 
     @filter.command("自拍参考")
+    @filter.custom_filter(ImageCommandWakePrefixFilter)
     async def selfie_reference_command(self, event: AstrMessageEvent):
         """管理自拍参考照（建议仅管理员使用）。
 
@@ -1854,7 +1940,8 @@ class GiteeAIImagePlugin(Star):
 
         await mark_failed(event)
 
-    @filter.regex(r"(?:自拍参考|.*[/!！.。．]自拍参考)(?:\s|$)", priority=-10)
+    @filter.regex(r".*[/!！.。．]自拍参考(?:\s|$)", priority=-10)
+    @filter.custom_filter(ImageCommandWakePrefixFilter)
     async def selfie_reference_regex_fallback(self, event: AstrMessageEvent):
         """兼容"图片在前、文字在后"的消息：确保 /自拍参考 能触发。"""
         if self._has_activated_handler(event, "selfie_reference_command"):
@@ -1863,7 +1950,7 @@ class GiteeAIImagePlugin(Star):
         found, arg = self._find_command_arg_anywhere(
             msg,
             "自拍参考",
-            allow_bare=bool(getattr(event, "is_at_or_wake_command", False)),
+            allow_bare=False,
             prefixes=self._cmd_prefixes(),
         )
         if not found:

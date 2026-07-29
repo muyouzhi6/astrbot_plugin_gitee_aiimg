@@ -30,6 +30,45 @@ COMMON_ASPECT_RATIOS = (
     "21:9",
 )
 
+GPT_IMAGE_2_SIZE_MAP = {
+    "1K": {
+        "1:1": "1024x1024",
+        "16:9": "1280x720",
+        "9:16": "720x1280",
+        "5:4": "1040x832",
+        "4:5": "832x1040",
+        "4:3": "1024x768",
+        "3:4": "768x1024",
+        "3:2": "1008x672",
+        "2:3": "672x1008",
+        "21:9": "1344x576",
+    },
+    "2K": {
+        "1:1": "2048x2048",
+        "16:9": "2048x1152",
+        "9:16": "1152x2048",
+        "5:4": "2080x1664",
+        "4:5": "1664x2080",
+        "4:3": "2048x1536",
+        "3:4": "1536x2048",
+        "3:2": "2064x1376",
+        "2:3": "1376x2064",
+        "21:9": "2016x864",
+    },
+    "4K": {
+        "1:1": "2880x2880",
+        "16:9": "3840x2160",
+        "9:16": "2160x3840",
+        "5:4": "3200x2560",
+        "4:5": "2560x3200",
+        "4:3": "3264x2448",
+        "3:4": "2448x3264",
+        "3:2": "3504x2336",
+        "2:3": "2336x3504",
+        "21:9": "3808x1632",
+    },
+}
+
 
 def normalize_exact_size(value: str | None) -> str | None:
     text = str(value or "").strip().replace("×", "x")
@@ -286,6 +325,45 @@ def resolution_from_size(size: str | None) -> str | None:
     if longest_edge <= 2048:
         return "2K"
     return "4K"
+
+
+def is_gpt_image_2_model(model: str | None) -> bool:
+    normalized = re.sub(r"[_\s]+", "-", str(model or "").strip().lower())
+    return "gpt-image-2" in normalized
+
+
+def resolve_gpt_image_2_size(
+    intent: OutputIntent,
+    *,
+    default_size: str | None = None,
+    default_resolution: str = "1K",
+    default_aspect_ratio: str = "1:1",
+) -> str | None:
+    """Resolve adaptive controls to a Meinianda-compatible gpt-image-2 size."""
+    if intent.exact_size:
+        return intent.exact_size
+
+    resolution = normalize_resolution(intent.resolution)
+    if intent.resolution and resolution not in GPT_IMAGE_2_SIZE_MAP:
+        return None
+    if resolution not in GPT_IMAGE_2_SIZE_MAP:
+        resolution = resolution_from_size(default_size)
+    if resolution not in GPT_IMAGE_2_SIZE_MAP:
+        resolution = normalize_resolution(default_resolution)
+    if resolution not in GPT_IMAGE_2_SIZE_MAP:
+        resolution = "1K"
+
+    aspect_ratio = intent.aspect_ratio
+    if intent.aspect_ratio and aspect_ratio not in GPT_IMAGE_2_SIZE_MAP[resolution]:
+        return None
+    if not aspect_ratio:
+        aspect_ratio = aspect_ratio_from_size(default_size)
+    if not aspect_ratio:
+        aspect_ratio = normalize_aspect_ratio(default_aspect_ratio)
+    if aspect_ratio not in GPT_IMAGE_2_SIZE_MAP[resolution]:
+        aspect_ratio = "1:1"
+
+    return GPT_IMAGE_2_SIZE_MAP[resolution][aspect_ratio]
 
 
 def detect_aspect_ratio_from_image(image_bytes: bytes) -> str | None:

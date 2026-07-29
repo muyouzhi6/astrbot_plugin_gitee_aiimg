@@ -147,7 +147,14 @@ class _DummyStarTools:
         return Path("/tmp") / name
 
 
+class _DummyCustomFilter:
+    def __init__(self, raise_error=True, **kwargs):
+        self.raise_error = raise_error
+
+
 class _DummyFilter:
+    CustomFilter = _DummyCustomFilter
+
     def __getattr__(self, name):
         def decorator_factory(*args, **kwargs):
             def decorator(func):

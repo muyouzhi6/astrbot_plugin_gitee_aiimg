@@ -178,7 +178,7 @@ chain 里可以填多个 provider，第一个是主用，后面的是自动兜�
 
 `cookie_list` 格式固定为 `conversation_id:完整Cookie字符串`，可配多条做轮询。
 
-### Meinianda Gemini 生图配置
+### Meinianda 生图配置
 
 如果你需要稳定的 Gemini 生图中转，作者推荐 Meinianda。站内提供香蕉系列和 `GPT-Image-2` 系列；其中 `nano-banana-2` 生成一张 4K 大图的成本参考约为 `0.05 元`。
 
@@ -193,6 +193,8 @@ chain 里可以填多个 provider，第一个是主用，后面的是自动兜�
 > 上面的链接包含作者 AFF 推荐标识；价格和模型可用性是作者当前使用体验的参考，不是固定价格承诺，请以 Meinianda 后台实时计费为准。
 
 `meinianda.top` 的 Gemini 生图模型必须使用 Gemini 官方 `generateContent` 协议。不要选 `Gemini Chat图` 或 OpenAI Chat 模板，否则中转层会忽略比例并回退到 `1:1`。`GPT-Image-2` 系列请按对应接口协议选择 OpenAI Images 或 OpenAI Chat 模板，不要套用 Gemini 原生模板。
+
+`gpt-image-2` 使用 OpenAI Images 或 OpenAI Chat 模板时, 插件会把比例和分辨率转换为精确 `size`. 例如 `16:9 4K` 会请求 `3840x2160`, `9:16 1K` 会请求 `720x1280`; OpenAI Chat 模板会把该值放入请求顶层 `size` 字段. 该映射只对 `gpt-image-2` 生效, 不改变其他模型的参数行为.
 
 ```json
 {
@@ -261,6 +263,8 @@ LLM tool 会把 prompt 中的 `16:9` 等明确比例作为最高优先级参数�
 | 重发最近结果 | `/重发图片` |
 | 查看改图帮助 | `/改图帮助` |
 
+群聊中的图像命令必须带 AstrBot 当前配置的 `wake_prefix`. 即使其他插件提前把消息标记为已唤醒, 裸 `绘图` / `改图` / `自拍` 等普通聊天文本也不会触发本插件; 私聊仍遵循 AstrBot 原有的免前缀配置.
+
 ## 输出尺寸与比例
 
 命令和 LLM 工具的 `output` 支持以下形式：
@@ -283,6 +287,7 @@ LLM tool 会把 prompt 中的 `16:9` 等明确比例作为最高优先级参数�
 输出优先级为：prompt 中明确写出的参数 > LLM tool 的 `aspect_ratio` / `resolution` > 兼容 `output` > 当前 provider 的 `chain.output` > 功能的 `default_output` > 普通单图改图的输入图比例 > provider 默认值。
 
 - Gemini Native 会传递自适应比例与分辨率; Vertex AI Anonymous 会传递自适应比例, 并在模型支持时传递分辨率。
+- `gpt-image-2` 在 OpenAI Images 和 OpenAI Chat 模板中会映射为精确像素尺寸, 并保留 LLM 指定的常规比例与分辨率.
 - 声明 `allowed_sizes` 的 OpenAI Images backend 会映射到最接近的合法像素尺寸。
 - 普通单图改图只有在更高优先级没有指定比例时才继承输入图比例。
 - 自拍和多图改图不会从参考图推断输出比例；自拍缺省使用 `features.selfie.default_aspect_ratio`，默认 `3:4`。
