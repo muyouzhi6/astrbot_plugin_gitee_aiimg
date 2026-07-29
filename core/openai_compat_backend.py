@@ -464,7 +464,9 @@ class OpenAICompatBackend:
             b64_json = await _resolve_awaitable(getattr(img, "b64_json", None))
 
         if url:
-            return await self.imgr.download_image(str(url, output_format=self.output_format))
+            return await self.imgr.download_image(
+                str(url), output_format=self.output_format
+            )
         if b64_json:
             return await self.imgr.save_base64_image(str(b64_json), output_format=self.output_format)
         raise RuntimeError("返回数据不包含图片")

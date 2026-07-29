@@ -4,6 +4,33 @@ import base64
 import re
 
 
+SUPPORTED_OUTPUT_FORMATS = (
+    "jpeg",
+    "webp",
+    "webp_lossless",
+    "png",
+    "auto",
+)
+
+_OUTPUT_FORMAT_ALIASES = {
+    "jpg": "jpeg",
+    "webp-lossless": "webp_lossless",
+    "lossless_webp": "webp_lossless",
+    "lossless-webp": "webp_lossless",
+    "original": "auto",
+    "keep": "auto",
+}
+
+
+def normalize_output_format(value: str | None) -> str:
+    """Normalize configured output formats while preserving legacy aliases."""
+    normalized = str(value or "auto").strip().lower()
+    normalized = _OUTPUT_FORMAT_ALIASES.get(normalized, normalized)
+    if normalized in SUPPORTED_OUTPUT_FORMATS:
+        return normalized
+    return "auto"
+
+
 def guess_image_mime_and_ext(image_bytes: bytes) -> tuple[str, str]:
     """Best-effort guess for image mime/ext using magic bytes.
 

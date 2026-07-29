@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import io
 import os
 import time
 from pathlib import Path
@@ -9,8 +10,13 @@ import aiohttp
 
 from astrbot.api import logger
 
-from .image_format import guess_image_mime_and_ext
-from .net_safety import URLFetchPolicy, collect_trusted_origins, ensure_url_allowed, read_network_policy
+from .image_format import guess_image_mime_and_ext, normalize_output_format
+from .net_safety import (
+    URLFetchPolicy,
+    collect_trusted_origins,
+    ensure_url_allowed,
+    read_network_policy,
+)
 
 
 class ImageManager:
@@ -24,6 +30,51 @@ class ImageManager:
         self.image_dir.mkdir(parents=True, exist_ok=True)
         self.cleanup_batch_ratio = 0.5
         self._session_lock = asyncio.Lock()
+
+        encoding = config.get("image_encoding", {}) if isinstance(config, dict) else {}
+        if not isinstance(encoding, dict):
+            encoding = {}
+        self._jpeg_quality = self._clamp_int(
+            encoding.get("jpeg_quality", 95),
+            default=95,
+            min_value=85,
+            max_value=100,
+        )
+        raw_subsampling = str(
+            encoding.get("jpeg_subsampling", "4:4:4") or "4:4:4"
+        ).strip()
+        self._jpeg_subsampling = {
+            "444": 0,
+            "4:4:4": 0,
+            "422": 1,
+            "4:2:2": 1,
+            "420": 2,
+            "4:2:0": 2,
+        }.get(raw_subsampling, 0)
+        self._webp_quality = self._clamp_int(
+            encoding.get("webp_quality", 97),
+            default=97,
+            min_value=85,
+            max_value=100,
+        )
+        self._webp_lossless_effort = self._clamp_int(
+            encoding.get("webp_lossless_effort", 80),
+            default=80,
+            min_value=0,
+            max_value=100,
+        )
+        self._webp_method = self._clamp_int(
+            encoding.get("webp_method", 4),
+            default=4,
+            min_value=0,
+            max_value=6,
+        )
+        self._png_compress_level = self._clamp_int(
+            encoding.get("png_compress_level", 9),
+            default=9,
+            min_value=0,
+            max_value=9,
+        )
 
         self._timeout_seconds = self._clamp_int(
             config.get("timeout", 120) if isinstance(config, dict) else 120,
@@ -49,7 +100,9 @@ class ImageManager:
             min_value=1,
             max_value=10,
         )
-        self._trusted_origins: frozenset[str] = frozenset(collect_trusted_origins(config))
+        self._trusted_origins: frozenset[str] = frozenset(
+            collect_trusted_origins(config)
+        )
 
         self._session: aiohttp.ClientSession | None = None
 
@@ -139,56 +192,117 @@ class ImageManager:
 
         Args:
             data: 图片二进制数据
-            output_format: 输出格式 ("jpeg" / "png" / "auto")，默认 "jpeg"
+            output_format: 输出格式 (jpeg/webp/webp_lossless/png/auto)
         """
         t0 = time.time()
 
-        # 格式转换逻辑
-        fmt = str(output_format or "jpeg").strip().lower()
+        fmt = normalize_output_format(output_format)
         original_data = data
-        conversion_applied = False
+        conversion_label = ""
+        source_mime, _ = guess_image_mime_and_ext(data)
+        preserve_existing = (fmt == "jpeg" and source_mime == "image/jpeg") or (
+            fmt == "webp" and source_mime == "image/webp"
+        )
 
-        if fmt in ("jpeg", "jpg"):
-            # 检测是否已经是 JPEG，避免重复转换
-            if not (len(data) >= 3 and data[:3] == b"\xff\xd8\xff"):
-                # 尝试转换为 JPEG
-                try:
-                    from PIL import Image as PILImage
-                    import io
+        if fmt != "auto" and not preserve_existing:
+            try:
+                from PIL import Image as PILImage
+                from PIL import ImageOps
 
-                    with PILImage.open(io.BytesIO(data)) as im:
-                        # 转换为 RGB（JPEG 不支持透明度）
-                        if im.mode in ("RGBA", "LA", "P"):
-                            # 创建白色背景
-                            if im.mode == "P" and "transparency" in im.info:
-                                im = im.convert("RGBA")
-                            if im.mode in ("RGBA", "LA"):
-                                bg = PILImage.new("RGB", im.size, (255, 255, 255))
-                                if im.mode == "LA":
-                                    im = im.convert("RGBA")
-                                bg.paste(im, mask=im.split()[-1] if len(im.split()) > 3 else None)
-                                im = bg
-                            else:
-                                im = im.convert("RGB")
+                with PILImage.open(io.BytesIO(data)) as opened:
+                    im = ImageOps.exif_transpose(opened)
+                    im.load()
+                    metadata: dict[str, object] = {}
+                    for key in ("icc_profile", "exif", "xmp"):
+                        value = im.info.get(key)
+                        if value:
+                            metadata[key] = value
+
+                    buf = io.BytesIO()
+                    if fmt == "jpeg":
+                        if im.mode in {"RGBA", "LA"} or (
+                            im.mode == "P" and "transparency" in im.info
+                        ):
+                            rgba = im.convert("RGBA")
+                            bg = PILImage.new("RGB", rgba.size, (255, 255, 255))
+                            bg.paste(rgba, mask=rgba.split()[-1])
+                            im = bg
                         elif im.mode != "RGB":
                             im = im.convert("RGB")
-
-                        # 保存为高质量 JPEG
-                        buf = io.BytesIO()
-                        im.save(buf, format="JPEG", quality=95, optimize=True)
-                        converted_data = buf.getvalue()
-
-                        if converted_data:
-                            data = converted_data
-                            conversion_applied = True
-                            logger.debug(
-                                f"[ImageManager] 格式转换: {len(original_data)} bytes → {len(data)} bytes (JPEG q=95)"
+                        im.save(
+                            buf,
+                            format="JPEG",
+                            quality=self._jpeg_quality,
+                            subsampling=self._jpeg_subsampling,
+                            optimize=True,
+                            progressive=True,
+                            **{
+                                key: value
+                                for key, value in metadata.items()
+                                if key in {"icc_profile", "exif"}
+                            },
+                        )
+                        conversion_label = (
+                            f"JPEG q={self._jpeg_quality} "
+                            f"subsampling={self._jpeg_subsampling}"
+                        )
+                    elif fmt in {"webp", "webp_lossless"}:
+                        if im.mode == "P":
+                            im = im.convert(
+                                "RGBA" if "transparency" in im.info else "RGB"
                             )
-                except Exception as e:
-                    logger.warning(
-                        f"[ImageManager] 格式转换失败，使用原图: {e}"
-                    )
-                    data = original_data
+                        elif im.mode not in {"RGB", "RGBA"}:
+                            im = im.convert("RGBA" if "A" in im.getbands() else "RGB")
+                        lossless = fmt == "webp_lossless"
+                        quality = (
+                            self._webp_lossless_effort
+                            if lossless
+                            else self._webp_quality
+                        )
+                        im.save(
+                            buf,
+                            format="WEBP",
+                            lossless=lossless,
+                            quality=quality,
+                            method=self._webp_method,
+                            alpha_quality=100,
+                            exact=True,
+                            **metadata,
+                        )
+                        conversion_label = (
+                            f"WebP lossless effort={quality} method={self._webp_method}"
+                            if lossless
+                            else f"WebP q={quality} method={self._webp_method}"
+                        )
+                    elif fmt == "png":
+                        im.save(
+                            buf,
+                            format="PNG",
+                            optimize=self._png_compress_level == 9,
+                            compress_level=self._png_compress_level,
+                            **{
+                                key: value
+                                for key, value in metadata.items()
+                                if key in {"icc_profile", "exif"}
+                            },
+                        )
+                        conversion_label = (
+                            f"PNG compress_level={self._png_compress_level}"
+                        )
+
+                    converted_data = buf.getvalue()
+                    if converted_data:
+                        data = converted_data
+                        logger.debug(
+                            "[ImageManager] 格式转换: %s bytes -> %s bytes (%s)",
+                            len(original_data),
+                            len(data),
+                            conversion_label,
+                        )
+            except Exception as e:
+                logger.warning("[ImageManager] 格式转换失败，使用原图: %s", e)
+                data = original_data
+                conversion_label = ""
 
         _, ext = guess_image_mime_and_ext(data)
         filename = f"{int(time.time())}_{id(data)}.{ext}"
@@ -201,7 +315,7 @@ class ImageManager:
         await self.cleanup_old_images()
         logger.info(
             f"[ImageManager] 保存耗时: {t1 - t0:.2f}s, 清理耗时: {time.time() - t1:.2f}s"
-            + (f", 已转换为 JPEG" if conversion_applied else "")
+            + (f", 已转换为 {conversion_label}" if conversion_label else "")
         )
 
         return path

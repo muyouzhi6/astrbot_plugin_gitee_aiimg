@@ -380,6 +380,79 @@
       }
     }
   },
+  "image_encoding": {
+    "description": "图片输出编码",
+    "hint": "控制 provider 输出格式转换时的编码质量。格式仍在每个 provider 的 output_format 中选择。",
+    "type": "object",
+    "items": {
+      "jpeg_quality": {
+        "description": "JPEG 质量",
+        "hint": "默认 95。Pillow 官方不建议长期使用高于 95 的值；提高质量会显著增加体积。",
+        "type": "int",
+        "slider": {
+          "min": 85,
+          "max": 100,
+          "step": 1
+        },
+        "default": 95
+      },
+      "jpeg_subsampling": {
+        "description": "JPEG 色度采样",
+        "hint": "4:4:4 画质最好，尤其适合文字、细线和彩色边缘；4:2:0 体积更小。",
+        "type": "string",
+        "options": [
+          "4:4:4",
+          "4:2:2",
+          "4:2:0"
+        ],
+        "default": "4:4:4"
+      },
+      "webp_quality": {
+        "description": "有损 WebP 质量",
+        "hint": "仅 output_format=webp 时生效。默认 97，通常能保持接近原图的观感并大幅减小体积。",
+        "type": "int",
+        "slider": {
+          "min": 85,
+          "max": 100,
+          "step": 1
+        },
+        "default": 97
+      },
+      "webp_lossless_effort": {
+        "description": "无损 WebP 压缩强度",
+        "hint": "仅 output_format=webp_lossless 时生效。该值影响编码耗时和体积，不影响像素质量。",
+        "type": "int",
+        "slider": {
+          "min": 0,
+          "max": 100,
+          "step": 5
+        },
+        "default": 80
+      },
+      "webp_method": {
+        "description": "WebP 编码方法",
+        "hint": "0 最快，6 压缩更充分但更慢。4K 图片建议保持默认 4。",
+        "type": "int",
+        "slider": {
+          "min": 0,
+          "max": 6,
+          "step": 1
+        },
+        "default": 4
+      },
+      "png_compress_level": {
+        "description": "PNG 无损压缩等级",
+        "hint": "仅 output_format=png 时生效。0 最快，9 体积最小；不会改变像素。",
+        "type": "int",
+        "slider": {
+          "min": 0,
+          "max": 9,
+          "step": 1
+        },
+        "default": 9
+      }
+    }
+  },
   "send": {
     "description": "图片发送前处理",
     "hint": "用于不同平台发送前的图片处理与超时设置。个人微信 weixin_oc 发送大图时建议保持开启。",
@@ -601,9 +674,11 @@
           "output_format": {
             "type": "string",
             "description": "输出图片格式",
-            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
             "options": [
               "jpeg",
+              "webp",
+              "webp_lossless",
               "png",
               "auto"
             ],
@@ -683,9 +758,11 @@
           "output_format": {
             "type": "string",
             "description": "输出图片格式",
-            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
             "options": [
               "jpeg",
+              "webp",
+              "webp_lossless",
               "png",
               "auto"
             ],
@@ -785,9 +862,11 @@
           "output_format": {
             "type": "string",
             "description": "输出图片格式",
-            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
             "options": [
               "jpeg",
+              "webp",
+              "webp_lossless",
               "png",
               "auto"
             ],
@@ -884,9 +963,11 @@
           "output_format": {
             "type": "string",
             "description": "输出图片格式",
-            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
             "options": [
               "jpeg",
+              "webp",
+              "webp_lossless",
               "png",
               "auto"
             ],
@@ -983,9 +1064,11 @@
           "output_format": {
             "type": "string",
             "description": "输出图片格式",
-            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
             "options": [
               "jpeg",
+              "webp",
+              "webp_lossless",
               "png",
               "auto"
             ],
@@ -1077,9 +1160,11 @@
           "output_format": {
             "type": "string",
             "description": "输出图片格式",
-            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
             "options": [
               "jpeg",
+              "webp",
+              "webp_lossless",
               "png",
               "auto"
             ],
@@ -1174,9 +1259,11 @@
           "output_format": {
             "type": "string",
             "description": "输出图片格式",
-            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
             "options": [
               "jpeg",
+              "webp",
+              "webp_lossless",
               "png",
               "auto"
             ],
@@ -1266,9 +1353,11 @@
           "output_format": {
             "type": "string",
             "description": "输出图片格式",
-            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
             "options": [
               "jpeg",
+              "webp",
+              "webp_lossless",
               "png",
               "auto"
             ],
@@ -1349,9 +1438,11 @@
           "output_format": {
             "type": "string",
             "description": "输出图片格式",
-            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
             "options": [
               "jpeg",
+              "webp",
+              "webp_lossless",
               "png",
               "auto"
             ],
@@ -1446,9 +1537,11 @@
           "output_format": {
             "type": "string",
             "description": "输出图片格式",
-            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
             "options": [
               "jpeg",
+              "webp",
+              "webp_lossless",
               "png",
               "auto"
             ],
@@ -1538,9 +1631,11 @@
           "output_format": {
             "type": "string",
             "description": "输出图片格式",
-            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
             "options": [
               "jpeg",
+              "webp",
+              "webp_lossless",
               "png",
               "auto"
             ],
@@ -1650,9 +1745,11 @@
           "output_format": {
             "type": "string",
             "description": "输出图片格式",
-            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
             "options": [
               "jpeg",
+              "webp",
+              "webp_lossless",
               "png",
               "auto"
             ],
@@ -1756,9 +1853,11 @@
           "output_format": {
             "type": "string",
             "description": "输出图片格式",
-            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
             "options": [
               "jpeg",
+              "webp",
+              "webp_lossless",
               "png",
               "auto"
             ],
@@ -1844,9 +1943,11 @@
           "output_format": {
             "type": "string",
             "description": "输出图片格式",
-            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
             "options": [
               "jpeg",
+              "webp",
+              "webp_lossless",
               "png",
               "auto"
             ],
@@ -1929,9 +2030,11 @@
           "output_format": {
             "type": "string",
             "description": "输出图片格式",
-            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
             "options": [
               "jpeg",
+              "webp",
+              "webp_lossless",
               "png",
               "auto"
             ],
@@ -1989,9 +2092,11 @@
           "output_format": {
             "type": "string",
             "description": "输出图片格式",
-            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
             "options": [
               "jpeg",
+              "webp",
+              "webp_lossless",
               "png",
               "auto"
             ],
@@ -2127,9 +2232,11 @@
           "output_format": {
             "type": "string",
             "description": "输出图片格式",
-            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
             "options": [
               "jpeg",
+              "webp",
+              "webp_lossless",
               "png",
               "auto"
             ],
@@ -2238,9 +2345,11 @@
           "output_format": {
             "type": "string",
             "description": "输出图片格式",
-            "hint": "jpeg=转为高质量JPEG（体积小，适合NapCat/OneBot等平台）；png=保留原始PNG（无损但体积大）；auto=不转换，直接保存原始格式。",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
             "options": [
               "jpeg",
+              "webp",
+              "webp_lossless",
               "png",
               "auto"
             ],

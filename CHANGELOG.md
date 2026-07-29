@@ -1,5 +1,26 @@
 # 更新日志
 
+## [v4.3.15] - 2026-07-30
+
+### 新增
+
+- Provider `output_format` 新增 `webp` 和 `webp_lossless`; `webp_lossless` 逐像素无损, 适合把 Gemini 4K PNG 压到 QQ 20MiB 图片门槛以内.
+- `png` 现在会执行无损优化重编码; `auto` 继续完整保留上游原始字节, 兼容旧配置.
+- 新增 `image_encoding` 高级配置, 可调整 JPEG 质量和色度采样、WebP 质量/压缩强度/编码方法以及 PNG 压缩等级.
+
+### 优化
+
+- JPEG 默认改为 `quality=95`、`4:4:4` 色度采样、渐进式优化, 显著改善彩色文字、细线和高频纹理, 避免旧默认采样造成的细节损失.
+- 真实 Meinianda `gemini-3.1-flash-image` `3:4 4K` 样本由 `21.362MiB` PNG 转为 `16.856MiB` Lossless WebP, 解码后像素完全一致; PNG 无损优化仅降至 `21.091MiB`.
+
+### 修复
+
+- 修复 OpenAI Images 返回 URL 时错误地把 `output_format` 传给 `str()`, 导致 URL 图片保存路径抛出 `TypeError` 的问题.
+
+### 测试
+
+- 新增无损像素一致性、JPEG `4:4:4`、WebP 编码、配置 schema 和 OpenAI Images URL 保存回归测试.
+
 ## [v4.3.14] - 2026-07-29
 
 ### 修复

@@ -676,5 +676,41 @@ class OpenAIChatGenerateFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(client.chat.completions.calls), 1)
 
 
+class OpenAICompatOutputFormatTests(unittest.IsolatedAsyncioTestCase):
+    async def test_url_response_passes_output_format_to_image_manager(self):
+        _load_module()
+        compat_mod = sys.modules[OPENAI_COMPAT_MODULE_NAME]
+        imgr = _DummyImageManager()
+        calls = []
+
+        async def download_image(url: str, **kwargs):
+            calls.append((url, kwargs))
+            return Path("/tmp/result.webp")
+
+        imgr.download_image = download_image
+        backend = compat_mod.OpenAICompatBackend(
+            imgr=imgr,
+            base_url="https://api.example.com/v1",
+            api_keys=["test-key"],
+            default_model="gpt-image-2",
+            output_format="webp_lossless",
+        )
+
+        result = await backend._save_images_response(
+            {"data": [{"url": "https://cdn.example.com/result.png"}]}
+        )
+
+        self.assertEqual(result, Path("/tmp/result.webp"))
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "https://cdn.example.com/result.png",
+                    {"output_format": "webp_lossless"},
+                )
+            ],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

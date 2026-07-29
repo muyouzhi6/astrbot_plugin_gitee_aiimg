@@ -209,7 +209,8 @@ chain 里可以填多个 provider，第一个是主用，后面的是自动兜�
   "default_resolution": "1K",
   "timeout": 180,
   "use_proxy": false,
-  "proxy_url": ""
+  "proxy_url": "",
+  "output_format": "webp_lossless"
 }
 ```
 
@@ -542,6 +543,27 @@ Q版化:Convert to chibi illustration style
 - `features.draw.batch_concurrency`：文生图批量并发
 - `features.edit.batch_concurrency`：改图 / 自拍批量并发
 
+### 图片输出编码
+
+每个图片 provider 都可以通过 `output_format` 选择保存格式：
+
+- `webp_lossless`：逐像素无损 WebP。推荐用于 Meinianda Gemini 4K，通常比原始 PNG 小很多，同时不改变任何像素。
+- `webp`：高质量有损 WebP。默认质量 `97`，适合 Lossless WebP 仍超过平台限制时使用。
+- `jpeg`：高质量 JPEG。默认质量 `95`、`4:4:4` 色度采样，兼容性最好，彩色文字和细线质量优于旧版默认编码。
+- `png`：无损优化 PNG。不会改变像素，但 AI 生成的复杂 4K 图片通常只能减少少量体积。
+- `auto`：不转换，完整保留上游返回的原始字节和格式。
+
+`image_encoding` 可以统一调整编码参数：
+
+- `image_encoding.jpeg_quality`：JPEG 质量，默认 `95`。
+- `image_encoding.jpeg_subsampling`：JPEG 色度采样，默认 `4:4:4`。
+- `image_encoding.webp_quality`：有损 WebP 质量，默认 `97`。
+- `image_encoding.webp_lossless_effort`：无损 WebP 压缩强度，默认 `80`，只影响编码时间和体积，不影响像素。
+- `image_encoding.webp_method`：WebP 编码方法，默认 `4`，范围 `0-6`。
+- `image_encoding.png_compress_level`：PNG 无损压缩等级，默认 `9`。
+
+实测 Meinianda `gemini-3.1-flash-image` 的 `3584x4800` 4K PNG 为 `21.362MiB`。插件实际编码后，PNG 无损优化仍为 `21.091MiB`，Lossless WebP 为 `16.856MiB` 且逐像素一致；有损 WebP `quality=97` 为 `3.360MiB`。因此推荐优先使用 `webp_lossless`，少数仍超过 QQ 限制的图片再改用 `webp`。
+
 ### 视频发送
 
 - `features.video.send_mode`：视频发送方式。`auto`=优先通过 URL 发送，URL 失败再下载本地；`url`=仅通过 URL 发送；`file`=下载后以本地文件发送
@@ -561,7 +583,7 @@ Q版化:Convert to chibi illustration style
 - `send.weixin_image_max_size_kb`：个人微信图片目标大小，默认 `10240KB`。
 - `send.weixin_api_timeout_seconds`：个人微信发送超时，默认 `60` 秒。
 
-这组配置只影响 `weixin_oc`。QQ / OneBot 仍使用原有发送与兜底逻辑。若个人微信发送 4K 图片时出现 `upload_to_cdn TimeoutError`，优先调高 `send.weixin_api_timeout_seconds`，或降低 `send.weixin_image_max_size_kb`。
+这组配置只影响 `weixin_oc`。QQ / OneBot 会直接发送 provider `output_format` 生成的图片；文件超过 `20MiB` 时仍会回退为文件发送。若个人微信发送 4K 图片时出现 `upload_to_cdn TimeoutError`，优先调高 `send.weixin_api_timeout_seconds`，或降低 `send.weixin_image_max_size_kb`。
 
 ### 存储与缓存
 
