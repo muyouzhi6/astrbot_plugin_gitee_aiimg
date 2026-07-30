@@ -283,8 +283,10 @@ async def test_llm_injection_contains_prompt_and_removes_recursive_tools(tmp_pat
     await plugin.inject_background_image_tasks(event, req)
     assert len(req.extra_user_content_parts) == 1
     injected = req.extra_user_content_parts[0]
-    assert injected["_no_save"] is True
-    assert "cinematic portrait with window light" in injected["text"]
+    assert not isinstance(injected, dict)
+    serialized = injected.model_dump_for_context()
+    assert serialized["_no_save"] is True
+    assert "cinematic portrait with window light" in serialized["text"]
     assert [tool.name for tool in req.func_tool.tools] == ["safe_tool"]
     await manager.cancel_task(record["task_id"], "test cleanup")
     await manager.close()

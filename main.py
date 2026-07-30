@@ -36,11 +36,10 @@ from astrbot.api.message_components import (
     Reply,
     Video,
 )
-from astrbot.api.star import Context, Star, StarTools
 from astrbot.api.platform import MessageMember
+from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
-from .core.batch_executor import BatchRunResult, run_batch
 from .core.background_tasks import (
     ACTIVE_STATES,
     TERMINAL_STATES,
@@ -51,6 +50,7 @@ from .core.background_tasks import (
     PreparedImageJob,
     TaskDeliveryTarget,
 )
+from .core.batch_executor import BatchRunResult, run_batch
 from .core.debouncer import Debouncer
 from .core.draw_service import ImageDrawService
 from .core.edit_router import EditRouter
@@ -88,6 +88,11 @@ from .core.provider_registry import ProviderRegistry
 from .core.ref_store import ReferenceStore
 from .core.utils import close_session, collect_at_user_ids, get_images_from_event
 from .core.video_manager import VideoManager
+
+try:
+    from astrbot.core.agent.message import TextPart
+except ImportError:
+    TextPart = None
 
 _async_pause = asyncio.sleep
 
@@ -869,10 +874,12 @@ class GiteeAIImagePlugin(Star):
             "invent progress percentages or prompts."
         )
         extra_parts = getattr(req, "extra_user_content_parts", None)
-        if isinstance(extra_parts, list):
-            extra_parts.append({"type": "text", "text": block, "_no_save": True})
+        if isinstance(extra_parts, list) and TextPart is not None:
+            extra_parts.append(TextPart(text=block).mark_as_temp())
         else:
-            req.system_prompt = str(getattr(req, "system_prompt", "") or "") + block
+            req.system_prompt = (
+                str(getattr(req, "system_prompt", "") or "") + "\n" + block
+            )
 
         if exact_task_id:
             tool_set = getattr(req, "func_tool", None)

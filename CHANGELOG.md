@@ -1,5 +1,16 @@
 # 更新日志
 
+## [v5.0.1] - 2026-07-31
+
+### 修复
+
+- 修复后台任务存在时将普通 `dict` 追加到 AstrBot `extra_user_content_parts`，导致用户追问任务进度时因缺少 `model_dump_for_context()` 直接中断 Agent 的问题。
+- 任务状态与完整提示词现通过 `TextPart.mark_as_temp()` 注入，仅参与当前 LLM 请求，不持久化到会话历史。
+
+### 测试
+
+- 新增动态任务内容必须为 AstrBot `ContentPart` 兼容对象的回归断言。
+
 ## [v5.0.0] - 2026-07-30
 
 ### 新增

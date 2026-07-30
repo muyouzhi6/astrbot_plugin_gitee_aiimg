@@ -110,6 +110,22 @@ class _DummyPlain:
         self.kwargs = kwargs
 
 
+class _DummyTextPart:
+    def __init__(self, text: str):
+        self.text = text
+        self._no_save = False
+
+    def mark_as_temp(self):
+        self._no_save = True
+        return self
+
+    def model_dump_for_context(self):
+        payload = {"type": "text", "text": self.text}
+        if self._no_save:
+            payload["_no_save"] = True
+        return payload
+
+
 class _DummyStar:
     def __init__(self, context):
         self.context = context
@@ -171,6 +187,8 @@ def _clear_modules():
             "astrbot.api.platform",
             "astrbot.api.star",
             "astrbot.core",
+            "astrbot.core.agent",
+            "astrbot.core.agent.message",
             "astrbot.core.utils",
             "astrbot.core.utils.astrbot_path",
             "mcp",
@@ -238,6 +256,10 @@ def _load_module():
     _install_stub_module(
         "astrbot.api.platform",
         MessageMember=_DummyMessageMember,
+    )
+    _install_stub_module(
+        "astrbot.core.agent.message",
+        TextPart=_DummyTextPart,
     )
     _install_stub_module(
         "astrbot.core.utils.astrbot_path",
