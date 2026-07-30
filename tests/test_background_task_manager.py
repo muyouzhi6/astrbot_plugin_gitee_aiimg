@@ -79,6 +79,16 @@ async def test_schema_capacity_dedupe_and_terminal_guard(tmp_path):
     await manager.create_task_record(_record(manager, "img_3"), reservation=1)
     with pytest.raises(bg.BackgroundTaskCapacityError):
         await manager.create_task_record(_record(manager, "img_4"), reservation=1)
+    with pytest.raises(bg.BackgroundTaskStateError):
+        await manager.transition(
+            "img_1",
+            "completed",
+            {
+                "image_generated": True,
+                "image_sent": False,
+                "delivery_state": "not_started",
+            },
+        )
 
     completed = await manager.transition(
         "img_1",
@@ -581,7 +591,212 @@ async def test_notification_outbox_compare_and_swap(tmp_path):
     )
     updated = await manager.get_task(record["task_id"])
     assert updated["notification_state"] == "sent"
+    assert not await manager.mark_notification(
+        token,
+        "unknown",
+        attempt_id=winner,
+    )
+    unchanged = await manager.get_task(record["task_id"])
+    assert unchanged["notification_state"] == "sent"
     await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_notification_claim_requires_current_task_owner_epoch(tmp_path):
+    manager = bg.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await manager.start()
+    record, _ = await manager.create_task_record(
+        _record(manager, "img_notify_epoch"),
+        reservation=1,
+    )
+    terminal = await manager.transition(
+        record["task_id"],
+        "failed",
+        queue_notification=True,
+    )
+    token = terminal["notification_token"]
+    assert await manager.claim_notification(token, "epoch-sender") is not None
+    with sqlite3.connect(manager.db_path) as conn:
+        conn.execute(
+            "UPDATE tasks SET owner_epoch=? WHERE task_id=?",
+            (manager.owner_epoch + 1, record["task_id"]),
+        )
+        conn.commit()
+
+    assert not await manager.mark_notification(
+        token,
+        "sent",
+        attempt_id="epoch-sender",
+    )
+    with sqlite3.connect(manager.db_path) as conn:
+        state = conn.execute(
+            "SELECT state FROM notification_outbox WHERE token=?",
+            (token,),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE tasks SET owner_epoch=? WHERE task_id=?",
+            (manager.owner_epoch, record["task_id"]),
+        )
+        conn.commit()
+    assert state == "claimed"
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_notification_terminal_wait_timeout_does_not_leak(tmp_path):
+    manager = bg.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await manager.start()
+    record, _ = await manager.create_task_record(
+        _record(manager, "img_notify_wait"),
+        reservation=1,
+    )
+    terminal = await manager.transition(
+        record["task_id"],
+        "failed",
+        queue_notification=True,
+    )
+    token = terminal["notification_token"]
+    assert await manager.claim_notification(token, "wait-sender") is not None
+    assert not await manager.wait_notification_terminal(
+        token,
+        timeout_seconds=0.01,
+    )
+    assert manager._notification_events == {}
+    assert await manager.mark_notification(
+        token,
+        "unknown",
+        attempt_id="wait-sender",
+    )
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_notification_backlog_applies_intake_backpressure(tmp_path):
+    manager = bg.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    manager.max_notification_backlog = 1
+    await manager.start()
+    record, _ = await manager.create_task_record(
+        _record(manager, "img_backlog_1"),
+        reservation=1,
+    )
+    await manager.transition(
+        record["task_id"],
+        "failed",
+        queue_notification=True,
+    )
+
+    with pytest.raises(
+        bg.BackgroundTaskCapacityError,
+        match="notification queue is full",
+    ):
+        await manager.create_task_record(
+            _record(manager, "img_backlog_2"),
+            reservation=1,
+        )
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_receipt_attempt_id_cannot_cross_tasks(tmp_path):
+    manager = bg.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await manager.start()
+    for task_id in ("img_receipt_1", "img_receipt_2"):
+        await manager.create_task_record(_record(manager, task_id), reservation=1)
+
+    assert await manager.record_receipt(
+        "img_receipt_1",
+        send_attempt_id="shared-attempt",
+        kind="image",
+        delivery_state="attempting",
+        transport="aiocqhttp",
+    )
+    assert not await manager.record_receipt(
+        "img_receipt_2",
+        send_attempt_id="shared-attempt",
+        kind="image",
+        delivery_state="attempting",
+        transport="aiocqhttp",
+    )
+    assert await manager.record_receipt(
+        "img_receipt_1",
+        send_attempt_id="shared-attempt",
+        kind="image",
+        delivery_state="confirmed",
+        transport="aiocqhttp",
+    )
+    with sqlite3.connect(manager.db_path) as conn:
+        row = conn.execute(
+            "SELECT task_id, delivery_state FROM receipts WHERE send_attempt_id=?",
+            ("shared-attempt",),
+        ).fetchone()
+    assert row == ("img_receipt_1", "confirmed")
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_notification_turn_and_health_snapshot_are_bounded(tmp_path):
+    manager = bg.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await manager.start()
+    await manager.create_task_record(
+        _record(manager, "img_health"),
+        reservation=1,
+    )
+    entered = []
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def first_turn():
+        async with manager.notification_turn("qq:GroupMessage:1"):
+            entered.append("first")
+            first_entered.set()
+            await release_first.wait()
+
+    async def second_turn():
+        async with manager.notification_turn("qq:GroupMessage:1"):
+            entered.append("second")
+
+    first = asyncio.create_task(first_turn())
+    await first_entered.wait()
+    second = asyncio.create_task(second_turn())
+    await asyncio.sleep(0)
+    assert entered == ["first"]
+    release_first.set()
+    await asyncio.gather(first, second)
+    assert entered == ["first", "second"]
+    assert manager._notification_locks == {}
+    assert manager._notification_lock_users == {}
+
+    snapshot = await manager.health_snapshot()
+    assert snapshot["quick_check"] == "ok"
+    assert snapshot["active_tasks"] == 1
+    assert snapshot["reservation_remaining"] == 1
+    assert snapshot["managed_tasks"] >= 3
+    assert snapshot["wal_busy"] >= 0
+    await manager.cancel_task("img_health", "test cleanup")
+    settled = await manager.health_snapshot()
+    assert settled["active_tasks"] == 0
+    assert settled["reservation_remaining"] == 0
+    await manager.close()
+
+
+def test_scope_isolation_and_error_sanitization():
+    first = bg.BackgroundImageTaskManager.scope_hash(
+        "qq:GroupMessage:1", "bot", "user", "conversation"
+    )
+    second = bg.BackgroundImageTaskManager.scope_hash(
+        "qq:GroupMessage:2", "bot", "user", "conversation"
+    )
+    assert first != second
+
+    sanitized = bg.BackgroundImageTaskManager.sanitize_error(
+        "Authorization: Bearer secret api_key=hidden "
+        "https://example.invalid/path?token=secret " + "x" * 2000,
+        limit=200,
+    )
+    assert "secret" not in sanitized
+    assert "hidden" not in sanitized
+    assert "token=secret" not in sanitized
+    assert len(sanitized) == 200
 
 
 @pytest.mark.asyncio

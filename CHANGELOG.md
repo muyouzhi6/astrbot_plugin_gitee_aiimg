@@ -1,5 +1,25 @@
 # 更新日志
 
+## [v5.1.2] - 2026-07-31
+
+### 修复
+
+- 通知 outbox 改为单调状态机，已确认 `sent / unknown / failed / expired` 的终态不再允许被迟到 callback 回退；通知回写同时校验当前 task owner epoch，发送 receipt 也会拒绝跨任务复用同一 attempt ID。
+- 同一 UMO 的多个后台任务完成通知现在按 turn 串行，前一条必须先收敛为已发送、失败或未知，下一条才进入 synthetic pipeline，避免并发完成时抢占 ContextAware 会话历史或乱序回应。
+- 进程重启恢复强制使用确定性主动通知，不再尝试重入旧 conversation；ContextAware 的公开 `has_session()` 同时兼容同步与异步实现。
+- 同步发送降级路径遇到 timeout、connection reset 等歧义错误时立即记录失败并停止跨通道重试，避免平台已接收但响应丢失后重复发图。
+- 后台入口新增 adapter transport 能力探测；未完成 notification outbox 增加独立硬上限，达到上限后停止后台接单并自动保留同步路径。
+
+### 可观测性
+
+- 新增每 5 分钟后台健康摘要与 SQLite passive WAL checkpoint，记录 owner epoch、managed task、active/reservation、provider/ready、outbox、最老任务、DB/WAL 和 heartbeat；健康检查连续 3 次失败会 fail closed 停止后台接单。
+- 启动日志现在明确区分 `active`、`waiting_for_owner`、`startup_failed` 和 `disabled`，不会把等待旧 owner lease 的短暂阶段误报为配置关闭。
+
+### 测试
+
+- 新增通知终态防回退、owner fencing、receipt 归属、同 UMO 串行、等待超时清理、outbox 背压、健康快照、重启确定性通知、异步 ContextAware gate 和歧义发送不重试测试。
+- 完整回归更新为 `177 passed`；Python 编译与固定 Ruff `0.15.22` 检查通过。
+
 ## [v5.1.1] - 2026-07-31
 
 ### 修复

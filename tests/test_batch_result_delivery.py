@@ -712,6 +712,37 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(original.exists())
             self.assertEqual(result.cached_path, original)
 
+    async def test_ambiguous_send_error_is_not_retried(self):
+        mod = _load_module()
+        with TemporaryDirectory() as td:
+            image_path = Path(td) / "image.png"
+            image_path.write_bytes(b"image")
+            plugin = mod.GiteeAIImagePlugin(
+                context=types.SimpleNamespace(),
+                config={},
+            )
+            plugin.data_dir = Path(td)
+
+            class _TimeoutEvent(_DummyEvent):
+                def __init__(self):
+                    super().__init__()
+                    self.send_calls = 0
+
+                async def send(self, payload):
+                    self.send_calls += 1
+                    raise TimeoutError("adapter response timed out")
+
+            event = _TimeoutEvent()
+            result = await plugin._send_image_with_fallback(
+                event,
+                image_path,
+                max_attempts=5,
+            )
+
+            self.assertFalse(result.ok)
+            self.assertEqual(result.reason, "delivery_unknown")
+            self.assertEqual(event.send_calls, 1)
+
     def test_weixin_send_temp_cleanup_removes_only_stale_and_overflow_files(self):
         mod = _load_module()
         with TemporaryDirectory() as td:

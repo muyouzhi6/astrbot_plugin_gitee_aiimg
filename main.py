@@ -15,6 +15,7 @@ import base64
 import copy
 import hashlib
 import html
+import inspect
 import io
 import json
 import math
@@ -659,7 +660,12 @@ class GiteeAIImagePlugin(Star):
         self._video_tasks: set[asyncio.Task] = set()
 
         background_conf = self._get_feature("background_llm_image")
-        if self._as_bool(background_conf.get("enabled", False), default=False):
+        background_enabled = self._as_bool(
+            background_conf.get("enabled", False), default=False
+        )
+        background_status = "disabled"
+        if background_enabled:
+            background_status = "starting"
             manager = BackgroundImageTaskManager(
                 Path(self.data_dir),
                 max_running=self._as_int(
@@ -673,6 +679,7 @@ class GiteeAIImagePlugin(Star):
             try:
                 self._background_recovery_records = await manager.start()
             except BackgroundTaskOwnerError as exc:
+                background_status = "waiting_for_owner"
                 logger.warning(
                     "[background-image] previous owner lease is still live; "
                     "background mode will retry without blocking AstrBot startup: %s",
@@ -727,12 +734,14 @@ class GiteeAIImagePlugin(Star):
                     name="background-image-owner-retry",
                 )
             except Exception as exc:
+                background_status = "startup_failed"
                 logger.error(
                     "[background-image] disabled after startup check failed: %s",
                     BackgroundImageTaskManager.sanitize_error(exc),
                 )
             else:
                 self.background_tasks = manager
+                background_status = "active"
 
         # 读取 AstrBot 配置的唤醒前缀，用于限制命令匹配范围
         try:
@@ -762,7 +771,7 @@ class GiteeAIImagePlugin(Star):
             f"改图预设={len(self.edit.get_preset_names())}个, "
             f"视频启用={bool(self._get_feature('video').get('enabled', False))}, "
             f"视频预设={len(self._get_video_presets())}个, "
-            f"LLM后台生图={self.background_tasks is not None}"
+            f"LLM后台生图={background_status}"
         )
 
     @filter.on_astrbot_loaded()
@@ -1679,10 +1688,10 @@ class GiteeAIImagePlugin(Star):
 
         file_send_tries = 0
 
-        async def try_send_as_file(trigger: str) -> bool:
+        async def try_send_as_file(trigger: str) -> SendImageResult | None:
             nonlocal file_send_tries
             if file_send_tries >= 2:
-                return False
+                return None
             file_send_tries += 1
             try:
                 await event.send(event.chain_result([File(name=p.name, file=str(p))]))
@@ -1693,7 +1702,11 @@ class GiteeAIImagePlugin(Star):
                     trigger,
                     file_send_tries,
                 )
-                return True
+                return SendImageResult(
+                    ok=True,
+                    cached_path=p,
+                    used_fallback=True,
+                )
             except Exception as e:
                 logger.warning(
                     "[send_image][file-fallback-v2] file send failed: trigger=%s, try=%s, err=%s",
@@ -1701,13 +1714,20 @@ class GiteeAIImagePlugin(Star):
                     file_send_tries,
                     e,
                 )
-                return False
+                if self._is_unknown_delivery_error(e):
+                    return SendImageResult(
+                        ok=False,
+                        reason="delivery_unknown",
+                        cached_path=p,
+                        used_fallback=True,
+                        last_error=str(e),
+                    )
+                return None
 
         if size_bytes > self.IMAGE_AS_FILE_THRESHOLD_BYTES:
-            if await try_send_as_file("size_threshold"):
-                return await finish(
-                    SendImageResult(ok=True, cached_path=p, used_fallback=True)
-                )
+            file_result = await try_send_as_file("size_threshold")
+            if file_result is not None:
+                return await finish(file_result)
 
         delay = 1.5
         last_exc: Exception | None = None
@@ -1729,6 +1749,15 @@ class GiteeAIImagePlugin(Star):
             except Exception as e:
                 fs_exc = e
                 last_exc = e
+                if self._is_unknown_delivery_error(e):
+                    return await finish(
+                        SendImageResult(
+                            ok=False,
+                            reason="delivery_unknown",
+                            cached_path=p,
+                            last_error=str(e),
+                        )
+                    )
                 if self._is_rich_media_transfer_failed(e):
                     fs_failed_by_rich_media = True
                 logger.debug(
@@ -1753,6 +1782,16 @@ class GiteeAIImagePlugin(Star):
             except Exception as e:
                 bytes_exc = e
                 last_exc = e
+                if self._is_unknown_delivery_error(e):
+                    return await finish(
+                        SendImageResult(
+                            ok=False,
+                            reason="delivery_unknown",
+                            cached_path=p,
+                            used_fallback=True,
+                            last_error=str(e),
+                        )
+                    )
                 logger.debug(
                     "[send_image] fromBytes failed (attempt=%s/%s): %s",
                     attempt,
@@ -1764,10 +1803,9 @@ class GiteeAIImagePlugin(Star):
             if self._is_rich_media_transfer_failed(
                 fs_exc
             ) or self._is_rich_media_transfer_failed(bytes_exc):
-                if await try_send_as_file("rich_media_transfer_failed"):
-                    return await finish(
-                        SendImageResult(ok=True, cached_path=p, used_fallback=True)
-                    )
+                file_result = await try_send_as_file("rich_media_transfer_failed")
+                if file_result is not None:
+                    return await finish(file_result)
 
             # Extra fallback for repeated rich-media failures: compress and retry by bytes.
             if self._is_rich_media_transfer_failed(
@@ -1800,6 +1838,16 @@ class GiteeAIImagePlugin(Star):
                     except Exception as e:
                         compact_exc = e
                         last_exc = e
+                        if self._is_unknown_delivery_error(e):
+                            return await finish(
+                                SendImageResult(
+                                    ok=False,
+                                    reason="delivery_unknown",
+                                    cached_path=p,
+                                    used_fallback=True,
+                                    last_error=str(e),
+                                )
+                            )
                         logger.debug(
                             "[send_image] compact fromBytes failed (attempt=%s/%s): %s",
                             attempt,
@@ -3609,6 +3657,12 @@ class GiteeAIImagePlugin(Star):
             or not umo
         ):
             return None
+        if (
+            not callable(getattr(event, "send", None))
+            or not callable(getattr(event, "chain_result", None))
+            or not hasattr(event, "_has_send_oper")
+        ):
+            return None
         if not callable(getattr(StarTools, "create_message", None)):
             return None
         adapter = self.context.get_platform_inst(platform_id)
@@ -4461,7 +4515,12 @@ class GiteeAIImagePlugin(Star):
                 context_aware = getattr(metadata, "star_cls", None)
                 if context_aware is not None:
                     has_session = getattr(context_aware, "has_session", None)
-                    if not callable(has_session) or not bool(has_session(target.umo)):
+                    if not callable(has_session):
+                        return False, None
+                    session_exists = has_session(target.umo)
+                    if inspect.isawaitable(session_exists):
+                        session_exists = await session_exists
+                    if not bool(session_exists):
                         return False, None
             except Exception as exc:
                 logger.warning(
@@ -4635,7 +4694,24 @@ class GiteeAIImagePlugin(Star):
         record: dict[str, Any],
         target: TaskDeliveryTarget,
     ) -> None:
-        """Route a terminal task to Agent completion or deterministic fallback.
+        """Serialize one terminal notification through its original UMO.
+
+        Args:
+            manager: Owning task manager.
+            record: Terminal durable record.
+            target: Original platform route.
+        """
+
+        async with manager.notification_turn(target.umo):
+            await self._dispatch_background_completion_once(manager, record, target)
+
+    async def _dispatch_background_completion_once(
+        self,
+        manager: BackgroundImageTaskManager,
+        record: dict[str, Any],
+        target: TaskDeliveryTarget,
+    ) -> None:
+        """Route a claimed terminal task to Agent or deterministic delivery.
 
         Args:
             manager: Owning task manager.
@@ -4648,7 +4724,17 @@ class GiteeAIImagePlugin(Star):
         token = str(record.get("notification_token") or "")
         if not token:
             return
-        safe, conversation = await self._background_context_is_safe(target)
+        recovered_after_restart = str(record.get("terminal_reason") or "") in {
+            "process_restarted",
+            "plugin_shutdown",
+        } or str(record.get("error_code") or "") in {
+            "process_restarted",
+            "plugin_shutdown",
+        }
+        if recovered_after_restart:
+            safe, conversation = False, None
+        else:
+            safe, conversation = await self._background_context_is_safe(target)
         attempt_id = manager.new_task_id("notify-agent" if safe else "notify-direct")
         claimed = await manager.claim_notification(token, attempt_id)
         if claimed is None:
@@ -4698,11 +4784,17 @@ class GiteeAIImagePlugin(Star):
                 raise RuntimeError(
                     "Platform adapter disappeared before completion enqueue"
                 )
-            await manager.mark_notification(
+            queued = await manager.mark_notification(
                 token,
                 "queued",
                 attempt_id=attempt_id,
             )
+            if not queued:
+                logger.warning(
+                    "[background-image] suppressed completion after its claim changed: task=%s",
+                    record.get("task_id"),
+                )
+                return
             adapter.commit_event(event)
         except Exception as exc:
             logger.warning(
@@ -4725,6 +4817,22 @@ class GiteeAIImagePlugin(Star):
                 target,
             ),
             name=f"background-notification-watchdog-{record.get('task_id')}",
+        )
+        completed = await manager.wait_notification_terminal(
+            token,
+            timeout_seconds=360,
+        )
+        if completed:
+            return
+        marked = await manager.mark_notification(
+            token,
+            "unknown",
+            attempt_id=attempt_id,
+        )
+        logger.warning(
+            "[background-image] notification turn timed out: task=%s marked_unknown=%s",
+            record.get("task_id"),
+            marked,
         )
 
     async def _accept_background_batch(

@@ -356,6 +356,11 @@ def test_background_manager_for_event_fails_closed_and_supports_weixin():
         "provider_settings": {"streaming_response": True}
     }
     assert plugin._background_manager_for_event(event) is None
+    plugin.context.get_config = lambda umo=None: {
+        "provider_settings": {"streaming_response": False}
+    }
+    event.chain_result = None
+    assert plugin._background_manager_for_event(event) is None
     plugin.background_tasks = None
     assert plugin._background_manager_for_event(event) is None
 
@@ -559,6 +564,14 @@ async def test_contextaware_session_gate_prevents_old_context_reentry(tmp_path):
     safe, conversation = await plugin._background_context_is_safe(target)
     assert safe is True
     assert conversation.cid == "conversation"
+
+    async def async_has_session(umo):
+        return True
+
+    plugin.context.context_aware = types.SimpleNamespace(has_session=async_has_session)
+    safe, conversation = await plugin._background_context_is_safe(target)
+    assert safe is True
+    assert conversation.cid == "conversation"
     await manager.close()
 
 
@@ -604,6 +617,59 @@ async def test_astrbot_loaded_drains_recovery_notifications_once(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_restart_recovery_forces_deterministic_notification(tmp_path):
+    mod, _ = _load_module()
+    manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await manager.start()
+    plugin = _plugin(mod, manager)
+    target = _target(mod)
+    record, _ = await manager.create_task_record(
+        _base_record(manager, "img_restart_direct", target),
+        reservation=1,
+    )
+    terminal = await manager.transition(
+        record["task_id"],
+        "interrupted",
+        {
+            "error_code": "process_restarted",
+            "terminal_reason": "process_restarted",
+        },
+        queue_notification=True,
+    )
+    delivered = []
+
+    async def unsafe_context(self, current_target):
+        raise AssertionError("restart recovery must not re-enter the old conversation")
+
+    async def direct(
+        self,
+        current_manager,
+        current_record,
+        current_target,
+        *,
+        attempt_id,
+    ):
+        delivered.append(current_record["task_id"])
+        assert await current_manager.mark_notification(
+            current_record["notification_token"],
+            "sent",
+            attempt_id=attempt_id,
+        )
+
+    plugin._background_context_is_safe = types.MethodType(unsafe_context, plugin)
+    plugin._send_deterministic_background_notification = types.MethodType(
+        direct,
+        plugin,
+    )
+    await plugin._dispatch_background_completion(manager, terminal, target)
+
+    assert delivered == [record["task_id"]]
+    updated = await manager.get_task(record["task_id"])
+    assert updated["notification_state"] == "sent"
+    await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_synthetic_completion_uses_non_content_input_chain(tmp_path):
     mod, _ = _load_module()
     manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
@@ -639,7 +705,13 @@ async def test_synthetic_completion_uses_non_content_input_chain(tmp_path):
 
     plugin._background_context_is_safe = types.MethodType(safe_context, plugin)
     plugin._rebuild_background_event = types.MethodType(rebuild, plugin)
-    await plugin._dispatch_background_completion(manager, terminal, target)
+    dispatch = asyncio.create_task(
+        plugin._dispatch_background_completion(manager, terminal, target)
+    )
+    for _ in range(100):
+        if plugin.context.adapter.committed:
+            break
+        await asyncio.sleep(0.01)
     assert len(plugin.context.adapter.committed) == 1
     assert captured["message"]
     assert not any(
@@ -651,10 +723,95 @@ async def test_synthetic_completion_uses_non_content_input_chain(tmp_path):
     await plugin.arm_background_task_result_transport(synthetic)
     await synthetic.send(synthetic.get_result())
     await plugin.confirm_background_task_result(synthetic)
+    await asyncio.wait_for(dispatch, timeout=1)
 
     updated = await manager.get_task(record["task_id"])
     assert updated["notification_state"] == "sent"
     assert synthetic.send == synthetic._gitee_bg_original_send
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_completion_notifications_are_serialized_per_umo(tmp_path):
+    mod, _ = _load_module()
+    manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await manager.start()
+    plugin = _plugin(mod, manager)
+    target = _target(mod)
+    terminals = []
+    for task_id in ("img_order_1", "img_order_2"):
+        record, _ = await manager.create_task_record(
+            _base_record(manager, task_id, target),
+            reservation=1,
+        )
+        terminals.append(
+            await manager.transition(
+                record["task_id"],
+                "completed",
+                {
+                    "image_generated": True,
+                    "image_sent": True,
+                    "delivery_state": "confirmed",
+                },
+                queue_notification=True,
+            )
+        )
+
+    async def safe_context(self, current_target):
+        return True, types.SimpleNamespace(cid="conversation")
+
+    class _Synthetic(_Event):
+        def request_llm(self, **kwargs):
+            return types.SimpleNamespace(**kwargs)
+
+    async def rebuild(self, current_target, *, message=None, message_str=""):
+        return _Synthetic()
+
+    plugin._background_context_is_safe = types.MethodType(safe_context, plugin)
+    plugin._rebuild_background_event = types.MethodType(rebuild, plugin)
+    first_dispatch = asyncio.create_task(
+        plugin._dispatch_background_completion(manager, terminals[0], target)
+    )
+    for _ in range(100):
+        if plugin.context.adapter.committed:
+            break
+        await asyncio.sleep(0.01)
+    assert len(plugin.context.adapter.committed) == 1
+    second_dispatch = asyncio.create_task(
+        plugin._dispatch_background_completion(manager, terminals[1], target)
+    )
+    await asyncio.sleep(0)
+    assert len(plugin.context.adapter.committed) == 1
+
+    first = plugin.context.adapter.committed[0]
+    first.set_result(_Result([mod.Plain("第一张已经发出来了。")]))
+    await plugin.decorate_background_task_result(first)
+    await plugin.arm_background_task_result_transport(first)
+    await first.send(first.get_result())
+    await plugin.confirm_background_task_result(first)
+    await asyncio.wait_for(first_dispatch, timeout=1)
+
+    for _ in range(100):
+        if len(plugin.context.adapter.committed) == 2:
+            break
+        await asyncio.sleep(0.01)
+    assert len(plugin.context.adapter.committed) == 2
+    assert (
+        plugin.context.adapter.committed[0].get_extra("_gitee_bg_task_id")
+        == terminals[0]["task_id"]
+    )
+    assert (
+        plugin.context.adapter.committed[1].get_extra("_gitee_bg_task_id")
+        == terminals[1]["task_id"]
+    )
+
+    second = plugin.context.adapter.committed[1]
+    second.set_result(_Result([mod.Plain("第二张也已经发出来了。")]))
+    await plugin.decorate_background_task_result(second)
+    await plugin.arm_background_task_result_transport(second)
+    await second.send(second.get_result())
+    await plugin.confirm_background_task_result(second)
+    await asyncio.wait_for(second_dispatch, timeout=1)
     await manager.close()
 
 

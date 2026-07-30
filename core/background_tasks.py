@@ -13,6 +13,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
@@ -35,6 +36,7 @@ TERMINAL_STATES = {
     "interrupted",
 }
 DELIVERY_STATES = {"not_started", "attempting", "confirmed", "unknown"}
+NOTIFICATION_TERMINAL_STATES = {"sent", "unknown", "failed", "expired"}
 PROMPT_LIMIT = 32768
 RECORD_LIMIT_BYTES = 512 * 1024
 INPUT_FILE_LIMIT_BYTES = 20 * 1024 * 1024
@@ -177,6 +179,7 @@ class BackgroundImageTaskManager:
         self.db_path = self.base_dir / "background_tasks.sqlite3"
         self.max_running = max(1, min(8, int(max_running)))
         self.max_queued = max(self.max_running, min(128, int(max_queued)))
+        self.max_notification_backlog = max(32, self.max_queued * 4)
         self.log = log
         self.lease_seconds = max(15, int(lease_seconds))
         self.heartbeat_seconds = max(5, int(heartbeat_seconds))
@@ -198,6 +201,11 @@ class BackgroundImageTaskManager:
         self._parent_in_ring: set[str] = set()
         self._provider_running = 0
         self._planner_semaphore = asyncio.Semaphore(1)
+        self._notification_map_lock = asyncio.Lock()
+        self._notification_locks: dict[str, asyncio.Lock] = {}
+        self._notification_lock_users: dict[str, int] = {}
+        self._notification_events: dict[str, asyncio.Event] = {}
+        self._health_failure_count = 0
 
     @property
     def is_closing(self) -> bool:
@@ -313,6 +321,7 @@ class BackgroundImageTaskManager:
         self.accepting = True
         self._track(self._heartbeat_loop(), name="background-image-heartbeat")
         self._track(self._gc_loop(), name="background-image-gc")
+        self._track(self._health_loop(), name="background-image-health")
         return recovered
 
     def _prepare_storage(self) -> None:
@@ -712,6 +721,18 @@ class BackgroundImageTaskManager:
                 raise BackgroundTaskCapacityError(
                     f"Background image queue is full ({current}/{self.max_queued})"
                 )
+            notification_backlog = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM notification_outbox "
+                    "WHERE state IN ('pending', 'queued', 'claimed')"
+                ).fetchone()[0]
+            )
+            if notification_backlog >= self.max_notification_backlog:
+                conn.rollback()
+                raise BackgroundTaskCapacityError(
+                    "Background notification queue is full "
+                    f"({notification_backlog}/{self.max_notification_backlog})"
+                )
             task_id = record["task_id"]
             expires = now + 2 * 60 * 60 * 1000
             conn.execute(
@@ -839,6 +860,7 @@ class BackgroundImageTaskManager:
                             insert_notification = True
                         else:
                             record["notification_state"] = str(existing["state"])
+                    self._validate_terminal_record(record, state)
                     record["revision"] = int(record.get("revision") or 0) + 1
                     record["updated_at"] = now
                     payload = self._encode_record(record)
@@ -884,6 +906,7 @@ class BackgroundImageTaskManager:
                 record["started_at"] = now
             if state in TERMINAL_STATES:
                 record["finished_at"] = now
+                self._validate_terminal_record(record, state)
             payload = self._encode_record(record)
             expires = now + (
                 self.terminal_ttl_seconds * 1000
@@ -934,6 +957,43 @@ class BackgroundImageTaskManager:
                 )
             conn.commit()
         return record
+
+    @staticmethod
+    def _validate_terminal_record(record: dict[str, Any], state: str) -> None:
+        """Reject terminal summaries that overstate confirmed image delivery.
+
+        Args:
+            record: Candidate durable task record.
+            state: Candidate terminal parent state.
+
+        Raises:
+            BackgroundTaskStateError: The terminal facts contradict the state.
+        """
+
+        if state == "completed":
+            if record.get("task_kind") == "batch":
+                requested = int(record.get("requested_count") or 0)
+                sent = int(record.get("sent_count") or 0)
+                unknown = int(record.get("unknown_count") or 0)
+                valid = requested > 0 and sent == requested and unknown == 0
+            else:
+                valid = (
+                    bool(record.get("image_generated"))
+                    and bool(record.get("image_sent"))
+                    and record.get("delivery_state") == "confirmed"
+                )
+            if not valid:
+                raise BackgroundTaskStateError(
+                    "Completed tasks require confirmed delivery for every image"
+                )
+        if state == "partial" and record.get("task_kind") == "batch":
+            requested = int(record.get("requested_count") or 0)
+            sent = int(record.get("sent_count") or 0)
+            unknown = int(record.get("unknown_count") or 0)
+            if not (0 < sent < requested and unknown == 0):
+                raise BackgroundTaskStateError(
+                    "Partial batches require known confirmed and unsent child results"
+                )
 
     async def update_item(
         self,
@@ -1572,6 +1632,81 @@ class BackgroundImageTaskManager:
         task.add_done_callback(consume)
         return task
 
+    @asynccontextmanager
+    async def notification_turn(self, scope_key: str):
+        """Serialize terminal notification delivery for one conversation scope.
+
+        Args:
+            scope_key: Stable UMO or equivalent conversation routing key.
+
+        Yields:
+            Control after all earlier notification turns for the scope finish.
+        """
+
+        key = str(scope_key or "").strip()
+        if not key:
+            raise BackgroundTaskError("A notification scope key is required")
+        async with self._notification_map_lock:
+            lock = self._notification_locks.setdefault(key, asyncio.Lock())
+            self._notification_lock_users[key] = (
+                self._notification_lock_users.get(key, 0) + 1
+            )
+        try:
+            async with lock:
+                yield
+        finally:
+            async with self._notification_map_lock:
+                users = self._notification_lock_users.get(key, 1) - 1
+                if users <= 0:
+                    self._notification_lock_users.pop(key, None)
+                    if not lock.locked():
+                        self._notification_locks.pop(key, None)
+                else:
+                    self._notification_lock_users[key] = users
+
+    async def wait_notification_terminal(
+        self,
+        token: str,
+        *,
+        timeout_seconds: float,
+    ) -> bool:
+        """Wait until an outbox token reaches an immutable terminal state.
+
+        Args:
+            token: Stable notification token.
+            timeout_seconds: Maximum wait before returning ``False``.
+
+        Returns:
+            ``True`` when the durable outbox state is terminal.
+        """
+
+        event = self._notification_events.setdefault(token, asyncio.Event())
+        async with self._db_lock:
+            state = await asyncio.to_thread(self._notification_state_sync, token)
+        if state in NOTIFICATION_TERMINAL_STATES:
+            event.set()
+        try:
+            await asyncio.wait_for(
+                event.wait(),
+                timeout=max(0.01, float(timeout_seconds)),
+            )
+        except TimeoutError:
+            return False
+        finally:
+            if self._notification_events.get(token) is event:
+                self._notification_events.pop(token, None)
+        async with self._db_lock:
+            state = await asyncio.to_thread(self._notification_state_sync, token)
+        return state in NOTIFICATION_TERMINAL_STATES
+
+    def _notification_state_sync(self, token: str) -> str:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT state FROM notification_outbox WHERE token=?",
+                (token,),
+            ).fetchone()
+        return str(row["state"] if row is not None else "")
+
     async def claim_notification(
         self,
         token: str,
@@ -1643,9 +1778,14 @@ class BackgroundImageTaskManager:
             )
         now = self.now_ms()
         async with self._db_lock:
-            return await asyncio.to_thread(
+            changed = await asyncio.to_thread(
                 self._mark_notification_sync, token, state, attempt_id, now
             )
+        if changed and state in NOTIFICATION_TERMINAL_STATES:
+            event = self._notification_events.get(token)
+            if event is not None:
+                event.set()
+        return changed
 
     def _mark_notification_sync(
         self, token: str, state: str, attempt_id: str, now: int
@@ -1654,7 +1794,9 @@ class BackgroundImageTaskManager:
             conn.execute("BEGIN IMMEDIATE")
             self._assert_owner(conn, now)
             row = conn.execute(
-                "SELECT task_id, attempt_id FROM notification_outbox WHERE token=?",
+                "SELECT o.task_id, o.attempt_id, o.state, t.owner_epoch "
+                "FROM notification_outbox o JOIN tasks t ON t.task_id=o.task_id "
+                "WHERE o.token=?",
                 (token,),
             ).fetchone()
             if row is None:
@@ -1663,10 +1805,32 @@ class BackgroundImageTaskManager:
             if str(row["attempt_id"] or "") != attempt_id:
                 conn.commit()
                 return False
+            if int(row["owner_epoch"]) != self.owner_epoch:
+                conn.commit()
+                return False
+            current_state = str(row["state"] or "")
+            if current_state in NOTIFICATION_TERMINAL_STATES:
+                conn.commit()
+                return current_state == state
+            allowed = {
+                "claimed": {
+                    "claimed",
+                    "queued",
+                    *NOTIFICATION_TERMINAL_STATES,
+                },
+                "queued": {
+                    "claimed",
+                    "queued",
+                    *NOTIFICATION_TERMINAL_STATES,
+                },
+            }
+            if state not in allowed.get(current_state, set()):
+                conn.commit()
+                return False
             changed = conn.execute(
                 "UPDATE notification_outbox SET state=?, updated_at_ms=? "
-                "WHERE token=? AND attempt_id=?",
-                (state, now, token, attempt_id),
+                "WHERE token=? AND attempt_id=? AND state=?",
+                (state, now, token, attempt_id, current_state),
             ).rowcount
             if changed != 1:
                 conn.rollback()
@@ -1679,10 +1843,19 @@ class BackgroundImageTaskManager:
                 record["notification_state"] = state
                 record["notification_sent_at"] = now if state == "sent" else 0
                 record["updated_at"] = now
-                conn.execute(
-                    "UPDATE tasks SET record_json=?, updated_at_ms=? WHERE task_id=?",
-                    (self._encode_record(record), now, row["task_id"]),
-                )
+                task_changed = conn.execute(
+                    "UPDATE tasks SET record_json=?, updated_at_ms=? "
+                    "WHERE task_id=? AND owner_epoch=?",
+                    (
+                        self._encode_record(record),
+                        now,
+                        row["task_id"],
+                        self.owner_epoch,
+                    ),
+                ).rowcount
+                if task_changed != 1:
+                    conn.rollback()
+                    return False
             conn.commit()
         return True
 
@@ -1744,12 +1917,20 @@ class BackgroundImageTaskManager:
             conn.execute("BEGIN IMMEDIATE")
             self._assert_owner(conn, now)
             existing = conn.execute(
-                "SELECT delivery_state FROM receipts WHERE send_attempt_id=?",
+                "SELECT task_id, item_id, kind, transport, delivery_state "
+                "FROM receipts WHERE send_attempt_id=?",
                 (send_attempt_id,),
             ).fetchone()
-            if existing is not None and existing["delivery_state"] != "attempting":
-                conn.commit()
-                return False
+            if existing is not None:
+                same_attempt = (
+                    str(existing["task_id"] or "") == task_id
+                    and str(existing["item_id"] or "") == item_id
+                    and str(existing["kind"] or "") == kind
+                    and str(existing["transport"] or "") == transport
+                )
+                if not same_attempt or existing["delivery_state"] != "attempting":
+                    conn.commit()
+                    return False
             changed = conn.execute(
                 "INSERT INTO receipts(send_attempt_id, task_id, item_id, kind, "
                 "delivery_state, transport, response_digest, created_at_ms) "
@@ -1914,6 +2095,8 @@ class BackgroundImageTaskManager:
         self.accepting = False
         for event in self._cancel_events.values():
             event.set()
+        for event in self._notification_events.values():
+            event.set()
         for task in list(self._managed_tasks):
             task.cancel()
         pending = list(self._managed_tasks)
@@ -1937,6 +2120,9 @@ class BackgroundImageTaskManager:
         self._ready_by_parent.clear()
         self._parent_ring.clear()
         self._parent_in_ring.clear()
+        self._notification_events.clear()
+        self._notification_locks.clear()
+        self._notification_lock_users.clear()
 
     async def _heartbeat_loop(self) -> None:
         while not self._closing:
@@ -1980,6 +2166,168 @@ class BackgroundImageTaskManager:
                         "[background-image] GC failed: %s",
                         self.sanitize_error(exc),
                     )
+
+    async def _health_loop(self) -> None:
+        while not self._closing:
+            await asyncio.sleep(300)
+            try:
+                snapshot = await self.health_snapshot()
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                self._health_failure_count += 1
+                if self.log is not None:
+                    self.log.warning(
+                        "[background-image] health check failed: consecutive=%s err=%s",
+                        self._health_failure_count,
+                        self.sanitize_error(exc),
+                    )
+                if self._health_failure_count >= 3:
+                    self.accepting = False
+                    if self.log is not None:
+                        self.log.error(
+                            "[background-image] intake disabled after repeated health check failures"
+                        )
+                continue
+
+            self._health_failure_count = 0
+            if self.log is not None:
+                self.log.info(
+                    "[background-image] health: epoch=%s managed=%s active=%s "
+                    "reservation_remaining=%s provider_running=%s ready=%s "
+                    "outbox_pending=%s outbox_sending=%s outbox_unknown=%s "
+                    "oldest_active_seconds=%s db_bytes=%s wal_bytes=%s "
+                    "wal_busy=%s wal_checkpointed=%s heartbeat_age_ms=%s",
+                    snapshot["owner_epoch"],
+                    snapshot["managed_tasks"],
+                    snapshot["active_tasks"],
+                    snapshot["reservation_remaining"],
+                    snapshot["provider_running"],
+                    snapshot["ready_work"],
+                    snapshot["outbox_pending"],
+                    snapshot["outbox_sending"],
+                    snapshot["outbox_unknown"],
+                    snapshot["oldest_active_seconds"],
+                    snapshot["db_bytes"],
+                    snapshot["wal_bytes"],
+                    snapshot["wal_busy"],
+                    snapshot["wal_checkpointed"],
+                    snapshot["heartbeat_age_ms"],
+                )
+
+    async def health_snapshot(self) -> dict[str, int | str]:
+        """Return a durable health snapshot and run a passive WAL checkpoint.
+
+        Returns:
+            Counts and storage metrics used by runtime monitoring.
+
+        Raises:
+            BackgroundTaskError: The database or reservation ledger is inconsistent.
+            BackgroundTaskOwnerError: This manager no longer owns the ledger.
+        """
+
+        now = self.now_ms()
+        async with self._db_lock:
+            snapshot = await asyncio.to_thread(self._health_snapshot_sync, now)
+        snapshot.update(
+            {
+                "managed_tasks": len(self._managed_tasks),
+                "provider_running": self._provider_running,
+                "ready_work": sum(
+                    len(queue) for queue in self._ready_by_parent.values()
+                ),
+            }
+        )
+        theoretical_limit = self.max_queued * 2 + self.max_notification_backlog + 16
+        if int(snapshot["managed_tasks"]) > theoretical_limit:
+            raise BackgroundTaskError(
+                "Managed background task count exceeded the bounded runtime limit"
+            )
+        if int(snapshot["outbox_active"]) * 5 >= self.max_notification_backlog * 4:
+            raise BackgroundTaskError(
+                "Background notification outbox reached 80% of its hard limit"
+            )
+        return snapshot
+
+    def _health_snapshot_sync(self, now: int) -> dict[str, int | str]:
+        with self._connect() as conn:
+            self._assert_owner(conn, now)
+            check = conn.execute("PRAGMA quick_check").fetchone()
+            if check is None or str(check[0]).lower() != "ok":
+                raise BackgroundTaskError(f"Task database quick_check failed: {check}")
+            inconsistent = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM tasks t "
+                    "JOIN reservations r ON r.task_id=t.task_id "
+                    "WHERE (t.state IN ("
+                    + ",".join("?" for _ in TERMINAL_STATES)
+                    + ") AND (r.remaining<>0 OR r.released<>1)) "
+                    "OR (t.state IN ("
+                    + ",".join("?" for _ in ACTIVE_STATES)
+                    + ") AND r.released<>0)",
+                    (*tuple(sorted(TERMINAL_STATES)), *tuple(sorted(ACTIVE_STATES))),
+                ).fetchone()[0]
+            )
+            if inconsistent:
+                raise BackgroundTaskError(
+                    f"Reservation ledger contains {inconsistent} inconsistent task rows"
+                )
+            active_states = tuple(sorted(ACTIVE_STATES))
+            active_tasks = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE state IN ("
+                    + ",".join("?" for _ in active_states)
+                    + ")",
+                    active_states,
+                ).fetchone()[0]
+            )
+            oldest = conn.execute(
+                "SELECT MIN(created_at_ms) FROM tasks WHERE state IN ("
+                + ",".join("?" for _ in active_states)
+                + ")",
+                active_states,
+            ).fetchone()[0]
+            reservation_remaining = int(
+                conn.execute(
+                    "SELECT COALESCE(SUM(remaining), 0) FROM reservations"
+                ).fetchone()[0]
+            )
+            outbox = {
+                str(row[0]): int(row[1])
+                for row in conn.execute(
+                    "SELECT state, COUNT(*) FROM notification_outbox GROUP BY state"
+                ).fetchall()
+            }
+            owner = conn.execute(
+                "SELECT heartbeat_at_ms FROM runtime_owner WHERE singleton=1"
+            ).fetchone()
+            checkpoint = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        wal_path = Path(f"{self.db_path}-wal")
+        return {
+            "quick_check": "ok",
+            "owner_epoch": self.owner_epoch,
+            "heartbeat_age_ms": max(
+                0,
+                now - int(owner[0] if owner is not None else 0),
+            ),
+            "active_tasks": active_tasks,
+            "reservation_remaining": reservation_remaining,
+            "outbox_pending": outbox.get("pending", 0),
+            "outbox_sending": outbox.get("queued", 0) + outbox.get("claimed", 0),
+            "outbox_active": outbox.get("pending", 0)
+            + outbox.get("queued", 0)
+            + outbox.get("claimed", 0),
+            "outbox_unknown": outbox.get("unknown", 0),
+            "oldest_active_seconds": max(
+                0,
+                (now - int(oldest)) // 1000 if oldest is not None else 0,
+            ),
+            "db_bytes": self.db_path.stat().st_size if self.db_path.exists() else 0,
+            "wal_bytes": wal_path.stat().st_size if wal_path.exists() else 0,
+            "wal_busy": int(checkpoint[0] if checkpoint is not None else -1),
+            "wal_log_frames": int(checkpoint[1] if checkpoint is not None else -1),
+            "wal_checkpointed": int(checkpoint[2] if checkpoint is not None else -1),
+        }
 
     async def gc(self) -> list[str]:
         """Delete expired durable rows and return removed task IDs."""
