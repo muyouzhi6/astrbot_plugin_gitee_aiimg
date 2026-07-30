@@ -146,6 +146,16 @@ class _DummyStarTools:
     def get_data_dir(name: str):
         return Path("/tmp") / name
 
+    @staticmethod
+    async def create_message(**kwargs):
+        return types.SimpleNamespace(**kwargs)
+
+
+@dataclass
+class _DummyMessageMember:
+    user_id: str
+    nickname: str | None = None
+
 
 class _DummyCustomFilter:
     def __init__(self, raise_error=True, **kwargs):
@@ -154,6 +164,7 @@ class _DummyCustomFilter:
 
 class _DummyFilter:
     CustomFilter = _DummyCustomFilter
+    EventMessageType = types.SimpleNamespace(ALL="all")
 
     def __getattr__(self, name):
         def decorator_factory(*args, **kwargs):
@@ -169,6 +180,11 @@ class _SubscriptableType:
     @classmethod
     def __class_getitem__(cls, item):
         return cls
+
+
+class _McpValue:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
 
 
 @dataclass
@@ -206,6 +222,7 @@ def _clear_modules():
             "astrbot.api",
             "astrbot.api.event",
             "astrbot.api.message_components",
+            "astrbot.api.platform",
             "astrbot.api.star",
             "astrbot.core",
             "astrbot.core.utils",
@@ -236,7 +253,9 @@ def _load_module():
 
     mcp_mod = types.ModuleType("mcp")
     mcp_mod.types = types.SimpleNamespace(
-        CallToolResult=type("CallToolResult", (), {})
+        CallToolResult=_McpValue,
+        TextContent=_McpValue,
+        ImageContent=_McpValue,
     )
     sys.modules["mcp"] = mcp_mod
 
@@ -271,17 +290,25 @@ def _load_module():
         StarTools=_DummyStarTools,
     )
     _install_stub_module(
+        "astrbot.api.platform",
+        MessageMember=_DummyMessageMember,
+    )
+    _install_stub_module(
         "astrbot.core.utils.astrbot_path",
         get_astrbot_temp_path=lambda: Path("/tmp"),
     )
 
-    _install_stub_module(f"{CORE_PACKAGE_NAME}.gemini_edit", GeminiEditBackend=_StubBackend)
+    _install_stub_module(
+        f"{CORE_PACKAGE_NAME}.gemini_edit", GeminiEditBackend=_StubBackend
+    )
     _install_stub_module(
         f"{CORE_PACKAGE_NAME}.gemini_flow2api",
         Flow2ApiVideoBackend=_StubBackend,
         GeminiFlow2ApiBackend=_StubBackend,
     )
-    _install_stub_module(f"{CORE_PACKAGE_NAME}.gitee_edit", GiteeEditBackend=_StubBackend)
+    _install_stub_module(
+        f"{CORE_PACKAGE_NAME}.gitee_edit", GiteeEditBackend=_StubBackend
+    )
     _install_stub_module(
         f"{CORE_PACKAGE_NAME}.gitee_sizes",
         GITEE_SUPPORTED_SIZES=["1024x1024"],
@@ -342,7 +369,9 @@ def _load_module():
         run_batch=lambda *args, **kwargs: None,
     )
     _install_stub_module(f"{CORE_PACKAGE_NAME}.debouncer", Debouncer=_StubService)
-    _install_stub_module(f"{CORE_PACKAGE_NAME}.draw_service", ImageDrawService=_StubService)
+    _install_stub_module(
+        f"{CORE_PACKAGE_NAME}.draw_service", ImageDrawService=_StubService
+    )
     _install_stub_module(f"{CORE_PACKAGE_NAME}.edit_router", EditRouter=_StubRouter)
     _install_stub_module(
         f"{CORE_PACKAGE_NAME}.emoji_feedback",
@@ -368,8 +397,12 @@ def _load_module():
         decode_base64_image_payload=lambda *args, **kwargs: b"",
         guess_image_mime_and_ext=lambda *args, **kwargs: ("image/png", ".png"),
     )
-    _install_stub_module(f"{CORE_PACKAGE_NAME}.image_manager", ImageManager=_StubService)
-    _install_stub_module(f"{CORE_PACKAGE_NAME}.nanobanana", NanoBananaService=_StubService)
+    _install_stub_module(
+        f"{CORE_PACKAGE_NAME}.image_manager", ImageManager=_StubService
+    )
+    _install_stub_module(
+        f"{CORE_PACKAGE_NAME}.nanobanana", NanoBananaService=_StubService
+    )
     _install_stub_module(f"{CORE_PACKAGE_NAME}.ref_store", ReferenceStore=_StubStore)
     _install_stub_module(
         f"{CORE_PACKAGE_NAME}.utils",

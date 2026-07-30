@@ -4,6 +4,31 @@
     "hint": "先在最底部添加 providers（服务商），再在这里为每个功能选择 provider 链路（第一个=主用，后续=兜底）。",
     "type": "object",
     "items": {
+      "background_llm_image": {
+        "description": "LLM 生图后台任务",
+        "hint": "仅后台化 LLM 调用的单图与批量生图；直接命令仍保持同步。任务状态会进入 Bot 上下文，完成后主动回应。首版仅支持单 AstrBot 进程与 aiocqhttp / weixin_oc。",
+        "type": "object",
+        "items": {
+          "enabled": {
+            "type": "bool",
+            "description": "启用 LLM 后台生图",
+            "hint": "默认关闭。启用前请确认 AstrBot 未开启流式回复，并完成测试群灰度。",
+            "default": false
+          },
+          "max_running": {
+            "type": "int",
+            "description": "全局同时运行的图片 Provider 数量",
+            "hint": "单图和批量 child 共用此上限。建议京东云保持 2。",
+            "default": 2
+          },
+          "max_queued": {
+            "type": "int",
+            "description": "全局后台图片容量",
+            "hint": "按图片张数计数；一组 4 张批量任务会原子占用 4 个容量。",
+            "default": 16
+          }
+        }
+      },
       "draw": {
         "description": "文生图 (Text-to-Image)",
         "type": "object",

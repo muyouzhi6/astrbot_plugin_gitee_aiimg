@@ -1,21 +1,29 @@
 # AstrBot Gitee AI 图像生成插件
 
-[![Plugin Version](https://img.shields.io/badge/Version-v4.3.16-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
+[![Plugin Version](https://img.shields.io/badge/Version-v5.0.0-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16.0%2C%20%3C5-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![Platform](https://img.shields.io/badge/Primary-aiocqhttp-4caf50?style=for-the-badge)](#平台与限制)
 
-多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件，支持命令调用、`LLM tool` 调用、预设提示词、批量出图、请求模式控制、多 `API Key` 轮询、失败兜底与超时配置。
+多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件。`v5` 的核心升级是 **LLM 生图不再阻塞对话**：Bot 接下单图或批量任务后可以继续聊天，期间始终知道自己正在生成什么、完整提示词是什么，任务完成或失败后还会按当前人格主动回来回应。
 
 > [!IMPORTANT]
-> 这份文档对应 `v4.3.16` 配置结构。
+> 这份文档对应 `v5.0.0` 配置结构。
 >
-> - `v4` 与旧版 `v3 / v2` 配置不兼容，升级后请重新检查 WebUI 配置。
+> - `v5` 延续 `v4` 配置结构；从 `v3 / v2` 升级时仍需重新检查 WebUI 配置。
 > - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了发送图片前优化。
 > - 批量结果的“合并转发”当前只有 `aiocqhttp` 原生支持；其他平台会在开启回退时自动改为普通消息逐条发送。
 > - 历史更新内容见 [CHANGELOG.md](./CHANGELOG.md)。
 
-## 新版本重点
+## v5.0 核心升级：Bot 可以边聊天边拍照
 
+传统 LLM Tool 生图会把整条对话管线卡到 Provider 返回，慢模型动辄等待几分钟。`v5.0` 将单图、自拍、改图和批量 planner/child 执行放入插件自己的持久化后台任务系统：Tool 接单后立即把真实任务事实交还给 LLM，对话可以继续，图片完成后再由 Bot 主动发送并自然接上话题。
+
+- **不阻塞聊天**：单图和 `aiimg_batch_generate` 从 planner 阶段后台执行，用户与 Bot 在等待期间可以继续正常对话
+- **Bot 知道自己在做什么**：临时上下文包含任务阶段、原始请求、完整 effective prompt、批量 child 状态和图片发送结果
+- **像人一样回来交代**：图片完成、部分成功、失败、取消或重启中断后，Bot 会按当前人格主动回应，而不是悄悄发图或无声失败
+- **单图和多图都能并发后台跑**：SQLite 事务账本、全局有界并发和 parent round-robin 调度共同限制资源占用，batch 不会长期霸占 Provider
+- **会话边界清楚**：`/stop`、`/reset`、`/new`、conversation 漂移与 ContextAware session 清理都会收敛旧任务，避免图片和提示词串进新会话
+- **异常不乱重发**：发送超时或断线无法确认时记录为 `unknown`，禁止自动重发，避免 QQ / 微信收到重复图片
 - 输出参数统一支持精确尺寸、比例、分辨率和组合形式, 例如 `2048x1152`、`16:9`、`4K`、`16:9 4K`
 - 普通单图改图在没有显式比例时自动继承输入图比例, 自拍和多图改图不会被参考图比例锁定
 - fallback 到不同 provider 时会按各 backend 能力重新解析输出参数
@@ -41,6 +49,36 @@
 - `LLM tool` 单图调用与批量调用
 
 核心设计是把 **服务商实例 `providers`** 和 **功能链路 `features.*.chain`** 分开。你可以给同一类能力挂多个 provider，插件会按链路顺序兜底切换。
+
+## LLM 后台生图
+
+后台模式只作用于 `aiimg_generate`、`gitee_draw_image`、`gitee_edit_image` 和 `aiimg_batch_generate`。`/文生图`、`/改图`、`/自拍`、`/批量` 等直接命令仍保持原同步行为。
+
+```json
+{
+  "features": {
+    "background_llm_image": {
+      "enabled": true,
+      "max_running": 2,
+      "max_queued": 16
+    }
+  }
+}
+```
+
+- `max_running` 是所有单图和 batch child 共用的图片 Provider 并发数，京东云建议从 `2` 开始。
+- `max_queued` 按图片张数预留容量。例如一组 `4` 张批量任务会原子占用 `4` 个容量，容量不足时整组拒绝，不会只接一半。
+- Tool 完成参数校验、完整提示词构建和输入图片固化后立即返回，真正的 planner、图片 Provider 调用和发送在后台执行。
+- 用户继续聊天或询问照片时，Bot 能看到任务处于 `planning`、`queued`、`running`、`sending` 或终态，并能读取真实 effective prompt；批量完整提示词可由只读 Tool `aiimg_task_status` 分页查询。
+- 图片先作为独立 image-only 消息发送，随后 Bot 再按当前人格自然说明完成、部分成功或失败。若 ContextAware session 已被清空或 conversation 已切换，则使用确定性主动通知，不把旧任务重新塞进新上下文。
+- `/stop` 会取消当前会话中该用户的后台图片任务；成功的 `/reset`、`/new` 会通过发送闸门阻止晚到图片污染新会话。权限不足而失败的 reset 不会误取消任务。
+- AstrBot 或插件重启后，尚未完成的 Provider 请求不会自动续跑或重复扣费，而是标记为 `interrupted` 并通知用户。
+
+> [!IMPORTANT]
+> 后台模式默认关闭，首版只支持单 AstrBot 进程、单个有效 Gitee 插件 owner，以及 `aiocqhttp` / `weixin_oc`。AstrBot 开启 `provider_settings.streaming_response` 时会自动回退同步路径，因为流式回复无法可靠使用发送前后的确认 Hook。
+
+> [!NOTE]
+> QQ / 微信 adapter 当前没有暴露端到端 receipt 或幂等发送键。发送调用成功返回只代表 adapter transport accepted；发生 timeout、connection reset 或进程崩溃窗口时，任务会记录为 `unknown` 并禁止自动重发，避免重复图片。
 
 ## 配置概念：providers 与 chain
 

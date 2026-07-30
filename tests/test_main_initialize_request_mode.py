@@ -120,6 +120,16 @@ class _DummyStarTools:
     def get_data_dir(name: str):
         return Path("/tmp") / name
 
+    @staticmethod
+    async def create_message(**kwargs):
+        return types.SimpleNamespace(**kwargs)
+
+
+@dataclass
+class _DummyMessageMember:
+    user_id: str
+    nickname: str | None = None
+
 
 class _DummyCustomFilter:
     def __init__(self, raise_error=True, **kwargs):
@@ -128,6 +138,7 @@ class _DummyCustomFilter:
 
 class _DummyFilter:
     CustomFilter = _DummyCustomFilter
+    EventMessageType = types.SimpleNamespace(ALL="all")
 
     def __getattr__(self, name):
         def decorator_factory(*args, **kwargs):
@@ -145,6 +156,11 @@ class _SubscriptableType:
         return cls
 
 
+class _McpValue:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
 def _clear_modules():
     for name in list(sys.modules):
         if name.startswith(PACKAGE_NAME) or name in {
@@ -152,6 +168,7 @@ def _clear_modules():
             "astrbot.api",
             "astrbot.api.event",
             "astrbot.api.message_components",
+            "astrbot.api.platform",
             "astrbot.api.star",
             "astrbot.core",
             "astrbot.core.utils",
@@ -182,7 +199,9 @@ def _load_module():
 
     mcp_mod = types.ModuleType("mcp")
     mcp_mod.types = types.SimpleNamespace(
-        CallToolResult=type("CallToolResult", (), {})
+        CallToolResult=_McpValue,
+        TextContent=_McpValue,
+        ImageContent=_McpValue,
     )
     sys.modules["mcp"] = mcp_mod
 
@@ -215,6 +234,10 @@ def _load_module():
         Context=type("Context", (), {}),
         Star=_DummyStar,
         StarTools=_DummyStarTools,
+    )
+    _install_stub_module(
+        "astrbot.api.platform",
+        MessageMember=_DummyMessageMember,
     )
     _install_stub_module(
         "astrbot.core.utils.astrbot_path",

@@ -1,5 +1,29 @@
 # 更新日志
 
+## [v5.0.0] - 2026-07-30
+
+### 新增
+
+- 新增可选的 LLM 后台生图，`aiimg_generate` 与 `aiimg_batch_generate` 在完成输入固化和容量预留后立即返回，planner、Provider 调用和图片发送均在后台执行。
+- 新增 SQLite 事务任务账本、单实例 owner lease、owner epoch fencing、WAL、容量 reservation、发送 receipt、通知 outbox 和重启恢复。
+- 新增单图与 batch child 共享的全局有界并发调度；batch 使用 parent round-robin，避免大批量任务长期独占 Provider 槽。
+- 新增 `aiimg_task_status` 只读 Tool，可分页查询任务状态、每张图的完整 effective prompt、比例和发送结果。
+- 新增临时 LLM 状态注入，Bot 在后续聊天中可以看到任务正在规划、排队、生成或发送，以及图片是否已经发出。
+- 新增完成、部分成功、失败、取消和重启中断的主动回应；正常会话通过 synthetic event 重入 AstrBot pipeline，继续兼容 ContextAware 场景注入。
+
+### 稳定性
+
+- 后台 worker 不持有已经结束的 `AstrMessageEvent`，输入图片在 Tool 返回前固化到插件数据目录，发送前重新定位当前 platform adapter。
+- 图片使用独立 image-only attempt；timeout、connection reset 和崩溃歧义收敛为 `delivery_state=unknown`，禁止自动重发。
+- `/stop` 可取消当前用户的后台任务；成功的 `/reset`、`/new` 使用发送闸门取消旧任务，权限失败不会误取消。
+- ContextAware session 不存在、conversation 漂移或重启恢复时不创建 synthetic 用户内容，改用确定性主动通知。
+- 后台功能默认关闭；只支持单 AstrBot 进程以及 `aiocqhttp` / `weixin_oc`，流式回复开启时自动回退原同步路径。
+
+### 测试
+
+- 新增任务账本与 pipeline 测试，覆盖 owner lease、容量原子预留、终态保护、公平调度、取消、重启恢复、通知 CAS、输入固化、Tool 提前返回、状态注入、ContextAware gate 和发送确认。
+- 全量回归测试 `148 passed`，命令为 `PYTHONPATH=.:tests uvx --from pytest --with pytest-asyncio --with pillow --with httpx --with aiohttp --with aiofiles --with openai --with curl-cffi pytest -q`。
+
 ## [v4.3.16] - 2026-07-30
 
 ### 修复
