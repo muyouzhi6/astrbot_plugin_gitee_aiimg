@@ -69,6 +69,10 @@ class _Event:
     def chain_result(self, chain):
         return _Result(chain)
 
+    async def send(self, result):
+        self.sent_result = result
+        self._has_send_oper = True
+
 
 class _Adapter:
     def __init__(self):
@@ -365,10 +369,124 @@ async def test_ack_is_confirmed_only_with_plain_digest_and_transport_send(tmp_pa
     assert decorated["ack_state"] == "decorated"
     assert any(isinstance(item, mod.Plain) for item in event.get_result().chain)
 
-    event._has_send_oper = True
+    await plugin.arm_background_task_result_transport(event)
+    event.get_result().chain[0].text = "downstream TTS rewrote this reply"
+    await event.send(event.get_result())
     await plugin.confirm_background_task_result(event)
     sent = await manager.get_task(record["task_id"])
     assert sent["ack_state"] == "sent"
+    await manager.cancel_task(record["task_id"], "test cleanup")
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_completion_transport_probe_survives_downstream_chain_rewrite(tmp_path):
+    mod, _ = _load_module()
+    manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await manager.start()
+    plugin = _plugin(mod, manager)
+    target = _target(mod)
+    record, _ = await manager.create_task_record(
+        _base_record(manager, "img_completion_probe", target),
+        reservation=1,
+    )
+    terminal = await manager.transition(
+        record["task_id"],
+        "completed",
+        {
+            "image_generated": True,
+            "image_sent": True,
+            "delivery_state": "confirmed",
+        },
+        queue_notification=True,
+    )
+    token = terminal["notification_token"]
+    attempt_id = "notify-probe"
+    claimed = await manager.claim_notification(token, attempt_id)
+    assert claimed is not None
+    await manager.mark_notification(token, "queued", attempt_id=attempt_id)
+
+    event = _Event()
+    event.set_extra("_gitee_bg_task_id", record["task_id"])
+    event.set_extra("_gitee_bg_notification_token", token)
+    event.set_extra("_gitee_bg_notification_attempt", attempt_id)
+    event.set_result(_Result([mod.Plain("照片发出来了。")]))
+    await plugin.decorate_background_task_result(event)
+    await plugin.arm_background_task_result_transport(event)
+    event.get_result().chain = [types.SimpleNamespace(file="voice.wav")]
+    await event.send(event.get_result())
+    await plugin.confirm_background_task_result(event)
+
+    updated = await manager.get_task(record["task_id"])
+    assert updated["notification_state"] == "sent"
+    assert event.send == event._gitee_bg_original_send
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_transport_probe_does_not_confirm_failed_send(tmp_path):
+    mod, _ = _load_module()
+    manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await manager.start()
+    plugin = _plugin(mod, manager)
+    target = _target(mod)
+    record, _ = await manager.create_task_record(
+        _base_record(manager, "img_ack_failed_send", target),
+        reservation=1,
+    )
+
+    class _FailedEvent(_Event):
+        async def send(self, result):
+            raise RuntimeError("transport failed")
+
+    event = _FailedEvent()
+    event.set_extra("_gitee_bg_ack_task_id", record["task_id"])
+    await plugin.decorate_background_task_result(event)
+    await plugin.arm_background_task_result_transport(event)
+    with pytest.raises(RuntimeError, match="transport failed"):
+        await event.send(event.get_result())
+    await plugin.confirm_background_task_result(event)
+
+    updated = await manager.get_task(record["task_id"])
+    assert updated["ack_state"] == "unknown"
+    await manager.cancel_task(record["task_id"], "test cleanup")
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_transport_probe_marks_split_send_partial_failure_unknown(tmp_path):
+    mod, _ = _load_module()
+    manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await manager.start()
+    plugin = _plugin(mod, manager)
+    target = _target(mod)
+    record, _ = await manager.create_task_record(
+        _base_record(manager, "img_ack_partial_send", target),
+        reservation=1,
+    )
+
+    class _PartialEvent(_Event):
+        def __init__(self):
+            super().__init__()
+            self.send_calls = 0
+
+        async def send(self, result):
+            self.send_calls += 1
+            if self.send_calls == 2:
+                raise RuntimeError("second split send failed")
+            self._has_send_oper = True
+
+    event = _PartialEvent()
+    event.set_extra("_gitee_bg_ack_task_id", record["task_id"])
+    await plugin.decorate_background_task_result(event)
+    await plugin.arm_background_task_result_transport(event)
+    await event.send(event.get_result())
+    with pytest.raises(RuntimeError, match="second split send failed"):
+        await event.send(event.get_result())
+    await plugin.confirm_background_task_result(event)
+
+    updated = await manager.get_task(record["task_id"])
+    assert updated["ack_state"] == "unknown"
     await manager.cancel_task(record["task_id"], "test cleanup")
     await manager.close()
 
@@ -633,6 +751,48 @@ async def test_background_batch_rejects_planner_count_mismatch(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_background_single_provider_failure_persists_and_dispatches(tmp_path):
+    mod, _ = _load_module()
+    manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await manager.start()
+    plugin = _plugin(mod, manager)
+    target = _target(mod)
+    record, _ = await manager.create_task_record(
+        _base_record(manager, "img_provider_failure", target),
+        reservation=1,
+    )
+    dispatched = []
+
+    async def fail_provider(self, current_manager, job):
+        raise RuntimeError("controlled provider failure")
+
+    async def capture_dispatch(self, current_manager, current_record, current_target):
+        dispatched.append(current_record)
+
+    plugin._execute_prepared_image_job = types.MethodType(fail_provider, plugin)
+    plugin._dispatch_background_completion = types.MethodType(
+        capture_dispatch,
+        plugin,
+    )
+    job = mod.PreparedImageJob(
+        mode="text",
+        user_prompt="failure test",
+        effective_prompt="controlled failure prompt",
+        backend=None,
+        output={"exact_size": None, "aspect_ratio": "3:4", "resolution": "2K"},
+    )
+
+    await plugin._run_background_single(manager, record["task_id"], job, target)
+
+    current = await manager.get_task(record["task_id"])
+    assert current["state"] == "failed"
+    assert current["error_code"] == "provider_failed"
+    assert current["notification_state"] == "pending"
+    assert len(dispatched) == 1
+    await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_failed_reset_releases_send_gate_without_cancelling_task(tmp_path):
     mod, _ = _load_module()
     manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
@@ -658,6 +818,52 @@ async def test_failed_reset_releases_send_gate_without_cancelling_task(tmp_path)
     current = await manager.get_task(record["task_id"])
     assert current["state"] == "queued"
     await manager.cancel_task(record["task_id"], "test cleanup")
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_successful_new_cancels_and_hides_old_conversation_task(tmp_path):
+    mod, _ = _load_module()
+    manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await manager.start()
+    plugin = _plugin(mod, manager)
+    plugin._background_send_gates = {}
+    target = _target(mod)
+    record, _ = await manager.create_task_record(
+        _base_record(manager, "img_new_conversation", target),
+        reservation=1,
+    )
+    dispatched = []
+
+    async def capture_dispatch(self, current_manager, current_record, current_target):
+        dispatched.append(current_record)
+
+    plugin._dispatch_background_completion = types.MethodType(
+        capture_dispatch,
+        plugin,
+    )
+    event = _Event()
+    event.message_str = "/new"
+    await plugin.handle_background_session_commands(event)
+    event.set_extra("_clean_group_context_session", True)
+    await plugin.confirm_background_task_result(event)
+
+    current = await manager.get_task(record["task_id"])
+    assert current["state"] == "cancelled"
+    assert current["suppress_future_injection"] is True
+    assert len(dispatched) == 1
+    assert target.umo not in plugin._background_send_gates
+
+    plugin.context.conversation_manager = _ConversationManager("new-conversation")
+    req = types.SimpleNamespace(
+        conversation=None,
+        extra_user_content_parts=[],
+        system_prompt="",
+        func_tool=None,
+    )
+    await plugin.inject_background_image_tasks(_Event(), req)
+    assert req.conversation.cid == "new-conversation"
+    assert req.extra_user_content_parts == []
     await manager.close()
 
 

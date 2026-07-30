@@ -985,6 +985,48 @@ class GiteeAIImagePlugin(Star):
         if completion_task_id:
             event.set_extra("_gitee_bg_completion_plain", plain)
 
+    @filter.on_decorating_result(priority=-1000000)
+    async def arm_background_task_result_transport(
+        self, event: AstrMessageEvent
+    ) -> None:
+        """Track the exact final result send after all normal decorators run.
+
+        Args:
+            event: Event whose final result will enter AstrBot's respond stage.
+        """
+
+        ack_task_id = str(event.get_extra("_gitee_bg_ack_task_id", "") or "")
+        token = str(event.get_extra("_gitee_bg_notification_token", "") or "")
+        if not ack_task_id and not token:
+            return
+        if bool(event.get_extra("_gitee_bg_transport_probe_armed", False)):
+            return
+
+        original_send = event.send
+
+        async def tracked_send(*args, **kwargs):
+            """Forward a final send and record only a successful return.
+
+            Args:
+                *args: Positional arguments accepted by the adapter send method.
+                **kwargs: Keyword arguments accepted by the adapter send method.
+            """
+
+            try:
+                await original_send(*args, **kwargs)
+            except BaseException:
+                failures = int(
+                    event.get_extra("_gitee_bg_result_send_failures", 0) or 0
+                )
+                event.set_extra("_gitee_bg_result_send_failures", failures + 1)
+                raise
+            successes = int(event.get_extra("_gitee_bg_result_send_successes", 0) or 0)
+            event.set_extra("_gitee_bg_result_send_successes", successes + 1)
+
+        event.set_extra("_gitee_bg_transport_probe_armed", True)
+        setattr(event, "_gitee_bg_original_send", original_send)
+        setattr(event, "send", tracked_send)
+
     @filter.after_message_sent(priority=200)
     async def confirm_background_task_result(self, event: AstrMessageEvent) -> None:
         """Confirm acceptance and terminal text only after adapter send returns.
@@ -998,15 +1040,25 @@ class GiteeAIImagePlugin(Star):
             return
         expected = str(event.get_extra("_gitee_bg_final_plain_digest", "") or "")
         plain, actual = self._background_plain_digest(event)
+        probe_armed = bool(event.get_extra("_gitee_bg_transport_probe_armed", False))
+        probe_successes = int(
+            event.get_extra("_gitee_bg_result_send_successes", 0) or 0
+        )
+        probe_failures = int(event.get_extra("_gitee_bg_result_send_failures", 0) or 0)
+        probe_ok = probe_successes > 0 and probe_failures == 0
         transport_ok = bool(getattr(event, "_has_send_oper", False))
         digest_ok = bool(plain and expected and actual == expected)
+        confirmed = probe_ok if probe_armed else transport_ok and digest_ok
+        original_send = getattr(event, "_gitee_bg_original_send", None)
+        if original_send is not None:
+            setattr(event, "send", original_send)
 
         ack_task_id = str(event.get_extra("_gitee_bg_ack_task_id", "") or "")
         if ack_task_id:
             try:
                 await manager.mark_ack(
                     ack_task_id,
-                    "sent" if transport_ok and digest_ok else "unknown",
+                    "sent" if confirmed else "unknown",
                 )
             except BackgroundTaskError:
                 pass
@@ -1014,10 +1066,35 @@ class GiteeAIImagePlugin(Star):
         token = str(event.get_extra("_gitee_bg_notification_token", "") or "")
         attempt_id = str(event.get_extra("_gitee_bg_notification_attempt", "") or "")
         if token and attempt_id:
-            await manager.mark_notification(
+            marked = await manager.mark_notification(
                 token,
-                "sent" if transport_ok and digest_ok else "unknown",
+                "sent" if confirmed else "unknown",
                 attempt_id=attempt_id,
+            )
+            if not marked:
+                logger.warning(
+                    "[background-image] notification confirmation lost its claim: token_hash=%s",
+                    hashlib.sha256(token.encode()).hexdigest()[:12],
+                )
+
+        if ack_task_id or token:
+            logger.info(
+                "[background-image] result confirmation: kind=%s task=%s "
+                "probe_armed=%s probe_ok=%s probe_successes=%s probe_failures=%s "
+                "transport_flag=%s digest_ok=%s "
+                "plain_len=%s expected_hash=%s actual_hash=%s state=%s",
+                "completion" if token else "acceptance",
+                str(event.get_extra("_gitee_bg_task_id", "") or ack_task_id),
+                probe_armed,
+                probe_ok,
+                probe_successes,
+                probe_failures,
+                transport_ok,
+                digest_ok,
+                len(plain),
+                expected[:12],
+                actual[:12],
+                "sent" if confirmed else "unknown",
             )
 
         reset_command = str(event.get_extra("_gitee_bg_reset_candidate", "") or "")
