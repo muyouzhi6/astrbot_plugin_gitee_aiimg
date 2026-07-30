@@ -76,27 +76,11 @@ from .core.ref_store import ReferenceStore
 from .core.utils import close_session, collect_at_user_ids, get_images_from_event
 from .core.video_manager import VideoManager
 
-_BATCH_COMMAND_PATTERN = re.compile(r"[/!！.。．]批量(?:\s*\d+|\d+)")
 _async_pause = asyncio.sleep
-
-_IMAGE_COMMAND_NAMES = (
-    "自拍参考",
-    "文生图",
-    "aiimg",
-    "生图",
-    "画图",
-    "绘图",
-    "出图",
-    "aiedit",
-    "图生图",
-    "改图",
-    "修图",
-    "自拍",
-)
 
 
 class ImageCommandWakePrefixFilter(filter.CustomFilter):
-    """Require a real configured wake prefix for image commands in group chat."""
+    """Require AstrBot's real wake behavior for regex-based plugin commands."""
 
     @staticmethod
     def _wake_prefixes(cfg: object) -> tuple[str, ...]:
@@ -119,21 +103,37 @@ class ImageCommandWakePrefixFilter(filter.CustomFilter):
             return not bool(getattr(message_obj, "group", None))
 
     @staticmethod
-    def _plain_has_prefixed_command(text: str, prefixes: tuple[str, ...]) -> bool:
+    def _plain_has_configured_prefix(text: str, prefixes: tuple[str, ...]) -> bool:
+        """Check whether a raw text segment starts with a configured prefix.
+
+        Args:
+            text: Raw plain-text segment from the platform message chain.
+            prefixes: Wake prefixes from AstrBot's active configuration.
+
+        Returns:
+            Whether the segment begins with a non-empty prefixed token.
+        """
         plain = str(text or "").lstrip()
         for prefix in prefixes:
-            for command_name in _IMAGE_COMMAND_NAMES:
-                token = f"{prefix}{command_name}"
-                if not plain.startswith(token):
-                    continue
-                end = len(token)
-                if end == len(plain) or plain[end].isspace():
-                    return True
+            if not plain.startswith(prefix):
+                continue
+            end = len(prefix)
+            if end < len(plain) and not plain[end].isspace():
+                return True
         return False
 
     def filter(self, event: AstrMessageEvent, cfg: object) -> bool:
+        """Apply wake-prefix gating before a regex handler can wake the event.
+
+        Args:
+            event: Current AstrBot message event.
+            cfg: Active AstrBot base configuration.
+
+        Returns:
+            Whether the event is allowed to reach the plugin handler.
+        """
         if self._is_private_chat(event):
-            return True
+            return bool(getattr(event, "is_at_or_wake_command", False))
         prefixes = self._wake_prefixes(cfg)
         try:
             chain = event.get_messages()
@@ -141,7 +141,7 @@ class ImageCommandWakePrefixFilter(filter.CustomFilter):
             chain = []
         return any(
             isinstance(seg, Plain)
-            and self._plain_has_prefixed_command(
+            and self._plain_has_configured_prefix(
                 str(getattr(seg, "text", "") or ""),
                 prefixes,
             )
@@ -626,7 +626,11 @@ class GiteeAIImagePlugin(Star):
 
         # 读取 AstrBot 配置的唤醒前缀，用于限制命令匹配范围
         try:
-            raw = self.context.base_config.get("wake_prefix", ["/"])
+            if hasattr(self.context, "get_config"):
+                base_config = self.context.get_config()
+            else:
+                base_config = getattr(self.context, "base_config", {})
+            raw = base_config.get("wake_prefix", ["/"])
             if isinstance(raw, str):
                 self._wake_prefixes: tuple[str, ...] = (raw,) if raw else ("/",)
             elif isinstance(raw, list):
@@ -1710,10 +1714,13 @@ class GiteeAIImagePlugin(Star):
             await self._end_user_job(user_id, kind="image")
 
     @filter.regex(r"[/!！.。．]批量(?:\s*\d+|\d+)(?:\s|$)", priority=-10)
+    @filter.custom_filter(ImageCommandWakePrefixFilter)
     async def batch_image_command(self, event: AstrMessageEvent):
         """批量图片任务入口。"""
+        fragment = self._extract_batch_command_fragment(event)
+        if not fragment:
+            return
         event.should_call_llm(True)
-        fragment = self._extract_batch_command_fragment(event.message_str)
         parsed = self._parse_structured_image_request(fragment)
         if parsed is None or parsed.batch_count <= 1:
             await mark_failed(event)
@@ -1800,14 +1807,9 @@ class GiteeAIImagePlugin(Star):
         prompt = ""
         matched = False
         for name in command_names:
-            prompt = self._extract_command_arg_anywhere(msg, name, prefixes=self._cmd_prefixes())
-            found_in_chain, chain_prompt = self._extract_command_arg_from_chain(
-                event, name
-            )
-            if prompt or found_in_chain:
+            found_in_chain, prompt = self._extract_command_arg_from_chain(event, name)
+            if found_in_chain:
                 matched = True
-                if not prompt:
-                    prompt = chain_prompt
                 break
         if matched:
             event.should_call_llm(True)
@@ -1815,9 +1817,9 @@ class GiteeAIImagePlugin(Star):
             event.stop_event()
 
     @filter.regex(r".*[/!！.。．][^\s]+", priority=-10)
+    @filter.custom_filter(ImageCommandWakePrefixFilter)
     async def preset_regex_fallback(self, event: AstrMessageEvent):
         """兼容"图片在前、预设命令在后"的消息：确保 /<预设名> 能触发。"""
-        msg = (event.message_str or "").strip()
         preset_names = self.edit.get_preset_names()
         if not preset_names:
             return
@@ -1836,20 +1838,19 @@ class GiteeAIImagePlugin(Star):
         except Exception:
             return
 
-        # 在任意位置找到第一个匹配的预设命令
+        # Match only a complete preset command at the start of a raw text segment.
         used_preset: str | None = None
+        extra_prompt = ""
         for name in preset_names:
-            for prefix in self._cmd_prefixes():
-                if f"{prefix}{name}" in msg:
-                    used_preset = name
-                    break
-            if used_preset:
+            found, prompt = self._extract_command_arg_from_chain(event, name)
+            if found:
+                used_preset = name
+                extra_prompt = prompt
                 break
 
         if not used_preset:
             return
 
-        extra_prompt = self._extract_command_arg_anywhere(msg, used_preset, prefixes=self._cmd_prefixes())
         await self._do_edit_direct(event, extra_prompt, preset=used_preset)
         event.stop_event()
 
@@ -1877,13 +1878,7 @@ class GiteeAIImagePlugin(Star):
         """兼容"图片在前、文字在后"的消息：确保 /自拍 能触发。"""
         if self._has_activated_handler(event, "selfie_command"):
             return
-        msg = (event.message_str or "").strip()
-        found, prompt = self._find_command_arg_anywhere(
-            msg,
-            "自拍",
-            allow_bare=False,
-            prefixes=self._cmd_prefixes(),
-        )
+        found, prompt = self._extract_command_arg_from_chain(event, "自拍")
         if found:
             event.should_call_llm(True)
             if not self._is_selfie_enabled():
@@ -1946,13 +1941,7 @@ class GiteeAIImagePlugin(Star):
         """兼容"图片在前、文字在后"的消息：确保 /自拍参考 能触发。"""
         if self._has_activated_handler(event, "selfie_reference_command"):
             return
-        msg = (event.message_str or "").strip()
-        found, arg = self._find_command_arg_anywhere(
-            msg,
-            "自拍参考",
-            allow_bare=False,
-            prefixes=self._cmd_prefixes(),
-        )
+        found, arg = self._extract_command_arg_from_chain(event, "自拍参考")
         if not found:
             return
         event.should_call_llm(True)
@@ -2060,14 +2049,14 @@ class GiteeAIImagePlugin(Star):
         return
 
     @filter.regex(r"[/!！.。．]视频(\s|$)", priority=-10)
+    @filter.custom_filter(ImageCommandWakePrefixFilter)
     async def generate_video_regex_fallback(self, event: AstrMessageEvent):
         """兼容"图片在前、文字在后"的消息：确保 /视频 能触发。"""
-        msg = (event.message_str or "").strip()
         if self._is_direct_command_message(event, ("视频",)):
             return
 
-        arg = self._extract_command_arg_anywhere(msg, "视频", prefixes=self._cmd_prefixes())
-        if not arg and not any(f"{p}视频" in msg for p in self._cmd_prefixes()):
+        found, arg = self._extract_command_arg_from_chain(event, "视频")
+        if not found:
             return
 
         event.should_call_llm(True)
@@ -2865,13 +2854,31 @@ class GiteeAIImagePlugin(Star):
             known_provider_ids=set(self.registry.provider_ids()),
         )
 
-    @staticmethod
-    def _extract_batch_command_fragment(message: str) -> str:
-        text = str(message or "")
-        match = _BATCH_COMMAND_PATTERN.search(text)
-        if not match:
+    def _extract_batch_command_fragment(self, event: AstrMessageEvent) -> str:
+        """Extract a batch command from the start of a raw text segment.
+
+        Args:
+            event: Current AstrBot message event.
+
+        Returns:
+            The complete batch command fragment, or an empty string when absent.
+        """
+        try:
+            chain = event.get_messages()
+        except Exception:
             return ""
-        return text[match.start() :].strip()
+
+        for seg in chain or []:
+            if not isinstance(seg, Plain):
+                continue
+            plain = str(getattr(seg, "text", "") or "").lstrip()
+            for prefix in self._cmd_prefixes():
+                if re.match(
+                    rf"{re.escape(prefix)}批量(?:\s*\d+|\d+)(?:\s|$)",
+                    plain,
+                ):
+                    return plain
+        return ""
 
     def _batch_mode_label(self, spec: ImageTaskSpec) -> str:
         if spec.mode == "draw":

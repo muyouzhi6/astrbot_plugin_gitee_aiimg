@@ -367,7 +367,9 @@ class MainInitializeRequestModeTests(unittest.IsolatedAsyncioTestCase):
     async def test_initialize_logs_fallback_warning_and_builds_consistent_backend(self):
         mod, logger = _load_module()
         plugin = mod.GiteeAIImagePlugin(
-            context=types.SimpleNamespace(),
+            context=types.SimpleNamespace(
+                get_config=lambda: {"wake_prefix": ["."]},
+            ),
             config={
                 "providers": [
                     {
@@ -387,6 +389,7 @@ class MainInitializeRequestModeTests(unittest.IsolatedAsyncioTestCase):
 
         await plugin.initialize()
 
+        self.assertEqual(plugin._wake_prefixes, (".",))
         backend = plugin.registry.get_backend("chat-provider")
 
         self.assertEqual(backend.kwargs["generate_request_mode"], "non_stream")
@@ -544,6 +547,7 @@ class MainInitializeRequestModeTests(unittest.IsolatedAsyncioTestCase):
             context=types.SimpleNamespace(),
             config={},
         )
+        plugin._wake_prefixes = ("/",)
         plugin._is_selfie_enabled = lambda: True
 
         calls = []
@@ -552,6 +556,10 @@ class MainInitializeRequestModeTests(unittest.IsolatedAsyncioTestCase):
             calls.append(event)
 
         plugin._set_selfie_reference = fake_set_selfie_reference
+
+        image = mod.Image()
+        plain = mod.Plain()
+        plain.text = "/自拍参考 设置"
 
         class DummyEvent:
             message_str = "图片 /自拍参考 设置"
@@ -563,6 +571,9 @@ class MainInitializeRequestModeTests(unittest.IsolatedAsyncioTestCase):
 
             def get_extra(self, key, default=None):
                 return default
+
+            def get_messages(self):
+                return [image, plain]
 
             def should_call_llm(self, value):
                 self.call_llm = value
@@ -589,8 +600,9 @@ class MainInitializeRequestModeTests(unittest.IsolatedAsyncioTestCase):
         class DummyEvent:
             is_at_or_wake_command = True
 
-            def __init__(self, texts, *, private=False):
+            def __init__(self, texts, *, private=False, woken=True):
                 self._private = private
+                self.is_at_or_wake_command = woken
                 self._messages = []
                 for text in texts:
                     plain = mod.Plain()
@@ -605,12 +617,114 @@ class MainInitializeRequestModeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(gate.filter(DummyEvent(["绘图 一只猫"]), cfg))
         self.assertFalse(gate.filter(DummyEvent(["/绘图 一只猫"]), cfg))
+        self.assertFalse(gate.filter(DummyEvent(["，绘图 一只猫"]), cfg))
         self.assertTrue(gate.filter(DummyEvent([".绘图 一只猫"]), cfg))
         self.assertTrue(gate.filter(DummyEvent(["", ".改图 加点光影"]), cfg))
         self.assertTrue(gate.filter(DummyEvent([".自拍 窗边自然光"]), cfg))
-        self.assertTrue(
-            gate.filter(DummyEvent(["绘图 一只猫"], private=True), cfg)
+        self.assertTrue(gate.filter(DummyEvent([".批量2 aiimg 一只猫"]), cfg))
+        self.assertTrue(gate.filter(DummyEvent([".表情包 加字"]), cfg))
+        self.assertFalse(gate.filter(DummyEvent([". 表情包 加字"]), cfg))
+        self.assertTrue(gate.filter(DummyEvent(["绘图 一只猫"], private=True), cfg))
+        self.assertFalse(
+            gate.filter(
+                DummyEvent(["/绘图 一只猫"], private=True, woken=False),
+                cfg,
+            )
         )
+
+    async def test_batch_fragment_requires_configured_prefix_at_segment_start(self):
+        mod, _ = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={},
+        )
+        plugin._wake_prefixes = (".",)
+
+        class DummyEvent:
+            def __init__(self, texts):
+                self._messages = []
+                for text in texts:
+                    if text is None:
+                        self._messages.append(mod.Image())
+                        continue
+                    plain = mod.Plain()
+                    plain.text = text
+                    self._messages.append(plain)
+
+            def get_messages(self):
+                return self._messages
+
+        self.assertEqual(
+            plugin._extract_batch_command_fragment(
+                DummyEvent([None, ".批量2 aiimg 一只猫"])
+            ),
+            ".批量2 aiimg 一只猫",
+        )
+        self.assertEqual(
+            plugin._extract_batch_command_fragment(
+                DummyEvent([None, "/批量2 aiimg 一只猫"])
+            ),
+            "",
+        )
+        self.assertEqual(
+            plugin._extract_batch_command_fragment(
+                DummyEvent(["聊天里提到 .批量2 aiimg 一只猫"])
+            ),
+            "",
+        )
+
+    async def test_preset_fallback_requires_complete_prefixed_chain_command(self):
+        mod, _ = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={},
+        )
+        plugin._wake_prefixes = (".",)
+        plugin.edit = types.SimpleNamespace(get_preset_names=lambda: ["表情包"])
+
+        calls = []
+
+        async def fake_has_images(event):
+            return True
+
+        async def fake_do_edit_direct(event, prompt, preset=None):
+            calls.append((prompt, preset))
+
+        plugin._has_message_images_or_avatar_mentions = fake_has_images
+        plugin._do_edit_direct = fake_do_edit_direct
+
+        class DummyEvent:
+            message_str = ""
+
+            def __init__(self, command_text):
+                self.stopped = False
+                plain = mod.Plain()
+                plain.text = command_text
+                self._messages = [object(), plain]
+
+            def get_messages(self):
+                return self._messages
+
+            def stop_event(self):
+                self.stopped = True
+
+        wrong_prefix = DummyEvent("/表情包 加字")
+        await plugin.preset_regex_fallback(wrong_prefix)
+        embedded = DummyEvent("聊天里提到 .表情包 加字")
+        await plugin.preset_regex_fallback(embedded)
+        partial = DummyEvent(".表情包风格 加字")
+        await plugin.preset_regex_fallback(partial)
+
+        self.assertEqual(calls, [])
+        self.assertFalse(wrong_prefix.stopped)
+        self.assertFalse(embedded.stopped)
+        self.assertFalse(partial.stopped)
+
+        valid = DummyEvent(".表情包 加字")
+        await plugin.preset_regex_fallback(valid)
+
+        self.assertEqual(calls, [("加字", "表情包")])
+        self.assertTrue(valid.stopped)
 
     async def test_chain_command_extraction_rejects_bare_group_text(self):
         mod, _ = _load_module()
