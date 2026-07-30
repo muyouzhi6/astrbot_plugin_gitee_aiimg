@@ -985,7 +985,7 @@ class GiteeAIImagePlugin(Star):
         if completion_task_id:
             event.set_extra("_gitee_bg_completion_plain", plain)
 
-    @filter.after_message_sent()
+    @filter.after_message_sent(priority=200)
     async def confirm_background_task_result(self, event: AstrMessageEvent) -> None:
         """Confirm acceptance and terminal text only after adapter send returns.
 
