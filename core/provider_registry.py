@@ -360,6 +360,11 @@ class ProviderRegistry:
                     errors.append(f"provider '{provider_id}' missing server_url")
                 if not str(item.get("api_key") or "").strip():
                     errors.append(f"provider '{provider_id}' missing api_key")
+            if template_key in {"grok2api_video"}:
+                api_keys = _as_list(item.get("api_keys"))
+                api_key = str(item.get("api_key") or "").strip()
+                if not api_key and not any(str(x or "").strip() for x in api_keys):
+                    errors.append(f"provider '{provider_id}' missing api_keys")
             if template_key in {"flow2api_video"}:
                 if not str(item.get("api_url") or "").strip():
                     errors.append(f"provider '{provider_id}' missing api_url")

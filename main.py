@@ -1060,6 +1060,35 @@ class GiteeAIImagePlugin(Star):
         if bool(event.get_extra("_gitee_bg_transport_probe_armed", False)):
             return
 
+        if token:
+            manager = getattr(self, "background_tasks", None)
+            attempt_id = str(
+                event.get_extra("_gitee_bg_notification_attempt", "") or ""
+            )
+            if manager is None or not attempt_id:
+                event.stop_event()
+                return
+            try:
+                claimed = await manager.mark_notification(
+                    token,
+                    "claimed",
+                    attempt_id=attempt_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[background-image] suppressed completion because the notification claim could not be verified: %s",
+                    BackgroundImageTaskManager.sanitize_error(exc),
+                )
+                event.stop_event()
+                return
+            if not claimed:
+                logger.warning(
+                    "[background-image] suppressed stale completion after watchdog takeover: token_hash=%s",
+                    hashlib.sha256(token.encode()).hexdigest()[:12],
+                )
+                event.stop_event()
+                return
+
         original_send = event.send
 
         async def tracked_send(*args, **kwargs):
@@ -4518,13 +4547,15 @@ class GiteeAIImagePlugin(Star):
 
         if state == "completed":
             return "照片拍好啦，我已经发出来了。"
-        if state == "cancelled":
-            return "刚才那张照片已经停下来了，我没有再继续生成。"
         if str(record.get("delivery_state") or "") == "unknown":
             return (
                 "照片生成好了，但发送时连接断了一下，我现在无法确认你那边是否收到；"
                 "我先不自动重发，避免重复。"
             )
+        if state == "cancelled":
+            if bool(record.get("image_sent")):
+                return "这张照片刚好已经发出来了，停止请求收到时发送已经完成。"
+            return "刚才那张照片已经停下来了，我没有再继续生成。"
         if state == "interrupted":
             return "刚才那张照片因为服务重启中断了，没有继续扣费或重复发送。"
         return "刚才那张照片没能生成成功，这次任务已经结束了。"

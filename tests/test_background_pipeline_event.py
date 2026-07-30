@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 import types
 from pathlib import Path
 
@@ -24,6 +25,7 @@ class _Event:
         self._result = _Result()
         self._has_send_oper = False
         self._group = group
+        self._stopped = False
 
     def get_platform_name(self):
         return "aiocqhttp"
@@ -72,6 +74,12 @@ class _Event:
     async def send(self, result):
         self.sent_result = result
         self._has_send_oper = True
+
+    def stop_event(self):
+        self._stopped = True
+
+    def is_stopped(self):
+        return self._stopped
 
 
 class _Adapter:
@@ -170,6 +178,7 @@ def _plugin(mod, manager):
     plugin.registry = types.SimpleNamespace(provider_ids=lambda: [])
     plugin._last_image_by_user = {}
     plugin._last_image_task_meta_cache = {}
+    plugin._background_send_gates = {}
     return plugin
 
 
@@ -424,6 +433,49 @@ async def test_completion_transport_probe_survives_downstream_chain_rewrite(tmp_
 
 
 @pytest.mark.asyncio
+async def test_transport_arm_suppresses_agent_reply_after_watchdog_takeover(tmp_path):
+    mod, _ = _load_module()
+    manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await manager.start()
+    plugin = _plugin(mod, manager)
+    target = _target(mod)
+    record, _ = await manager.create_task_record(
+        _base_record(manager, "img_stale_completion", target),
+        reservation=1,
+    )
+    terminal = await manager.transition(
+        record["task_id"],
+        "completed",
+        {
+            "image_generated": True,
+            "image_sent": True,
+            "delivery_state": "confirmed",
+        },
+        queue_notification=True,
+    )
+    token = terminal["notification_token"]
+    agent_attempt = "notify-agent"
+    claimed = await manager.claim_notification(token, agent_attempt)
+    assert claimed is not None
+    await manager.mark_notification(token, "queued", attempt_id=agent_attempt)
+    watchdog_attempt = "notify-watchdog"
+    watchdog_claim = await manager.claim_notification(token, watchdog_attempt)
+    assert watchdog_claim is not None
+
+    event = _Event()
+    event.set_extra("_gitee_bg_task_id", record["task_id"])
+    event.set_extra("_gitee_bg_notification_token", token)
+    event.set_extra("_gitee_bg_notification_attempt", agent_attempt)
+    event.set_result(_Result([mod.Plain("照片发出来了。")]))
+    await plugin.arm_background_task_result_transport(event)
+
+    assert event.is_stopped()
+    assert not event.get_extra("_gitee_bg_transport_probe_armed", False)
+    await manager.mark_notification(token, "sent", attempt_id=watchdog_attempt)
+    await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_transport_probe_does_not_confirm_failed_send(tmp_path):
     mod, _ = _load_module()
     manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
@@ -511,6 +563,47 @@ async def test_contextaware_session_gate_prevents_old_context_reentry(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_astrbot_loaded_drains_recovery_notifications_once(tmp_path):
+    mod, _ = _load_module()
+    manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await manager.start()
+    plugin = _plugin(mod, manager)
+    target = _target(mod)
+    record, _ = await manager.create_task_record(
+        _base_record(manager, "img_recovery_hook", target),
+        reservation=1,
+    )
+    terminal = await manager.transition(
+        record["task_id"],
+        "interrupted",
+        {
+            "error_code": "process_restarted",
+            "terminal_reason": "process_restarted",
+        },
+        queue_notification=True,
+    )
+    plugin._background_astrbot_loaded = False
+    plugin._background_recovery_records = [terminal]
+    dispatched = []
+
+    async def capture_dispatch(self, current_manager, current_record, current_target):
+        dispatched.append((current_record["task_id"], current_target.umo))
+
+    plugin._dispatch_background_completion = types.MethodType(
+        capture_dispatch,
+        plugin,
+    )
+
+    await plugin.on_background_astrbot_loaded()
+    await plugin.on_background_astrbot_loaded()
+
+    assert plugin._background_astrbot_loaded is True
+    assert plugin._background_recovery_records == []
+    assert dispatched == [(record["task_id"], target.umo)]
+    await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_synthetic_completion_uses_non_content_input_chain(tmp_path):
     mod, _ = _load_module()
     manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
@@ -552,8 +645,16 @@ async def test_synthetic_completion_uses_non_content_input_chain(tmp_path):
     assert not any(
         isinstance(component, mod.Plain) for component in captured["message"]
     )
+    synthetic = plugin.context.adapter.committed[0]
+    synthetic.set_result(_Result([mod.Plain("照片发出来了。")]))
+    await plugin.decorate_background_task_result(synthetic)
+    await plugin.arm_background_task_result_transport(synthetic)
+    await synthetic.send(synthetic.get_result())
+    await plugin.confirm_background_task_result(synthetic)
+
     updated = await manager.get_task(record["task_id"])
-    assert updated["notification_state"] == "queued"
+    assert updated["notification_state"] == "sent"
+    assert synthetic.send == synthetic._gitee_bg_original_send
     await manager.close()
 
 
@@ -751,6 +852,200 @@ async def test_background_batch_rejects_planner_count_mismatch(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_background_batch_sends_successes_in_index_order_after_out_of_order_generation(
+    tmp_path,
+):
+    mod, _ = _load_module()
+    manager = mod.BackgroundImageTaskManager(
+        tmp_path,
+        max_running=2,
+        heartbeat_seconds=60,
+    )
+    await manager.start()
+    plugin = _plugin(mod, manager)
+    plugin.config["features"]["draw"]["batch_concurrency"] = 2
+    target = _target(mod)
+    record = _base_record(
+        manager,
+        "batch_ordered_delivery",
+        target,
+        kind="batch",
+        state="planning",
+    )
+    record.update({"requested_count": 3, "ack_state": "sent"})
+    stored, _ = await manager.create_task_record(record, reservation=3)
+    third_generated = asyncio.Event()
+    release_first = asyncio.Event()
+    generation_order = []
+    send_order = []
+    dispatched = []
+
+    async def plan(self, **kwargs):
+        return [
+            mod.PlannedPromptItem(
+                title=f"item-{index}",
+                prompt=f"prompt-{index}",
+                variation_focus=[f"focus-{index}"],
+                aspect_ratio="3:4",
+            )
+            for index in range(1, 4)
+        ]
+
+    async def execute(self, current_manager, job):
+        index = int(job.user_prompt.rsplit("-", 1)[1])
+        if index == 1:
+            await release_first.wait()
+        elif index == 2:
+            raise RuntimeError("controlled child failure")
+        else:
+            third_generated.set()
+        generation_order.append(index)
+        image_path = tmp_path / f"image-{index}.png"
+        image_path.write_bytes(f"image-{index}".encode())
+        return image_path, {"index": index}
+
+    async def send_once(self, current_target, image_path):
+        send_order.append(int(image_path.stem.rsplit("-", 1)[1]))
+        return _Event()
+
+    def remember(self, delivery_event, image_path):
+        return None
+
+    async def save_meta(self, delivery_event, task_meta):
+        return None
+
+    async def capture_dispatch(self, current_manager, current_record, current_target):
+        dispatched.append(current_record)
+
+    plugin._plan_batch_prompt_items = types.MethodType(plan, plugin)
+    plugin._execute_prepared_image_job = types.MethodType(execute, plugin)
+    plugin._send_background_image_once = types.MethodType(send_once, plugin)
+    plugin._remember_last_image = types.MethodType(remember, plugin)
+    plugin._save_last_image_task_meta = types.MethodType(save_meta, plugin)
+    plugin._dispatch_background_completion = types.MethodType(
+        capture_dispatch,
+        plugin,
+    )
+    job = mod.PreparedBatchJob(
+        mode="draw",
+        user_prompt="three portraits",
+        requested_count=3,
+        backend=None,
+        output={"exact_size": None, "aspect_ratio": "3:4", "resolution": "2K"},
+    )
+
+    batch_task = asyncio.create_task(
+        plugin._run_background_batch(manager, stored["task_id"], job, target)
+    )
+    await asyncio.wait_for(third_generated.wait(), timeout=1)
+    release_first.set()
+    await asyncio.wait_for(batch_task, timeout=2)
+
+    current = await manager.get_task(stored["task_id"])
+    assert generation_order == [3, 1]
+    assert send_order == [1, 3], json.dumps(current, ensure_ascii=False, indent=2)
+    assert current["state"] == "partial"
+    assert current["sent_count"] == 2
+    assert current["failed_count"] == 1
+    assert [item["state"] for item in current["items"]] == [
+        "completed",
+        "failed",
+        "completed",
+    ]
+    assert len(dispatched) == 1
+    await manager.close()
+
+
+@pytest.mark.parametrize(
+    ("global_limit", "child_slots", "expected_peak"),
+    [(2, 1, 1), (1, 2, 1), (2, 2, 2)],
+)
+@pytest.mark.asyncio
+async def test_background_batch_child_respects_parent_and_global_limits(
+    tmp_path,
+    global_limit,
+    child_slots,
+    expected_peak,
+):
+    mod, _ = _load_module()
+    manager = mod.BackgroundImageTaskManager(
+        tmp_path,
+        max_running=global_limit,
+        heartbeat_seconds=60,
+    )
+    await manager.start()
+    plugin = _plugin(mod, manager)
+    target = _target(mod)
+    record = _base_record(
+        manager,
+        "batch_combined_limits",
+        target,
+        kind="batch",
+        state="queued",
+    )
+    items = [
+        {
+            "item_id": f"item-{index}",
+            "index": index,
+            "state": "queued",
+            "image_generated": False,
+            "image_sent": False,
+            "delivery_state": "not_started",
+        }
+        for index in range(1, 5)
+    ]
+    record.update({"requested_count": len(items), "items": items})
+    stored, _ = await manager.create_task_record(record, reservation=len(items))
+    active = 0
+    peak = 0
+
+    async def execute(self, current_manager, job):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            await asyncio.sleep(0.02)
+            return tmp_path / f"{job.user_prompt}.png", {}
+        finally:
+            active -= 1
+
+    plugin._execute_prepared_image_job = types.MethodType(execute, plugin)
+    child_limit = asyncio.Semaphore(child_slots)
+    generated = {}
+    jobs = [
+        mod.PreparedImageJob(
+            mode="draw",
+            user_prompt=f"prompt-{index}",
+            effective_prompt=f"prompt-{index}",
+            backend=None,
+            output={"exact_size": None, "aspect_ratio": "3:4", "resolution": "2K"},
+        )
+        for index in range(1, 5)
+    ]
+
+    await asyncio.gather(
+        *(
+            plugin._run_background_batch_child(
+                manager,
+                stored["task_id"],
+                item,
+                job,
+                child_limit,
+                generated,
+            )
+            for item, job in zip(items, jobs, strict=True)
+        )
+    )
+
+    assert peak == expected_peak
+    assert len(generated) == len(items)
+    current = await manager.get_task(stored["task_id"])
+    assert [item["state"] for item in current["items"]] == ["generated"] * len(items)
+    await manager.cancel_task(stored["task_id"], "test cleanup")
+    await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_background_single_provider_failure_persists_and_dispatches(tmp_path):
     mod, _ = _load_module()
     manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
@@ -788,6 +1083,68 @@ async def test_background_single_provider_failure_persists_and_dispatches(tmp_pa
     assert current["state"] == "failed"
     assert current["error_code"] == "provider_failed"
     assert current["notification_state"] == "pending"
+    assert len(dispatched) == 1
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_background_single_timeout_marks_delivery_unknown_without_retry(tmp_path):
+    mod, _ = _load_module()
+    manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await manager.start()
+    plugin = _plugin(mod, manager)
+    target = _target(mod)
+    record = _base_record(manager, "img_delivery_timeout", target)
+    record["ack_state"] = "sent"
+    stored, _ = await manager.create_task_record(record, reservation=1)
+    provider_calls = 0
+    send_calls = 0
+    dispatched = []
+    image_path = tmp_path / "timeout-image.png"
+    image_path.write_bytes(b"image")
+
+    async def execute(self, current_manager, job):
+        nonlocal provider_calls
+        provider_calls += 1
+        return image_path, {"mode": "draw"}
+
+    async def timeout_send(self, current_target, current_path):
+        nonlocal send_calls
+        send_calls += 1
+        raise TimeoutError("controlled image send timeout")
+
+    async def capture_dispatch(self, current_manager, current_record, current_target):
+        dispatched.append(current_record)
+
+    plugin._execute_prepared_image_job = types.MethodType(execute, plugin)
+    plugin._send_background_image_once = types.MethodType(timeout_send, plugin)
+    plugin._dispatch_background_completion = types.MethodType(
+        capture_dispatch,
+        plugin,
+    )
+    job = mod.PreparedImageJob(
+        mode="text",
+        user_prompt="timeout test",
+        effective_prompt="timeout test prompt",
+        backend=None,
+        output={"exact_size": None, "aspect_ratio": "3:4", "resolution": "2K"},
+    )
+
+    await plugin._run_background_single(manager, stored["task_id"], job, target)
+
+    current = await manager.get_task(stored["task_id"])
+    assert provider_calls == 1
+    assert send_calls == 1
+    assert current["state"] == "interrupted"
+    assert current["delivery_state"] == "unknown"
+    assert current["error_code"] == "delivery_unknown"
+    assert current["notification_state"] == "pending"
+    with sqlite3.connect(manager.db_path) as conn:
+        receipts = conn.execute(
+            "SELECT delivery_state FROM receipts WHERE task_id=?",
+            (stored["task_id"],),
+        ).fetchall()
+    assert receipts == [("unknown",)]
     assert len(dispatched) == 1
     await manager.close()
 

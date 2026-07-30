@@ -1,5 +1,18 @@
 # 更新日志
 
+## [v5.1.1] - 2026-07-31
+
+### 修复
+
+- 修复 `/stop` 或进程重启恰好发生在图片发送阶段时，单图或批量子任务可能保留为 `attempting` 的问题；取消操作现在使用同一个 SQLite 原子事务读取最新 item/receipt，已确认发送的图片不会被旧状态覆盖，其余歧义发送收敛为 `unknown` 并继续禁止自动重发。
+- 修复 Agent 终态回应与 90 秒确定性通知 watchdog 同时接管时可能重复回应的竞争窗口；Agent 回复进入 transport 前会重新确认 outbox claim，失去 claim 的旧回复会停止发送。
+- 补全 `grok2api_video` 的 API Key 配置校验，避免错误配置通过启动检查后才在视频生成阶段失败。
+
+### 测试
+
+- 新增后台 batch 两层并发上限、连续 batch 公平调度、乱序生成按 index 发送、部分失败、发送中取消、发送中重启恢复、单图发送超时、防重复终态回应和 AstrBot loaded 恢复派发测试。
+- Python `3.10 / 3.11 / 3.12 / 3.13` 完整回归均为 `168 passed`；`compileall`、Ruff 和 AstrBot `v4.16.0` 真实源码 import / Hook smoke 均通过。
+
 ## [v5.1.0] - 2026-07-31
 
 ### 修复

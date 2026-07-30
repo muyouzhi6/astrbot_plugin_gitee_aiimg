@@ -248,6 +248,274 @@ async def test_parent_round_robin_is_work_conserving(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_continuous_batch_requeue_does_not_starve_single_parent(tmp_path):
+    manager = bg.BackgroundImageTaskManager(
+        tmp_path,
+        max_running=1,
+        max_queued=8,
+        heartbeat_seconds=60,
+    )
+    await manager.start()
+    order = []
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    later_batch_tasks = []
+
+    async def batch_first():
+        order.append("batch-1")
+        first_started.set()
+        await release_first.wait()
+
+    async def batch_second():
+        order.append("batch-2")
+        later_batch_tasks.append(
+            asyncio.create_task(
+                manager.run_provider("batch", lambda: batch_later("batch-3"))
+            )
+        )
+        await asyncio.sleep(0)
+
+    async def batch_later(name):
+        order.append(name)
+
+    async def single():
+        order.append("single-1")
+
+    first = asyncio.create_task(manager.run_provider("batch", batch_first))
+    await first_started.wait()
+    second = asyncio.create_task(manager.run_provider("batch", batch_second))
+    single_task = asyncio.create_task(manager.run_provider("single", single))
+    await asyncio.sleep(0)
+    release_first.set()
+    await asyncio.gather(first, second, single_task)
+    await asyncio.gather(*later_batch_tasks)
+
+    assert order == ["batch-1", "batch-2", "single-1", "batch-3"]
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_marks_inflight_batch_delivery_unknown(tmp_path):
+    manager = bg.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await manager.start()
+    record = _record(
+        manager,
+        "batch_cancel_sending",
+        state="queued",
+        task_kind="batch",
+    )
+    record.update(
+        {
+            "requested_count": 3,
+            "items": [
+                {
+                    "item_id": "item-1",
+                    "state": "completed",
+                    "image_generated": True,
+                    "image_sent": True,
+                    "delivery_state": "confirmed",
+                },
+                {
+                    "item_id": "item-2",
+                    "state": "sending",
+                    "image_generated": True,
+                    "image_sent": False,
+                    "delivery_state": "attempting",
+                    "send_attempt_id": "send-item-2",
+                },
+                {
+                    "item_id": "item-3",
+                    "state": "running",
+                    "image_generated": False,
+                    "image_sent": False,
+                    "delivery_state": "not_started",
+                },
+            ],
+        }
+    )
+    await manager.create_task_record(record, reservation=3)
+    await manager.record_receipt(
+        record["task_id"],
+        send_attempt_id="send-item-2",
+        item_id="item-2",
+        kind="image",
+        delivery_state="attempting",
+        transport="aiocqhttp",
+    )
+
+    assert await manager.cancel_task(record["task_id"], "user requested /stop")
+
+    current = await manager.get_task(record["task_id"])
+    assert current["state"] == "cancelled"
+    assert current["delivery_state"] == "unknown"
+    assert current["sent_count"] == 1
+    assert current["unknown_count"] == 1
+    assert current["cancelled_count"] == 1
+    assert [item["state"] for item in current["items"]] == [
+        "completed",
+        "unknown",
+        "cancelled",
+    ]
+    with sqlite3.connect(manager.db_path) as conn:
+        receipt = conn.execute(
+            "SELECT delivery_state FROM receipts WHERE send_attempt_id='send-item-2'"
+        ).fetchone()[0]
+    assert receipt == "unknown"
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_preserves_confirmed_batch_receipt_as_completed(tmp_path):
+    manager = bg.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await manager.start()
+    record = _record(
+        manager,
+        "batch_cancel_after_confirm",
+        state="queued",
+        task_kind="batch",
+    )
+    record.update(
+        {
+            "requested_count": 2,
+            "items": [
+                {
+                    "item_id": "item-1",
+                    "state": "sending",
+                    "image_generated": True,
+                    "image_sent": False,
+                    "delivery_state": "attempting",
+                    "send_attempt_id": "confirmed-item-1",
+                },
+                {
+                    "item_id": "item-2",
+                    "state": "running",
+                    "image_generated": False,
+                    "image_sent": False,
+                    "delivery_state": "not_started",
+                },
+            ],
+        }
+    )
+    await manager.create_task_record(record, reservation=2)
+    await manager.record_receipt(
+        record["task_id"],
+        send_attempt_id="confirmed-item-1",
+        item_id="item-1",
+        kind="image",
+        delivery_state="attempting",
+        transport="aiocqhttp",
+    )
+    await manager.record_receipt(
+        record["task_id"],
+        send_attempt_id="confirmed-item-1",
+        item_id="item-1",
+        kind="image",
+        delivery_state="confirmed",
+        transport="aiocqhttp",
+    )
+
+    assert await manager.cancel_task(record["task_id"], "user requested /stop")
+
+    current = await manager.get_task(record["task_id"])
+    assert current["state"] == "cancelled"
+    assert current["delivery_state"] == "confirmed"
+    assert current["sent_count"] == 1
+    assert current["unknown_count"] == 0
+    assert current["cancelled_count"] == 1
+    assert [item["state"] for item in current["items"]] == [
+        "completed",
+        "cancelled",
+    ]
+    with sqlite3.connect(manager.db_path) as conn:
+        receipt = conn.execute(
+            "SELECT delivery_state FROM receipts "
+            "WHERE send_attempt_id='confirmed-item-1'"
+        ).fetchone()[0]
+        remaining = conn.execute(
+            "SELECT remaining FROM reservations WHERE task_id=?",
+            (record["task_id"],),
+        ).fetchone()[0]
+    assert receipt == "confirmed"
+    assert remaining == 0
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_recovers_batch_sending_as_unknown_without_requeue(tmp_path):
+    first = bg.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await first.start()
+    record = _record(
+        first,
+        "batch_restart_sending",
+        state="queued",
+        task_kind="batch",
+    )
+    record.update(
+        {
+            "requested_count": 3,
+            "items": [
+                {
+                    "item_id": "item-1",
+                    "state": "completed",
+                    "image_generated": True,
+                    "image_sent": True,
+                    "delivery_state": "confirmed",
+                },
+                {
+                    "item_id": "item-2",
+                    "state": "sending",
+                    "image_generated": True,
+                    "image_sent": False,
+                    "delivery_state": "attempting",
+                    "send_attempt_id": "restart-send-item-2",
+                },
+                {
+                    "item_id": "item-3",
+                    "state": "generated",
+                    "image_generated": True,
+                    "image_sent": False,
+                    "delivery_state": "not_started",
+                },
+            ],
+        }
+    )
+    await first.create_task_record(record, reservation=3)
+    await first.record_receipt(
+        record["task_id"],
+        send_attempt_id="restart-send-item-2",
+        item_id="item-2",
+        kind="image",
+        delivery_state="attempting",
+        transport="aiocqhttp",
+    )
+    await first.close()
+
+    second = bg.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    recovered = await second.start()
+    current = next(item for item in recovered if item["task_id"] == record["task_id"])
+
+    assert current["state"] == "interrupted"
+    assert current["delivery_state"] == "unknown"
+    assert current["sent_count"] == 1
+    assert current["unknown_count"] == 1
+    assert current["cancelled_count"] == 1
+    assert [item["state"] for item in current["items"]] == [
+        "completed",
+        "unknown",
+        "cancelled",
+    ]
+    assert second._root_tasks == {}
+    assert second._provider_running == 0
+    with sqlite3.connect(second.db_path) as conn:
+        receipt = conn.execute(
+            "SELECT delivery_state FROM receipts "
+            "WHERE send_attempt_id='restart-send-item-2'"
+        ).fetchone()[0]
+    assert receipt == "unknown"
+    await second.close()
+
+
+@pytest.mark.asyncio
 async def test_cancel_worker_releases_capacity_once(tmp_path):
     manager = bg.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
     await manager.start()

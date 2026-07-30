@@ -456,7 +456,53 @@ class BackgroundImageTaskManager:
                 record["error_message"] = (
                     "The image task was interrupted by a plugin or AstrBot restart."
                 )
-                if (
+                items = record.get("items")
+                if record.get("task_kind") == "batch" and isinstance(items, list):
+                    for item in items:
+                        item_state = str(item.get("state") or "queued")
+                        if item_state in {
+                            "completed",
+                            "failed",
+                            "cancelled",
+                            "unknown",
+                        }:
+                            continue
+                        if (
+                            item_state == "sending"
+                            or item.get("delivery_state") == "attempting"
+                        ):
+                            item.update(
+                                {
+                                    "state": "unknown",
+                                    "delivery_state": "unknown",
+                                    "image_sent": False,
+                                    "error_code": "delivery_unknown",
+                                    "error_message": (
+                                        "The process restarted while image delivery was in progress."
+                                    ),
+                                }
+                            )
+                        else:
+                            item.update(
+                                {
+                                    "state": "cancelled",
+                                    "image_sent": False,
+                                    "error_code": "process_restarted",
+                                    "error_message": (
+                                        "The process restarted before this batch item was delivered."
+                                    ),
+                                }
+                            )
+                    self._refresh_batch_counts(record)
+                    record["image_generated"] = bool(record.get("generated_count"))
+                    record["image_sent"] = bool(record.get("sent_count"))
+                    if int(record.get("unknown_count") or 0) > 0:
+                        record["delivery_state"] = "unknown"
+                    elif int(record.get("sent_count") or 0) > 0:
+                        record["delivery_state"] = "confirmed"
+                    else:
+                        record["delivery_state"] = "not_started"
+                elif (
                     old_state == "sending"
                     or record.get("delivery_state") == "attempting"
                 ):
@@ -479,6 +525,11 @@ class BackgroundImageTaskManager:
                         now + self.terminal_ttl_seconds * 1000,
                         row["task_id"],
                     ),
+                )
+                conn.execute(
+                    "UPDATE receipts SET delivery_state='unknown' "
+                    "WHERE task_id=? AND delivery_state='attempting'",
+                    (row["task_id"],),
                 )
                 conn.execute(
                     "UPDATE reservations SET remaining=0, released=1 WHERE task_id=?",
@@ -1103,31 +1154,208 @@ class BackgroundImageTaskManager:
             Whether an active task was cancelled.
         """
 
-        record = await self.get_task(task_id)
-        if not record or record.get("state") in TERMINAL_STATES:
+        now = self.now_ms()
+        async with self._db_lock:
+            record = await asyncio.shield(
+                asyncio.to_thread(
+                    self._cancel_task_transaction,
+                    task_id,
+                    self.sanitize_error(reason, 500),
+                    suppress_future_injection,
+                    now,
+                )
+            )
+        if record is None:
             return False
         event = self._cancel_events.setdefault(task_id, asyncio.Event())
         event.set()
-        try:
-            await asyncio.shield(
-                self.transition(
-                    task_id,
-                    "cancelled",
-                    {
-                        "cancel_reason": self.sanitize_error(reason, 500),
-                        "terminal_reason": "user_cancelled",
-                        "suppress_future_injection": suppress_future_injection,
-                    },
-                    queue_notification=True,
-                )
-            )
-        except BackgroundTaskStateError:
-            return False
         worker = self._root_tasks.get(task_id)
         if worker is not None and not worker.done():
             worker.cancel()
         await self._drop_parent_work(task_id)
         return True
+
+    def _cancel_task_transaction(
+        self,
+        task_id: str,
+        reason: str,
+        suppress_future_injection: bool,
+        now: int,
+    ) -> dict[str, Any] | None:
+        """Atomically cancel a task using the latest item and receipt state.
+
+        Args:
+            task_id: Task to cancel.
+            reason: Sanitized cancellation reason.
+            suppress_future_injection: Hide the task from a reset/new conversation.
+            now: Cancellation timestamp in milliseconds.
+
+        Returns:
+            The terminal task record, or ``None`` when it was already terminal.
+        """
+
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_owner(conn, now)
+            row = conn.execute(
+                "SELECT state, record_json, owner_epoch FROM tasks WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
+            if row is None or str(row["state"]) in TERMINAL_STATES:
+                conn.commit()
+                return None
+            if int(row["owner_epoch"]) != self.owner_epoch:
+                conn.rollback()
+                raise BackgroundTaskOwnerError("Task owner epoch no longer matches")
+
+            record = json.loads(row["record_json"])
+            receipt_states = {
+                str(receipt["send_attempt_id"]): str(receipt["delivery_state"])
+                for receipt in conn.execute(
+                    "SELECT send_attempt_id, delivery_state FROM receipts WHERE task_id=?",
+                    (task_id,),
+                ).fetchall()
+            }
+            items = record.get("items")
+            if record.get("task_kind") == "batch" and isinstance(items, list):
+                for item in items:
+                    item_state = str(item.get("state") or "queued")
+                    if item_state in {
+                        "completed",
+                        "failed",
+                        "cancelled",
+                        "unknown",
+                    }:
+                        continue
+                    attempt_id = str(item.get("send_attempt_id") or "")
+                    receipt_state = receipt_states.get(attempt_id, "")
+                    if receipt_state == "confirmed":
+                        item.update(
+                            {
+                                "state": "completed",
+                                "delivery_state": "confirmed",
+                                "image_generated": True,
+                                "image_sent": True,
+                                "error_code": "",
+                                "error_message": "",
+                            }
+                        )
+                    elif (
+                        item_state == "sending"
+                        or item.get("delivery_state") == "attempting"
+                    ):
+                        item.update(
+                            {
+                                "state": "unknown",
+                                "delivery_state": "unknown",
+                                "image_sent": False,
+                                "error_code": "delivery_unknown",
+                                "error_message": (
+                                    "Delivery was cancelled after transport started; receipt is unknown."
+                                ),
+                            }
+                        )
+                    else:
+                        item.update(
+                            {
+                                "state": "cancelled",
+                                "image_sent": False,
+                                "error_code": "user_cancelled",
+                                "error_message": reason,
+                            }
+                        )
+                self._refresh_batch_counts(record)
+                record["image_generated"] = bool(record.get("generated_count"))
+                record["image_sent"] = bool(record.get("sent_count"))
+                if int(record.get("unknown_count") or 0) > 0:
+                    record["delivery_state"] = "unknown"
+                elif int(record.get("sent_count") or 0) > 0:
+                    record["delivery_state"] = "confirmed"
+                else:
+                    record["delivery_state"] = "not_started"
+            elif (
+                str(record.get("state") or "") == "sending"
+                or record.get("delivery_state") == "attempting"
+            ):
+                attempt_id = str(record.get("send_attempt_id") or "")
+                if receipt_states.get(attempt_id) == "confirmed":
+                    record.update(
+                        {
+                            "delivery_state": "confirmed",
+                            "image_generated": True,
+                            "image_sent": True,
+                            "error_code": "",
+                            "error_message": "",
+                        }
+                    )
+                else:
+                    record.update(
+                        {
+                            "delivery_state": "unknown",
+                            "image_sent": False,
+                            "error_code": "delivery_unknown",
+                            "error_message": (
+                                "Delivery was cancelled after transport started; receipt is unknown."
+                            ),
+                        }
+                    )
+
+            record.update(
+                {
+                    "state": "cancelled",
+                    "cancel_reason": reason,
+                    "terminal_reason": "user_cancelled",
+                    "suppress_future_injection": suppress_future_injection,
+                    "revision": int(record.get("revision") or 0) + 1,
+                    "updated_at": now,
+                    "finished_at": now,
+                }
+            )
+            token = str(
+                record.get("notification_token") or f"notify_{uuid.uuid4().hex}"
+            )
+            record["notification_token"] = token
+            existing = conn.execute(
+                "SELECT state FROM notification_outbox WHERE token=?",
+                (token,),
+            ).fetchone()
+            record["notification_state"] = (
+                str(existing["state"]) if existing is not None else "pending"
+            )
+            payload = self._encode_record(record)
+            expires = now + self.terminal_ttl_seconds * 1000
+            changed = conn.execute(
+                "UPDATE tasks SET state='cancelled', record_json=?, updated_at_ms=?, "
+                "expires_at_ms=? WHERE task_id=? AND owner_epoch=?",
+                (payload, now, expires, task_id, self.owner_epoch),
+            ).rowcount
+            if changed != 1:
+                conn.rollback()
+                raise BackgroundTaskOwnerError("Fenced task cancellation was rejected")
+            conn.execute(
+                "UPDATE reservations SET remaining=0, released=1 WHERE task_id=?",
+                (task_id,),
+            )
+            conn.execute(
+                "UPDATE receipts SET delivery_state='unknown' "
+                "WHERE task_id=? AND delivery_state='attempting'",
+                (task_id,),
+            )
+            if existing is None:
+                conn.execute(
+                    "INSERT INTO notification_outbox("
+                    "token, task_id, kind, state, payload_json, queued_at_ms, updated_at_ms"
+                    ") VALUES(?, ?, 'terminal', 'pending', ?, ?, ?)",
+                    (token, task_id, payload, now, now),
+                )
+            elif str(existing["state"]) in {"pending", "queued"}:
+                conn.execute(
+                    "UPDATE notification_outbox SET payload_json=?, updated_at_ms=? "
+                    "WHERE token=? AND state IN ('pending', 'queued')",
+                    (payload, now, token),
+                )
+            conn.commit()
+        return record
 
     async def cancel_scope(
         self,

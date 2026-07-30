@@ -235,6 +235,41 @@ class ProviderRegistryRequestModeTests(unittest.TestCase):
 
         self.assertEqual(errors, ["provider 'x666_sora2' missing api_keys"])
 
+    def test_validate_requires_grok2api_video_api_key_source(self):
+        mod = _load_module()
+        registry = mod.ProviderRegistry(
+            config={
+                "providers": [
+                    {
+                        "id": "grok2-video",
+                        "__template_key": "grok2api_video",
+                    }
+                ]
+            },
+            imgr=object(),
+            data_dir=Path("/tmp"),
+        )
+
+        self.assertEqual(
+            registry.validate(), ["provider 'grok2-video' missing api_keys"]
+        )
+
+        registry = mod.ProviderRegistry(
+            config={
+                "providers": [
+                    {
+                        "id": "grok2-video",
+                        "__template_key": "grok2api_video",
+                        "api_key": "test-key",
+                    }
+                ]
+            },
+            imgr=object(),
+            data_dir=Path("/tmp"),
+        )
+
+        self.assertEqual(registry.validate(), [])
+
     def test_validate_requires_vertex_graphql_api_key(self):
         mod = _load_module()
         registry = mod.ProviderRegistry(
