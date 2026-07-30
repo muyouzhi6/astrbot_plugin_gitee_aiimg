@@ -487,6 +487,7 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
             config={"features": {"video": {"send_mode": "auto"}}},
         )
         calls: list[str] = []
+        video_path = Path("/tmp/video.mp4")
 
         class _Video:
             @staticmethod
@@ -509,7 +510,7 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         async def _download_video(*args, **kwargs):
             calls.append("download")
-            return Path("/tmp/video.mp4")
+            return video_path
 
         mod.Video = _Video
         plugin.videomgr = types.SimpleNamespace(download_video=_download_video)
@@ -529,7 +530,7 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             event.sent,
-            [("chain", [("video_file", "/tmp/video.mp4")])],
+            [("chain", [("video_file", str(video_path))])],
         )
 
     async def test_video_send_ignores_invalid_timeout_config_values(self):
