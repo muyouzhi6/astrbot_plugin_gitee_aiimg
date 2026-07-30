@@ -46,6 +46,7 @@ from .core.background_tasks import (
     BackgroundImageTaskManager,
     BackgroundTaskCapacityError,
     BackgroundTaskError,
+    BackgroundTaskOwnerError,
     PreparedBatchJob,
     PreparedImageJob,
     TaskDeliveryTarget,
@@ -205,6 +206,8 @@ class GiteeAIImagePlugin(Star):
         self.background_tasks: BackgroundImageTaskManager | None = None
         self._background_recovery_records: list[dict[str, Any]] = []
         self._background_send_gates: dict[str, asyncio.Event] = {}
+        self._background_start_task: asyncio.Task[None] | None = None
+        self._background_astrbot_loaded = False
 
     async def _call_native_poke(self, event: AstrMessageEvent, target_id: str) -> bool:
         bot = getattr(event, "bot", None)
@@ -669,6 +672,60 @@ class GiteeAIImagePlugin(Star):
             )
             try:
                 self._background_recovery_records = await manager.start()
+            except BackgroundTaskOwnerError as exc:
+                logger.warning(
+                    "[background-image] previous owner lease is still live; "
+                    "background mode will retry without blocking AstrBot startup: %s",
+                    BackgroundImageTaskManager.sanitize_error(exc),
+                )
+
+                async def retry_background_start() -> None:
+                    """Acquire the durable owner after a crashed process lease expires."""
+
+                    attempts = 0
+                    while True:
+                        await asyncio.sleep(
+                            max(0.0, min(5.0, float(manager.heartbeat_seconds)))
+                        )
+                        try:
+                            recovered = await manager.start()
+                        except BackgroundTaskOwnerError:
+                            attempts += 1
+                            if attempts % 12 == 0:
+                                logger.warning(
+                                    "[background-image] still waiting for the previous owner lease: attempts=%s",
+                                    attempts,
+                                )
+                            continue
+                        except Exception as retry_exc:
+                            logger.error(
+                                "[background-image] disabled after owner retry failed: %s",
+                                BackgroundImageTaskManager.sanitize_error(retry_exc),
+                            )
+                            return
+
+                        self.background_tasks = manager
+                        logger.info(
+                            "[background-image] durable owner acquired after retry: "
+                            "attempts=%s recovered=%s",
+                            attempts + 1,
+                            len(recovered),
+                        )
+                        if self._background_astrbot_loaded:
+                            for record in recovered:
+                                await self._dispatch_background_completion(
+                                    manager,
+                                    record,
+                                    self._delivery_target_from_record(record),
+                                )
+                        else:
+                            self._background_recovery_records.extend(recovered)
+                        return
+
+                self._background_start_task = asyncio.create_task(
+                    retry_background_start(),
+                    name="background-image-owner-retry",
+                )
             except Exception as exc:
                 logger.error(
                     "[background-image] disabled after startup check failed: %s",
@@ -712,6 +769,7 @@ class GiteeAIImagePlugin(Star):
     async def on_background_astrbot_loaded(self) -> None:
         """Drain restart recovery notifications after platforms are available."""
 
+        self._background_astrbot_loaded = True
         manager = getattr(self, "background_tasks", None)
         if manager is None:
             return
@@ -2058,6 +2116,11 @@ class GiteeAIImagePlugin(Star):
 
     async def terminate(self):
         self.debouncer.clear_all()
+        start_task = getattr(self, "_background_start_task", None)
+        if start_task is not None:
+            start_task.cancel()
+            await asyncio.gather(start_task, return_exceptions=True)
+            self._background_start_task = None
         manager = getattr(self, "background_tasks", None)
         if manager is not None:
             try:

@@ -447,6 +447,48 @@ class MainInitializeRequestModeTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    async def test_initialize_retries_live_background_owner_without_blocking(self):
+        mod, logger = _load_module()
+
+        class _RetryManager:
+            def __init__(self, *args, **kwargs):
+                self.heartbeat_seconds = 0
+                self.start_calls = 0
+
+            @staticmethod
+            def sanitize_error(error):
+                return str(error)
+
+            async def start(self):
+                self.start_calls += 1
+                if self.start_calls == 1:
+                    raise mod.BackgroundTaskOwnerError("previous owner is live")
+                return []
+
+        mod.BackgroundImageTaskManager = _RetryManager
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(
+                get_config=lambda: {"wake_prefix": ["/"]},
+            ),
+            config={"features": {"background_llm_image": {"enabled": True}}},
+        )
+        plugin._patch_tool_image_cache_runtime = lambda: None
+        plugin._register_preset_commands = lambda: None
+
+        await plugin.initialize()
+
+        self.assertIsNone(plugin.background_tasks)
+        self.assertIsNotNone(plugin._background_start_task)
+        await plugin._background_start_task
+        self.assertIsNotNone(plugin.background_tasks)
+        self.assertEqual(plugin.background_tasks.start_calls, 2)
+        self.assertTrue(
+            any(
+                "previous owner lease is still live" in msg
+                for msg in logger.warning_messages
+            )
+        )
+
     async def test_selfie_regex_fallback_handles_direct_slash_command(self):
         mod, _ = _load_module()
         plugin = mod.GiteeAIImagePlugin(
