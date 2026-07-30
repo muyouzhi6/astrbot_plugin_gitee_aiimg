@@ -67,7 +67,7 @@
 }
 ```
 
-- `max_running` 是所有单图和 batch child 共用的图片 Provider 并发数，京东云建议从 `2` 开始。
+- `max_running` 是所有单图和 batch child 共用的图片 Provider 并发数，一般建议从 `2` 开始，再根据机器资源和上游限流情况调整。
 - `max_queued` 按图片张数预留容量。例如一组 `4` 张批量任务会原子占用 `4` 个容量，容量不足时整组拒绝，不会只接一半。
 - Tool 完成参数校验、完整提示词构建和输入图片固化后立即返回，真正的 planner、图片 Provider 调用和发送在后台执行。
 - 用户继续聊天或询问照片时，Bot 能看到任务处于 `planning`、`queued`、`running`、`sending` 或终态，并能读取真实 effective prompt；批量完整提示词可由只读 Tool `aiimg_task_status` 分页查询。

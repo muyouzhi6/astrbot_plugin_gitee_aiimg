@@ -18,7 +18,7 @@
           "max_running": {
             "type": "int",
             "description": "全局同时运行的图片 Provider 数量",
-            "hint": "单图和批量 child 共用此上限。建议京东云保持 2。",
+            "hint": "单图和批量 child 共用此上限。一般建议从 2 开始，再根据机器资源和上游限流情况调整。",
             "default": 2
           },
           "max_queued": {
