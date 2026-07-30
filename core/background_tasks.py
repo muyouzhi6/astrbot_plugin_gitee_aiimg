@@ -1690,7 +1690,7 @@ class BackgroundImageTaskManager:
                 event.wait(),
                 timeout=max(0.01, float(timeout_seconds)),
             )
-        except TimeoutError:
+        except asyncio.TimeoutError:
             return False
         finally:
             if self._notification_events.get(token) is event:
