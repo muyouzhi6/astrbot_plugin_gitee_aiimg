@@ -83,6 +83,10 @@ class Debouncer:
 
     def _cleanup_llm_dedup(self, now: float) -> None:
         """清理过期的 LLM 去重缓存"""
-        expired = [k for k, ts in self._llm_dedup_cache.items() if now - ts > self._llm_dedup_ttl]
+        expired = [
+            k
+            for k, ts in self._llm_dedup_cache.items()
+            if now - ts > self._llm_dedup_ttl
+        ]
         for k in expired:
             self._llm_dedup_cache.pop(k, None)

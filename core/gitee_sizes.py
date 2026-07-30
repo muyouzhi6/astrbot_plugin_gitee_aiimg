@@ -54,7 +54,9 @@ def normalize_ratio_default_sizes(
         if not r or not s:
             continue
         sizes = [
-            normalize_size_text(item) for item in supported.get(r, []) if item is not None
+            normalize_size_text(item)
+            for item in supported.get(r, [])
+            if item is not None
         ]
         if sizes and s in sizes:
             out[r] = s

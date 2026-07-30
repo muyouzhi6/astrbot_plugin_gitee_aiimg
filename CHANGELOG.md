@@ -1,5 +1,25 @@
 # 更新日志
 
+## [v5.1.0] - 2026-07-31
+
+### 修复
+
+- 修复即梦 Provider 初始化时传入 `timeout` 会触发 `TypeError`，以及后端读取未定义 `timeout` 的问题；超时现在限制在 `1-3600` 秒。
+- 即梦 Provider 现在会正确接收配置中的 `output_format`，不再静默回退为默认 JPEG。
+- 清理全仓 Ruff 默认规则发现的未使用 import 和未使用变量，并统一 Ruff 格式。
+
+### 稳定性与兼容性
+
+- 新增 GitHub Actions 矩阵，覆盖 Ubuntu Python `3.10 / 3.11 / 3.12 / 3.13`、Windows Python `3.12` 和 macOS Python `3.12`；实际 AstrBot 运行环境仍遵循 Core 的 Python `>=3.12` 要求。
+- CI 固定执行 `compileall`、`ruff check`、`ruff format --check` 和完整 pytest，避免只在部署机器上碰运气。
+- 明确 LLM 后台任务与同步 `/批量` 命令的通知差异，以及单进程、本地可写 SQLite、平台、streaming 和跨系统 spool 恢复边界。
+- 非优雅重启后旧 owner lease 尚未过期时，AstrBot 可先正常启动；插件会后台重试并在 lease 过期后自动接管。
+
+### 测试
+
+- 新增即梦 `timeout` clamp 与 `output_format` 透传回归测试。
+- 增加 AstrBot 最低支持版本 `v4.16.0` 的插件 import / API smoke 验证流程。
+
 ## [v5.0.4] - 2026-07-31
 
 ### 修复

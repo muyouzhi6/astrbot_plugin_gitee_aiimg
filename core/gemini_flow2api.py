@@ -595,7 +595,9 @@ class GeminiFlow2ApiBackend:
 
         self.use_proxy: bool = bool(conf.get("use_proxy", False))
         self.proxy_url: str = str(conf.get("proxy_url") or "").strip()
-        self.output_format: str = str(conf.get("output_format", "jpeg") or "jpeg").strip().lower()
+        self.output_format: str = (
+            str(conf.get("output_format", "jpeg") or "jpeg").strip().lower()
+        )
 
         self.api_keys = _parse_api_keys(conf)
         self._key_index = 0
@@ -893,7 +895,9 @@ class GeminiFlow2ApiBackend:
             image_bytes = _decode_base64_bytes((b64_data or "").strip())
             if not image_bytes:
                 raise RuntimeError("Flow2API 返回 data:image 但 base64 解码失败")
-            return await self.imgr.save_image(image_bytes, output_format=self.output_format)
+            return await self.imgr.save_image(
+                image_bytes, output_format=self.output_format
+            )
 
         if ref.startswith(("http://", "https://")):
             return await self.imgr.download_image(ref, output_format=self.output_format)
@@ -905,6 +909,7 @@ class GeminiFlow2ApiBackend:
             # exact_size 是精确像素尺寸（如 "2048x1152"），flow2api 只接受 resolution 参数，
             # 无法精确控制像素；取近似分辨率级别注入 prompt hint
             from .output_spec import resolution_from_size
+
             res = resolution_from_size(intent.exact_size)
             return {"resolution": res} if res else {}
         result: dict[str, str] = {}

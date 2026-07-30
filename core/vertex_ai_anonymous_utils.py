@@ -56,7 +56,8 @@ def size_to_aspect_ratio(size: str | None) -> str | None:
 
 def build_anchor_url(recaptcha_base_api: str) -> str:
     cb = "".join(
-        random.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(RANDOM_CB_LEN)
+        random.choice("abcdefghijklmnopqrstuvwxyz0123456789")
+        for _ in range(RANDOM_CB_LEN)
     )
     return (
         f"{recaptcha_base_api}/recaptcha/enterprise/anchor"
@@ -98,15 +99,13 @@ def extract_images_from_graphql_payload(payload: Any) -> list[tuple[str, str]]:
     for elem in payload:
         if not isinstance(elem, dict):
             continue
-        for item in (elem.get("results") or []):
+        for item in elem.get("results") or []:
             if not isinstance(item, dict):
                 continue
             errors = item.get("errors") or []
             if isinstance(errors, list) and errors:
                 err = errors[0] if isinstance(errors[0], dict) else {}
-                status = (
-                    (err.get("extensions") or {}).get("status") or {}
-                ).get("code")
+                status = ((err.get("extensions") or {}).get("status") or {}).get("code")
                 msg = _as_str(err.get("message"))
                 if status == 3:
                     raise RecaptchaExpiredError(msg or "recaptcha expired")
@@ -118,7 +117,9 @@ def extract_images_from_graphql_payload(payload: Any) -> list[tuple[str, str]]:
                     continue
                 if _as_str(cand.get("finishReason")) != "STOP":
                     reason = _as_str(cand.get("finishReason"))
-                    raise NonRetryableError(f"Vertex AI Anonymous finishReason={reason}")
+                    raise NonRetryableError(
+                        f"Vertex AI Anonymous finishReason={reason}"
+                    )
                 parts = ((cand.get("content") or {}).get("parts")) or []
                 for part in parts:
                     if not isinstance(part, dict):

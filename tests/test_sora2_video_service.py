@@ -251,9 +251,7 @@ class Sora2VideoServiceTests(unittest.IsolatedAsyncioTestCase):
                 headers = kwargs["headers"]
                 key = headers["Authorization"].removeprefix("Bearer ")
                 if key == "limited":
-                    raise mod.Sora2APIError(
-                        "rate limited", 429, retry_after_seconds=12
-                    )
+                    raise mod.Sora2APIError("rate limited", 429, retry_after_seconds=12)
                 return {"video_url": "https://cdn.example/video.mp4"}
 
         service = Service(settings={"api_keys": ["limited", "good"]})

@@ -38,7 +38,9 @@ class GiteeEditBackend:
         self.guidance_scale = conf.get("guidance_scale", 1.0)
         self.poll_interval = conf.get("poll_interval", 5)
         self.poll_timeout = conf.get("poll_timeout", 300)
-        self.output_format = str(conf.get("output_format", "jpeg") or "jpeg").strip().lower()
+        self.output_format = (
+            str(conf.get("output_format", "jpeg") or "jpeg").strip().lower()
+        )
 
         raw_keys = conf.get("api_keys", [])
         self.api_keys = [str(k).strip() for k in raw_keys if str(k).strip()]
@@ -127,7 +129,9 @@ class GiteeEditBackend:
         logger.debug(f"[Gitee] 任务完成, 轮询耗时: {t_poll - t_create:.2f}s")
 
         # 下载图片
-        result_path = await self.imgr.download_image(file_url, output_format=self.output_format)
+        result_path = await self.imgr.download_image(
+            file_url, output_format=self.output_format
+        )
         t_end = time.perf_counter()
 
         logger.info(

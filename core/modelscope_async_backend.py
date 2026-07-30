@@ -97,7 +97,10 @@ class ModelScopeAsyncImageBackend:
                 ) as response:
                     text = await response.text()
                     if response.status >= 400:
-                        if response.status in {408, 429, 500, 502, 503, 504} and attempt + 1 < attempts:
+                        if (
+                            response.status in {408, 429, 500, 502, 503, 504}
+                            and attempt + 1 < attempts
+                        ):
                             await asyncio.sleep(min(2**attempt, 5))
                             continue
                         raise RuntimeError(
@@ -147,7 +150,11 @@ class ModelScopeAsyncImageBackend:
             status = str(data.get("task_status") or data.get("status") or "").upper()
             if status in {"SUCCEED", "SUCCEEDED", "SUCCESS", "DONE"}:
                 output_images = data.get("output_images") or []
-                first = output_images[0] if isinstance(output_images, list) and output_images else None
+                first = (
+                    output_images[0]
+                    if isinstance(output_images, list) and output_images
+                    else None
+                )
                 if isinstance(first, dict):
                     first = first.get("url") or first.get("image_url")
                 image_url = str(first or "").strip()
@@ -159,7 +166,12 @@ class ModelScopeAsyncImageBackend:
             if status in {"FAILED", "ERROR", "CANCELED", "CANCELLED"}:
                 errors = data.get("errors")
                 detail = errors.get("message") if isinstance(errors, dict) else None
-                detail = detail or data.get("message") or data.get("error") or "unknown error"
+                detail = (
+                    detail
+                    or data.get("message")
+                    or data.get("error")
+                    or "unknown error"
+                )
                 raise RuntimeError(
                     f"ModelScope 图片任务失败: task_id={task_id}, error={detail}"
                 )
@@ -226,7 +238,9 @@ class ModelScopeAsyncImageBackend:
             task_id,
             time.monotonic() - started,
         )
-        return await self.imgr.download_image(image_url, output_format=self.output_format)
+        return await self.imgr.download_image(
+            image_url, output_format=self.output_format
+        )
 
     async def edit(self, *args, **kwargs) -> Path:
         raise RuntimeError("ModelScope 当前模板不支持改图/图生图")

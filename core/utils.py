@@ -246,7 +246,9 @@ def _extract_cq_at_user_ids(text: str, target: list[str], *, self_id: str = "") 
             _append_unique_user_id(target, qq_match.group(1), self_id=self_id)
 
 
-def _extract_at_data_user_id(data: Any, target: list[str], *, self_id: str = "") -> None:
+def _extract_at_data_user_id(
+    data: Any, target: list[str], *, self_id: str = ""
+) -> None:
     if isinstance(data, dict):
         for key in _AT_USER_ID_KEYS:
             if key in data:
@@ -496,9 +498,7 @@ def _build_reply_lookup_params(message_id: Any) -> list[dict[str, Any]]:
     ]
     if message_id_str.isdigit():
         numeric_id = int(message_id_str)
-        params_list.extend(
-            [{"message_id": numeric_id}, {"id": numeric_id}]
-        )
+        params_list.extend([{"message_id": numeric_id}, {"id": numeric_id}])
     return params_list
 
 
@@ -560,7 +560,9 @@ async def _resolve_image_ref(event: AstrMessageEvent, image_ref: str) -> str:
 
 def _image_identity(seg: Image) -> str:
     direct = _normalize_image_ref(
-        getattr(seg, "url", None) or getattr(seg, "file", None) or getattr(seg, "path", None)
+        getattr(seg, "url", None)
+        or getattr(seg, "file", None)
+        or getattr(seg, "path", None)
     )
     if direct:
         return direct
@@ -619,7 +621,9 @@ async def _extract_reply_images(
             refs = await _astrbot_extract_quoted_message_images(
                 event, reply_component=reply_seg
             )
-            _append_unique_images(image_segs, await _build_images_from_refs(event, refs))
+            _append_unique_images(
+                image_segs, await _build_images_from_refs(event, refs)
+            )
         except Exception as e:
             logger.debug(
                 "[get_images] astrbot quoted_message_parser failed: reply_id=%s err=%s",
@@ -701,7 +705,9 @@ async def get_images_from_event(
                 if avatar_bytes:
                     b64 = base64.b64encode(avatar_bytes).decode()
                     image_segs.append(Image.fromBase64(b64))
-                    logger.debug(f"[get_images] sender avatar fallback loaded: {sender_id}")
+                    logger.debug(
+                        f"[get_images] sender avatar fallback loaded: {sender_id}"
+                    )
 
     logger.debug(f"[get_images] final_count={len(image_segs)}")
     return image_segs

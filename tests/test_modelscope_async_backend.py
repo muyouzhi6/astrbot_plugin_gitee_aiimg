@@ -110,22 +110,34 @@ class ModelScopeAsyncBackendTests(unittest.IsolatedAsyncioTestCase):
         _FakeSession.responses = [
             {"task_id": "task/1"},
             {"task_status": "RUNNING"},
-            {"task_status": "SUCCEED", "output_images": ["https://cdn.example/out.png"]},
+            {
+                "task_status": "SUCCEED",
+                "output_images": ["https://cdn.example/out.png"],
+            },
         ]
 
-        with patch.object(mod.aiohttp, "ClientSession", _FakeSession), patch.object(
-            mod.asyncio, "sleep", return_value=None
+        with (
+            patch.object(mod.aiohttp, "ClientSession", _FakeSession),
+            patch.object(mod.asyncio, "sleep", return_value=None),
         ):
             output = await backend.generate("draw", size="1024x1024")
 
         self.assertEqual(output, Path("/tmp/modelscope.png"))
         self.assertEqual(imgr.urls, ["https://cdn.example/out.png"])
         requests = _FakeSession.instances[0].requests
-        self.assertEqual(requests[0][0:2], ("POST", "https://api-inference.modelscope.cn/v1/images/generations"))
+        self.assertEqual(
+            requests[0][0:2],
+            ("POST", "https://api-inference.modelscope.cn/v1/images/generations"),
+        )
         self.assertEqual(requests[0][2]["headers"]["X-ModelScope-Async-Mode"], "true")
         self.assertEqual(requests[0][2]["json"]["model"], "Qwen/Qwen-Image")
-        self.assertEqual(requests[1][0:2], ("GET", "https://api-inference.modelscope.cn/v1/tasks/task%2F1"))
-        self.assertEqual(requests[1][2]["headers"]["X-ModelScope-Task-Type"], "image_generation")
+        self.assertEqual(
+            requests[1][0:2],
+            ("GET", "https://api-inference.modelscope.cn/v1/tasks/task%2F1"),
+        )
+        self.assertEqual(
+            requests[1][2]["headers"]["X-ModelScope-Task-Type"], "image_generation"
+        )
 
     async def test_poll_reports_upstream_failure(self):
         mod = _load_module()

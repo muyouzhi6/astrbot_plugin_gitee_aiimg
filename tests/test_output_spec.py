@@ -75,12 +75,15 @@ def test_resolve_llm_output_intent_uses_structured_fields_and_ignores_auto():
         aspect_ratio="9:16",
         resolution="2K",
     ) == OutputIntent(aspect_ratio="9:16", resolution="2K")
-    assert resolve_llm_output_intent(
-        "普通图片",
-        output="default",
-        aspect_ratio="auto",
-        resolution="auto",
-    ) == OutputIntent()
+    assert (
+        resolve_llm_output_intent(
+            "普通图片",
+            output="default",
+            aspect_ratio="auto",
+            resolution="auto",
+        )
+        == OutputIntent()
+    )
 
 
 def test_merge_output_intents_fills_only_missing_adaptive_fields():
@@ -135,27 +138,18 @@ def test_detect_aspect_ratio_from_image_matches_common_ratio():
 
 def test_resolve_gpt_image_2_size_maps_adaptive_controls():
     assert (
-        resolve_gpt_image_2_size(
-            OutputIntent(aspect_ratio="16:9", resolution="4K")
-        )
+        resolve_gpt_image_2_size(OutputIntent(aspect_ratio="16:9", resolution="4K"))
         == "3840x2160"
     )
     assert (
-        resolve_gpt_image_2_size(
-            OutputIntent(aspect_ratio="3:4", resolution="2K")
-        )
+        resolve_gpt_image_2_size(OutputIntent(aspect_ratio="3:4", resolution="2K"))
         == "1536x2048"
     )
 
 
 def test_resolve_gpt_image_2_size_preserves_exact_and_rejects_unknown_ratio():
+    assert resolve_gpt_image_2_size(OutputIntent(exact_size="1280x720")) == "1280x720"
     assert (
-        resolve_gpt_image_2_size(OutputIntent(exact_size="1280x720"))
-        == "1280x720"
-    )
-    assert (
-        resolve_gpt_image_2_size(
-            OutputIntent(aspect_ratio="7:5", resolution="2K")
-        )
+        resolve_gpt_image_2_size(OutputIntent(aspect_ratio="7:5", resolution="2K"))
         is None
     )

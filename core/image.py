@@ -53,10 +53,14 @@ class ImageManager:
             min_value=1,
             max_value=10,
         )
-        self._trusted_origins: frozenset[str] = frozenset(collect_trusted_origins(config))
+        self._trusted_origins: frozenset[str] = frozenset(
+            collect_trusted_origins(config)
+        )
 
         self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=float(max(1, min(timeout_seconds, 3600))))
+            timeout=aiohttp.ClientTimeout(
+                total=float(max(1, min(timeout_seconds, 3600)))
+            )
         )
         self.cleanup_batch_ratio = 0.5
 
@@ -188,7 +192,9 @@ class ImageManager:
                 await ensure_url_allowed(current, policy=policy)
                 async with self._session.get(
                     current,
-                    timeout=aiohttp.ClientTimeout(total=float(max(1, min(timeout, 3600)))),
+                    timeout=aiohttp.ClientTimeout(
+                        total=float(max(1, min(timeout, 3600)))
+                    ),
                     allow_redirects=False,
                 ) as resp:
                     if resp.status in {301, 302, 303, 307, 308}:

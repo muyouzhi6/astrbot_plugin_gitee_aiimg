@@ -1,13 +1,14 @@
 # AstrBot Gitee AI 图像生成插件
 
-[![Plugin Version](https://img.shields.io/badge/Version-v5.0.4-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
+[![Plugin Version](https://img.shields.io/badge/Version-v5.1.0-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16.0%2C%20%3C5-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![Platform](https://img.shields.io/badge/Primary-aiocqhttp-4caf50?style=for-the-badge)](#平台与限制)
+[![CI](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml/badge.svg)](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml)
 
 多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件。`v5` 的核心升级是 **LLM 生图不再阻塞对话**：Bot 接下单图或批量任务后可以继续聊天，期间始终知道自己正在生成什么、完整提示词是什么，任务完成或失败后还会按当前人格主动回来回应。
 
 > [!IMPORTANT]
-> 这份文档对应 `v5.0.4` 配置结构。
+> 这份文档对应 `v5.1.0` 配置结构。
 >
 > - `v5` 延续 `v4` 配置结构；从 `v3 / v2` 升级时仍需重新检查 WebUI 配置。
 > - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了发送图片前优化。
@@ -73,9 +74,10 @@
 - 图片先作为独立 image-only 消息发送，随后 Bot 再按当前人格自然说明完成、部分成功或失败。若 ContextAware session 已被清空或 conversation 已切换，则使用确定性主动通知，不把旧任务重新塞进新上下文。
 - `/stop` 会取消当前会话中该用户的后台图片任务；成功的 `/reset`、`/new` 会通过发送闸门阻止晚到图片污染新会话。权限不足而失败的 reset 不会误取消任务。
 - AstrBot 或插件重启后，尚未完成的 Provider 请求不会自动续跑或重复扣费，而是标记为 `interrupted` 并通知用户。
+- 非优雅重启后若旧进程的 owner lease 尚未过期，插件不会阻塞 AstrBot 启动；它会低频后台重试，lease 过期后自动接管账本并继续发送重启中断通知。
 
 > [!IMPORTANT]
-> 后台模式默认关闭，首版只支持单 AstrBot 进程、单个有效 Gitee 插件 owner，以及 `aiocqhttp` / `weixin_oc`。AstrBot 开启 `provider_settings.streaming_response` 时会自动回退同步路径，因为流式回复无法可靠使用发送前后的确认 Hook。
+> 后台模式默认关闭，只支持单 AstrBot 进程、单个有效 Gitee 插件 owner，以及 `aiocqhttp` / `weixin_oc`。AstrBot 开启 `provider_settings.streaming_response` 时会自动回退同步路径，因为流式回复无法可靠使用发送前后的确认 Hook。
 
 > [!NOTE]
 > QQ / 微信 adapter 当前没有暴露端到端 receipt 或幂等发送键。发送调用成功返回只代表 adapter transport accepted；发生 timeout、connection reset 或进程崩溃窗口时，任务会记录为 `unknown` 并禁止自动重发，避免重复图片。
@@ -119,8 +121,6 @@ chain 里可以填多个 provider，第一个是主用，后面的是自动兜�
 | Gitee AI 异步改图 | `gitee_async` |
 | Grok / xAI | `grok_images` 或 `grok_chat` |
 | 视频生成 | `grok_video` / `flow2api_video` / `sora2_video` |
-
-### 第二步：在功能 chain 里引用 provider
 
 ### 第二步：在功能 chain 里引用 provider
 
@@ -436,7 +436,7 @@ Q版化:Convert to chibi illustration style
 - `/批量n 自拍 ...`
 - `/批量n 改图预设名 ...`
 
-### 行为说明
+### 同步批量命令行为
 
 - 单次数量上限由 `features.batch.max_count` 控制，默认 `8`
 - 文生图批量并发由 `features.draw.batch_concurrency` 控制，默认 `2`
@@ -445,7 +445,9 @@ Q版化:Convert to chibi illustration style
 - 批量结果会按顺序直接发送单张图片
 - 除原插件自带表情反馈外，不额外发送标题、提示词、状态、失败摘要这类通知文本
 
-### 批量结果展示
+以上只描述 `/批量n ...` 直接命令。LLM 调用 `aiimg_batch_generate` 且后台模式生效时，Tool 会立即返回接单状态，图片在后台逐张发送，整组完成、部分成功、失败或取消后，Bot 还会按当前人格主动回应。
+
+### 同步批量命令结果展示
 
 - 批量任务成功的图片会一张一张直接发出
 - 不额外插入摘要、说明、失败提示等文本消息
@@ -547,6 +549,8 @@ Q版化:Convert to chibi illustration style
 - 每条规划项都必须包含 `title`、`prompt`、`variation_focus`
 - 规划结果会做去重和数量校验，不合格会重试规划
 - 图片生成完成后，插件会直接把结果发给用户；工具返回文本只做状态摘要，不需要二次帮用户“转述”
+- 后台模式生效时，Tool 在容量预留和输入固化后立即返回；图片完成、部分成功、失败或取消后，Bot 会主动发送人格化终态回应
+- 后台模式关闭、平台不受支持或 AstrBot 开启 streaming response 时，工具回退到原同步路径
 
 这正适合下面这种需求：
 
@@ -648,9 +652,11 @@ Q版化:Convert to chibi illustration style
 
 ### 官方维护 / 推荐环境
 
+- 实际 AstrBot 运行环境：`Python >= 3.12`
 - `AstrBot >= 4.16.0, < 5`
 - 主要维护平台：`QQ / aiocqhttp`
-- 兼容平台：个人微信 `weixin_oc` 发送图片前优化
+- 兼容平台：个人微信私聊 `weixin_oc`
+- GitHub CI：Ubuntu 上额外检查插件源码的 Python `3.10 / 3.11 / 3.12 / 3.13` 兼容性，并在 Windows、macOS 的 Python `3.12` 上回归；Python `3.10 / 3.11` 结果不代表对应 AstrBot 版本可在该解释器上部署
 
 ### 已知平台限制
 
@@ -658,6 +664,10 @@ Q版化:Convert to chibi illustration style
 - 视频发送依赖适配器是否支持 `Video.fromFileSystem` 或 `Video.fromURL`
 - 某些需要 URL 回退输入的后端，依赖当前 AstrBot 环境具备文件服务能力
 - `weixin_oc` 官方适配器仅支持个人私聊，不支持微信群聊；大图发送受微信 CDN 上传耗时影响。
+- LLM 后台任务只正式支持 `aiocqhttp` 和 `weixin_oc`，并且只支持单 AstrBot 进程；多进程共享同一任务账本会 fail-closed，不会抢跑任务。
+- 后台任务数据库必须位于本机可写磁盘。只读目录或 NFS / SMB 共享目录不属于支持范围，初始化失败时会关闭后台模式，不影响原同步路径。
+- 不保证把正在运行的 spool 目录跨 Windows / Linux 搬迁后继续恢复；请在同一主机和数据目录内完成重启恢复。
+- AstrBot 开启 streaming response 时，LLM Tool 自动回退同步执行，不会假装后台接单。
 
 ### 关于“其他平台能不能跑”
 
@@ -707,7 +717,7 @@ Q版化:Convert to chibi illustration style
 
 ### 批量结果为什么没有额外说明文字
 
-这是当前设计：批量结果默认只发图片本体，避免刷出不拟人的通知文本。
+这只适用于 `/批量n ...` 同步命令：结果默认只发图片本体，避免刷出机械通知。LLM 后台批量任务会在整组完成、部分成功、失败或取消后，由 Bot 按当前人格主动回应。
 
 ### 为什么 `request_mode=stream` 没起作用
 

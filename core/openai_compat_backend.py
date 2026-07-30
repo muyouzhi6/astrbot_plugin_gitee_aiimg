@@ -224,9 +224,7 @@ class OpenAICompatBackend:
             if normalize_size_text(s)
         ]
         self._ratio_defaults = (
-            ratio_defaults_from_sizes(self.allowed_sizes)
-            if self.allowed_sizes
-            else {}
+            ratio_defaults_from_sizes(self.allowed_sizes) if self.allowed_sizes else {}
         )
         if ratio_default_sizes and self.allowed_sizes:
             for ratio, size in ratio_default_sizes.items():
@@ -421,9 +419,7 @@ class OpenAICompatBackend:
             http_client = self._get_http_client()
             if http_client is not None:
                 kwargs["http_client"] = http_client
-        client = AsyncOpenAI(
-            **kwargs
-        )
+        client = AsyncOpenAI(**kwargs)
         self._clients[key] = client
         return client
 
@@ -438,7 +434,11 @@ class OpenAICompatBackend:
         if data is None:
             try:
                 model_dump = getattr(resp, "model_dump", None)
-                dumped = await _resolve_awaitable(model_dump()) if callable(model_dump) else None
+                dumped = (
+                    await _resolve_awaitable(model_dump())
+                    if callable(model_dump)
+                    else None
+                )
             except Exception:
                 dumped = None
             if isinstance(dumped, dict):
@@ -468,7 +468,9 @@ class OpenAICompatBackend:
                 str(url), output_format=self.output_format
             )
         if b64_json:
-            return await self.imgr.save_base64_image(str(b64_json), output_format=self.output_format)
+            return await self.imgr.save_base64_image(
+                str(b64_json), output_format=self.output_format
+            )
         raise RuntimeError("返回数据不包含图片")
 
     async def generate(

@@ -158,7 +158,9 @@ def _extract_ref_from_text(text: str) -> str | None:
     if s.startswith(("http://", "https://", "/")):
         return s
 
-    if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+    if (s.startswith("{") and s.endswith("}")) or (
+        s.startswith("[") and s.endswith("]")
+    ):
         try:
             parsed = json.loads(s)
         except Exception:
@@ -208,7 +210,14 @@ def _extract_image_ref(data: Any) -> str | None:
             if ref:
                 return ref
 
-        for key in ("images", "image_urls", "attachments", "media", "result", "response"):
+        for key in (
+            "images",
+            "image_urls",
+            "attachments",
+            "media",
+            "result",
+            "response",
+        ):
             ref = _extract_image_ref(data.get(key))
             if ref:
                 return ref
@@ -415,8 +424,6 @@ class Grok2ApiImagesBackend:
             if isinstance(extra_body, dict) and extra_body:
                 base_payload.update(extra_body)
 
-            last_resp: httpx.Response | None = None
-
             # Prefer multipart first: /v1/images/edits (newer Grok2API) only supports multipart.
             resp: httpx.Response | None = None
 
@@ -447,7 +454,6 @@ class Grok2ApiImagesBackend:
                     resp = await client.post(
                         endpoint, headers=headers, data=data_fields, files=files
                     )
-                    last_resp = resp
                     if resp.status_code == 200:
                         break
                 if resp is not None and resp.status_code == 200:
@@ -483,7 +489,6 @@ class Grok2ApiImagesBackend:
                             headers=self._headers(),
                             json=p,
                         )
-                        last_resp = resp
                         if resp.status_code == 200:
                             break
                         if resp.status_code not in {400, 415, 422}:
@@ -491,9 +496,7 @@ class Grok2ApiImagesBackend:
         if resp is None or resp.status_code != 200:
             status = resp.status_code if resp is not None else 0
             text = resp.text[:300] if resp is not None else "no response"
-            raise RuntimeError(
-                f"Grok2API images.edit 失败 HTTP {status}: {text}"
-            )
+            raise RuntimeError(f"Grok2API images.edit 失败 HTTP {status}: {text}")
 
         data = resp.json()
         ref = _extract_image_ref(data)
@@ -519,7 +522,9 @@ class Grok2ApiImagesBackend:
             image_bytes = _decode_base64_bytes((b64_data or "").strip())
             if not image_bytes:
                 raise RuntimeError("data:image base64 解码失败")
-            return await self.imgr.save_image(image_bytes, output_format=self.output_format)
+            return await self.imgr.save_image(
+                image_bytes, output_format=self.output_format
+            )
 
         if ref.startswith(("http://", "https://")):
             return await self.imgr.download_image(ref, output_format=self.output_format)
@@ -527,7 +532,8 @@ class Grok2ApiImagesBackend:
         # Relative URL like "/images/xxx.png"
         if self._origin and ref.startswith("/"):
             return await self.imgr.download_image(
-                urljoin(self._origin + "/", ref.lstrip("/")), output_format=self.output_format
+                urljoin(self._origin + "/", ref.lstrip("/")),
+                output_format=self.output_format,
             )
 
         # Other relative forms

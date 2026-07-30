@@ -472,11 +472,7 @@ class GrokVideoService:
                                     if isinstance(part, str) and part:
                                         content_parts.append(part)
                             content = "".join(content_parts)
-                            return {
-                                "choices": [
-                                    {"message": {"content": content}}
-                                ]
-                            }
+                            return {"choices": [{"message": {"content": content}}]}
                         return chunks[-1]
                 raise RuntimeError(
                     f"API 响应 JSON 解析失败: {e}, body={resp.text[:200]}"

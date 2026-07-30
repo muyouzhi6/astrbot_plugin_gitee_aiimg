@@ -168,6 +168,31 @@ class ProviderRegistryRequestModeTests(unittest.TestCase):
         self.assertEqual(backend.kwargs["poll_interval"], 3.0)
         self.assertEqual(backend.kwargs["poll_timeout"], 480)
 
+    def test_registry_forwards_jimeng_timeout_and_output_format(self):
+        mod = _load_module()
+        registry = mod.ProviderRegistry(
+            config={
+                "providers": [
+                    {
+                        "id": "jimeng-test",
+                        "__template_key": "jimeng",
+                        "api_url": "https://example.invalid/jimeng",
+                        "apikey": "test-key",
+                        "cookie_list": ["conversation:cookie"],
+                        "timeout": 240,
+                        "output_format": "webp_lossless",
+                    }
+                ]
+            },
+            imgr=object(),
+            data_dir=Path("/tmp"),
+        )
+
+        backend = registry.get_backend("jimeng-test")
+
+        self.assertEqual(backend.kwargs["timeout"], 240)
+        self.assertEqual(backend.kwargs["output_format"], "webp_lossless")
+
     def test_registry_resolves_x666_sora2_video_provider(self):
         mod = _load_module()
         registry = mod.ProviderRegistry(

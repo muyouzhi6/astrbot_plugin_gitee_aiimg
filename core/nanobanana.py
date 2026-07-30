@@ -24,7 +24,9 @@ class NanoBananaService:
         self.use_proxy = bool(nb_conf.get("use_proxy", False))
         self.proxy_url = str(nb_conf.get("proxy_url", "")).strip()
         self.max_images = int(nb_conf.get("max_images", 8))
-        self.output_format = str(nb_conf.get("output_format", "jpeg") or "jpeg").strip().lower()
+        self.output_format = (
+            str(nb_conf.get("output_format", "jpeg") or "jpeg").strip().lower()
+        )
 
         raw_keys = nb_conf.get("api_keys", [])
         self.api_keys = [str(k).strip() for k in raw_keys if str(k).strip()]

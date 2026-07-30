@@ -29,6 +29,7 @@ class JimengApiBackend:
         default_style: str = "真实",
         default_ratio: str = "1:1",
         default_model: str = "Seedream 4.0",
+        timeout: int = 120,
         output_format: str = "jpeg",
     ):
         self.imgr = imgr
@@ -41,7 +42,7 @@ class JimengApiBackend:
         self.default_style = str(default_style or "真实").strip()
         self.default_ratio = str(default_ratio or "1:1").strip()
         self.default_model = str(default_model or "Seedream 4.0").strip()
-        self.timeout = int(timeout or 120)
+        self.timeout = max(1, min(int(timeout or 120), 3600))
         self.output_format = str(output_format or "jpeg").strip().lower()
 
         self._cookie_index = 0

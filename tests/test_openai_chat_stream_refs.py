@@ -215,7 +215,9 @@ class OpenAIChatStreamRefTests(unittest.TestCase):
         raw = mod._decode_base64_bytes(tiny_png)
 
         self.assertTrue(mod._looks_like_placeholder_image_bytes(raw))
-        self.assertFalse(mod._looks_like_placeholder_image_bytes(b"\xff\xd8\xff" + b"0" * 256))
+        self.assertFalse(
+            mod._looks_like_placeholder_image_bytes(b"\xff\xd8\xff" + b"0" * 256)
+        )
 
     def test_apply_gemini_image_config_adds_common_size_aliases(self):
         mod = _load_module()
@@ -514,7 +516,9 @@ class OpenAIChatGenerateFallbackTests(unittest.IsolatedAsyncioTestCase):
         out_path = await backend._save_single_ref("/tmp/final.png")
 
         self.assertEqual(out_path, Path("/tmp/result.png"))
-        self.assertEqual(imgr.downloaded_urls, ["https://api.example.com/tmp/final.png"])
+        self.assertEqual(
+            imgr.downloaded_urls, ["https://api.example.com/tmp/final.png"]
+        )
 
     async def test_save_single_ref_rewrites_local_result_host_to_origin_host(self):
         mod = _load_module()
@@ -595,7 +599,9 @@ class OpenAIChatGenerateFallbackTests(unittest.IsolatedAsyncioTestCase):
         )
 
         class _FakeResponse:
-            def __init__(self, status_code: int, headers: dict[str, str], body: bytes = b""):
+            def __init__(
+                self, status_code: int, headers: dict[str, str], body: bytes = b""
+            ):
                 self.status_code = status_code
                 self.headers = headers
                 self._body = body
@@ -661,7 +667,9 @@ class OpenAIChatGenerateFallbackTests(unittest.IsolatedAsyncioTestCase):
             return Path("/tmp/from-images-api.png")
 
         async def _register_stub(images):
-            raise AssertionError("should not use file service fallback when images api succeeds")
+            raise AssertionError(
+                "should not use file service fallback when images api succeeds"
+            )
 
         backend._stream_chat_completion = _stream_stub
         backend._edit_via_images_api = _images_stub

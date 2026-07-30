@@ -11,9 +11,7 @@ from PIL import Image as PILImage
 _EXACT_SIZE_RE = re.compile(r"(\d{2,5})[xXx](\d{2,5})")
 _ASPECT_RATIO_RE = re.compile(r"(\d{1,4}):(\d{1,4})")
 _RESOLUTION_RE = re.compile(r"[1-9]\d*[kK]")
-_PROMPT_EXACT_SIZE_RE = re.compile(
-    r"(?<!\d)(\d{2,5})\s*[xX×]\s*(\d{2,5})(?!\d)"
-)
+_PROMPT_EXACT_SIZE_RE = re.compile(r"(?<!\d)(\d{2,5})\s*[xX×]\s*(\d{2,5})(?!\d)")
 _PROMPT_ASPECT_RATIO_RE = re.compile(r"(?<!\d)(\d{1,4})\s*:\s*(\d{1,4})(?!\d)")
 _PROMPT_RESOLUTION_RE = re.compile(r"(?<![A-Za-z0-9])([124][kK])(?![A-Za-z0-9])")
 
@@ -118,7 +116,9 @@ class OutputIntent:
         if self.aspect_ratio and not aspect_ratio:
             raise ValueError(f"invalid aspect ratio: {self.aspect_ratio}")
         if exact_size and (aspect_ratio or resolution):
-            raise ValueError("exact size cannot be combined with aspect ratio or resolution")
+            raise ValueError(
+                "exact size cannot be combined with aspect ratio or resolution"
+            )
         object.__setattr__(self, "exact_size", exact_size)
         object.__setattr__(self, "aspect_ratio", aspect_ratio)
         object.__setattr__(self, "resolution", resolution)
@@ -179,9 +179,7 @@ def parse_output_intent(
     )
 
 
-def output_intent_from_legacy(
-    size: str | None, resolution: str | None
-) -> OutputIntent:
+def output_intent_from_legacy(size: str | None, resolution: str | None) -> OutputIntent:
     if str(size or "").strip():
         return OutputIntent(exact_size=str(size).strip())
     if str(resolution or "").strip():
@@ -215,9 +213,7 @@ def format_output_intent(intent: OutputIntent | None) -> str:
         return ""
     if intent.exact_size:
         return intent.exact_size
-    return " ".join(
-        item for item in (intent.aspect_ratio, intent.resolution) if item
-    )
+    return " ".join(item for item in (intent.aspect_ratio, intent.resolution) if item)
 
 
 def extract_output_intent_from_prompt(text: str | None) -> OutputIntent:
@@ -230,9 +226,7 @@ def extract_output_intent_from_prompt(text: str | None) -> OutputIntent:
     if exact_matches:
         match = exact_matches[-1]
         return OutputIntent(
-            exact_size=normalize_exact_size(
-                f"{match.group(1)}x{match.group(2)}"
-            )
+            exact_size=normalize_exact_size(f"{match.group(1)}x{match.group(2)}")
         )
 
     aspect_ratio: str | None = None
@@ -269,9 +263,7 @@ def resolve_llm_output_intent(
         else OutputIntent()
     )
     structured_intent = (
-        parse_output_intent(
-            " ".join(structured_tokens), allow_legacy_resolution=False
-        )
+        parse_output_intent(" ".join(structured_tokens), allow_legacy_resolution=False)
         if structured_tokens
         else OutputIntent()
     )
@@ -382,11 +374,7 @@ def detect_aspect_ratio_from_image(image_bytes: bytes) -> str | None:
         COMMON_ASPECT_RATIOS,
         key=lambda ratio: abs(
             math.log(
-                value
-                / (
-                    int(ratio.split(":", 1)[0])
-                    / int(ratio.split(":", 1)[1])
-                )
+                value / (int(ratio.split(":", 1)[0]) / int(ratio.split(":", 1)[1]))
             )
         ),
     )
@@ -412,7 +400,9 @@ def select_allowed_size(
     candidates = normalized_sizes
     if desired_ratio:
         same_ratio = [
-            size for size in normalized_sizes if aspect_ratio_from_size(size) == desired_ratio
+            size
+            for size in normalized_sizes
+            if aspect_ratio_from_size(size) == desired_ratio
         ]
         if same_ratio:
             candidates = same_ratio
@@ -433,7 +423,9 @@ def select_allowed_size(
         width_text, height_text = size.split("x", 1)
         width = int(width_text)
         height = int(height_text)
-        return abs(max(width, height) - target_edge), abs(width * height - target_edge**2)
+        return abs(max(width, height) - target_edge), abs(
+            width * height - target_edge**2
+        )
 
     return min(candidates, key=distance)
 

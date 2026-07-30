@@ -59,7 +59,9 @@ class _Reply:
 class _BrokenReply(_Reply):
     @property
     def chain(self):
-        raise TypeError("CQHttp.call_action() takes 2 positional arguments but 3 were given")
+        raise TypeError(
+            "CQHttp.call_action() takes 2 positional arguments but 3 were given"
+        )
 
 
 class _DummyAPI:
@@ -266,7 +268,9 @@ class ReplyImageFallbackTests(unittest.IsolatedAsyncioTestCase):
                     "message": [
                         {
                             "type": "image",
-                            "data": {"url": "https://example.com/from-none-fallback.png"},
+                            "data": {
+                                "url": "https://example.com/from-none-fallback.png"
+                            },
                         }
                     ]
                 }
@@ -289,7 +293,11 @@ class ReplyImageFallbackTests(unittest.IsolatedAsyncioTestCase):
 
         def handler(action, params):
             if action == "get_msg":
-                return {"data": {"message": [{"type": "image", "data": {"file": "img_abc"}}]}}
+                return {
+                    "data": {
+                        "message": [{"type": "image", "data": {"file": "img_abc"}}]
+                    }
+                }
             if action == "get_image" and params.get("file") == "img_abc":
                 return {"data": {"url": "https://example.com/resolved.png"}}
             raise RuntimeError(f"no mock response for action={action} params={params}")
@@ -309,8 +317,11 @@ class ReplyImageFallbackTests(unittest.IsolatedAsyncioTestCase):
             return ["https://example.com/from-parser.png"]
 
         utils = _load_utils_module(parser_impl=parser_impl)
+
         def handler(action, params):
-            raise AssertionError(f"should not call api: action={action} params={params}")
+            raise AssertionError(
+                f"should not call api: action={action} params={params}"
+            )
 
         api = _DummyAPI(handler)
         reply = _BrokenReply(id="999")

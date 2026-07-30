@@ -210,9 +210,7 @@ class Sora2VideoService:
             self.settings.get("n", 1), default=1, min_value=1, max_value=4
         )
         self.timeout_seconds = _clamp_int(
-            self.settings.get("timeout_seconds")
-            or self.settings.get("timeout")
-            or 300,
+            self.settings.get("timeout_seconds") or self.settings.get("timeout") or 300,
             default=300,
             min_value=30,
             max_value=3600,
@@ -339,7 +337,9 @@ class Sora2VideoService:
             if resp.status_code == 403:
                 raise Sora2APIError("Sora2 API 访问被拒绝 (403)", 403)
             if resp.status_code == 429:
-                retry_after = _parse_retry_after_seconds(resp.headers.get("retry-after"))
+                retry_after = _parse_retry_after_seconds(
+                    resp.headers.get("retry-after")
+                )
                 raise Sora2APIError(
                     f"Sora2 API 达到限流或额度限制 (429): {detail}",
                     429,
@@ -481,8 +481,7 @@ class Sora2VideoService:
                     key_errors.append(str(e))
                     if candidate_offset >= len(key_candidates) - 1:
                         raise RuntimeError(
-                            "Sora2 API Key 池全部不可用: "
-                            + "; ".join(key_errors[-3:])
+                            "Sora2 API Key 池全部不可用: " + "; ".join(key_errors[-3:])
                         ) from e
                     logger.warning(
                         "[Sora2Video] 创建任务鉴权/额度失败，切换下一个 API Key: %s",

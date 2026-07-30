@@ -129,7 +129,9 @@ def _extract_ref_from_text(text: str) -> str | None:
     if s.startswith(("http://", "https://", "/")):
         return s
 
-    if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+    if (s.startswith("{") and s.endswith("}")) or (
+        s.startswith("[") and s.endswith("]")
+    ):
         try:
             parsed = json.loads(s)
         except Exception:
@@ -186,7 +188,14 @@ def _extract_image_ref(data: Any) -> str | None:
             if ref:
                 return ref
 
-        for key in ("images", "image_urls", "attachments", "media", "result", "response"):
+        for key in (
+            "images",
+            "image_urls",
+            "attachments",
+            "media",
+            "result",
+            "response",
+        ):
             ref = _extract_image_ref(data.get(key))
             if ref:
                 return ref
@@ -386,7 +395,9 @@ class OpenAIFullURLBackend:
             image_bytes = _decode_base64_bytes((b64_data or "").strip())
             if not image_bytes:
                 raise RuntimeError("data:image base64 解码失败")
-            return await self.imgr.save_image(image_bytes, output_format=self.output_format)
+            return await self.imgr.save_image(
+                image_bytes, output_format=self.output_format
+            )
 
         if _is_http_url(ref):
             return await self.imgr.download_image(ref, output_format=self.output_format)
@@ -410,12 +421,16 @@ class OpenAIFullURLBackend:
 
         content_type = (resp.headers.get("content-type") or "").lower()
         if content_type.startswith("image/"):
-            return await self.imgr.save_image(resp.content, output_format=self.output_format)
+            return await self.imgr.save_image(
+                resp.content, output_format=self.output_format
+            )
 
         try:
             data = resp.json()
         except Exception as exc:
-            raise RuntimeError(f"返回内容不是有效 JSON: {(resp.text or '')[:200]}") from exc
+            raise RuntimeError(
+                f"返回内容不是有效 JSON: {(resp.text or '')[:200]}"
+            ) from exc
 
         ref = _extract_image_ref(data)
         if not ref:

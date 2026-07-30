@@ -632,6 +632,7 @@ class ProviderRegistry:
                 default_ratio=str(conf.get("default_ratio") or "1:1").strip(),
                 default_model=str(conf.get("default_model") or "Seedream 4.0").strip(),
                 timeout=int(conf.get("timeout") or 120),
+                output_format=str(conf.get("output_format") or "jpeg"),
             )
 
         if template_key == "vertex_ai_anonymous":
@@ -673,6 +674,7 @@ class ProviderRegistry:
             backend: object = GrokVideoService(settings=p)
         elif template_key == "grok2api_video":
             from .grok2api_video_service import Grok2ApiVideoService
+
             backend = Grok2ApiVideoService(settings=p)
         elif template_key == "flow2api_video":
             settings = {
