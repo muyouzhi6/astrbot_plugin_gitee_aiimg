@@ -1,5 +1,18 @@
 # 更新日志
 
+## [v5.1.4] - 2026-07-31
+
+### 修复
+
+- JPEG、WebP 和 PNG 的 Pillow 解码与编码现在运行在独立的有界线程池中，不再占用 AstrBot 主 event loop；4K 无损图片保存期间，其他群聊、私聊、owner heartbeat 和后台任务状态更新可以继续调度。
+- 图片编码线程池最多使用 `2` 个 worker，并与 SQLite 使用的默认 executor 隔离；批量 Provider 同时返回多张图片时不会再串行冻结全部会话，也不会因 heartbeat 饿死触发 `Background owner lease is not valid`。
+- 保持原有 JPEG、WebP、WebP lossless、PNG 和 auto 输出语义、元数据传递及像素一致性，不通过降低图片质量或放宽 owner lease 掩盖阻塞问题。
+
+### 测试
+
+- 新增 event loop 响应性与编码并发上限回归测试；完整测试为 `179 passed`，`compileall`、Ruff、格式和配置 JSON 检查通过。
+- 本地双图 `3840x2160`、`WebP lossless effort=100` 实测最大 event loop lag 为 `0.0214s`，两张输出均约 `6.9 MiB`。
+
 ## [v5.1.2] - 2026-07-31
 
 ### 修复

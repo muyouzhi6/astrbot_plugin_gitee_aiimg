@@ -2,7 +2,10 @@ import asyncio
 import importlib.util
 import io
 import json
+import os
 import sys
+import threading
+import time
 import types
 from pathlib import Path
 
@@ -179,6 +182,88 @@ def test_lossless_webp_reencodes_existing_lossy_webp(tmp_path):
                     ).getbbox()
                     is None
                 )
+        finally:
+            await manager.close()
+
+    asyncio.run(run())
+
+
+def test_image_encoding_does_not_block_the_event_loop(tmp_path, monkeypatch):
+    if not features.check("webp"):
+        pytest.skip("Pillow WebP encoder unavailable")
+
+    source = _source_png()
+    original_save = Image.Image.save
+
+    def slow_save(image, fp, format=None, **params):
+        if format == "WEBP":
+            time.sleep(0.25)
+        return original_save(image, fp, format=format, **params)
+
+    monkeypatch.setattr(Image.Image, "save", slow_save)
+
+    async def run():
+        mod = _load_image_manager()
+        manager = mod.ImageManager({}, tmp_path)
+        loop = asyncio.get_running_loop()
+
+        async def probe_lag():
+            started = loop.time()
+            await asyncio.sleep(0.03)
+            return loop.time() - started
+
+        try:
+            probe = asyncio.create_task(probe_lag())
+            await asyncio.sleep(0)
+            path = await manager.save_image(source, output_format="webp_lossless")
+
+            assert path.suffix == ".webp"
+            assert await probe < 0.12
+        finally:
+            await manager.close()
+
+    asyncio.run(run())
+
+
+def test_image_encoding_uses_a_bounded_executor(tmp_path, monkeypatch):
+    if not features.check("webp"):
+        pytest.skip("Pillow WebP encoder unavailable")
+
+    source = _source_png()
+    original_save = Image.Image.save
+    counter_lock = threading.Lock()
+    active = 0
+    peak = 0
+
+    def slow_save(image, fp, format=None, **params):
+        nonlocal active, peak
+        if format != "WEBP":
+            return original_save(image, fp, format=format, **params)
+        with counter_lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.15)
+            return original_save(image, fp, format=format, **params)
+        finally:
+            with counter_lock:
+                active -= 1
+
+    monkeypatch.setattr(Image.Image, "save", slow_save)
+
+    async def run():
+        mod = _load_image_manager()
+        manager = mod.ImageManager({}, tmp_path)
+        try:
+            paths = await asyncio.gather(
+                *(
+                    manager.save_image(source, output_format="webp_lossless")
+                    for _ in range(4)
+                )
+            )
+
+            assert all(path.suffix == ".webp" for path in paths)
+            assert peak == max(1, min(2, os.cpu_count() or 1))
         finally:
             await manager.close()
 

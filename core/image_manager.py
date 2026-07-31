@@ -3,6 +3,7 @@ import base64
 import io
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import aiofiles
@@ -30,6 +31,10 @@ class ImageManager:
         self.image_dir.mkdir(parents=True, exist_ok=True)
         self.cleanup_batch_ratio = 0.5
         self._session_lock = asyncio.Lock()
+        self._encode_executor: ThreadPoolExecutor | None = ThreadPoolExecutor(
+            max_workers=max(1, min(2, os.cpu_count() or 1)),
+            thread_name_prefix="gitee-image-encode",
+        )
 
         encoding = config.get("image_encoding", {}) if isinstance(config, dict) else {}
         if not isinstance(encoding, dict):
@@ -130,10 +135,20 @@ class ImageManager:
                     )
         return self._session
 
-    async def close(self):
+    async def close(self) -> None:
+        """Close network and image-encoding resources."""
+
         if self._session and not self._session.closed:
             await self._session.close()
             self._session = None
+        executor = self._encode_executor
+        if executor is not None:
+            self._encode_executor = None
+            await asyncio.to_thread(
+                executor.shutdown,
+                wait=True,
+                cancel_futures=True,
+            )
 
     async def download_image(self, url: str, *, output_format: str = "jpeg") -> Path:
         """下载远程图片并保存到本地，返回文件路径"""
@@ -187,15 +202,117 @@ class ImageManager:
 
         return await self.save_image(data, output_format=output_format)
 
-    async def save_image(self, data: bytes, *, output_format: str = "jpeg") -> Path:
-        """保存 bytes 图片到本地
+    def _convert_image(self, data: bytes, fmt: str) -> tuple[bytes, str]:
+        """Convert image bytes without touching the asyncio event loop.
 
         Args:
-            data: 图片二进制数据
-            output_format: 输出格式 (jpeg/webp/webp_lossless/png/auto)
-        """
-        t0 = time.time()
+            data: Source image bytes.
+            fmt: Normalized target image format.
 
+        Returns:
+            Converted bytes and a human-readable encoding label.
+        """
+
+        from PIL import Image as PILImage
+        from PIL import ImageOps
+
+        original_data = data
+        conversion_label = ""
+        with PILImage.open(io.BytesIO(data)) as opened:
+            im = ImageOps.exif_transpose(opened)
+            im.load()
+            metadata: dict[str, object] = {}
+            for key in ("icc_profile", "exif", "xmp"):
+                value = im.info.get(key)
+                if value:
+                    metadata[key] = value
+
+            buf = io.BytesIO()
+            if fmt == "jpeg":
+                if im.mode in {"RGBA", "LA"} or (
+                    im.mode == "P" and "transparency" in im.info
+                ):
+                    rgba = im.convert("RGBA")
+                    bg = PILImage.new("RGB", rgba.size, (255, 255, 255))
+                    bg.paste(rgba, mask=rgba.split()[-1])
+                    im = bg
+                elif im.mode != "RGB":
+                    im = im.convert("RGB")
+                im.save(
+                    buf,
+                    format="JPEG",
+                    quality=self._jpeg_quality,
+                    subsampling=self._jpeg_subsampling,
+                    optimize=True,
+                    progressive=True,
+                    **{
+                        key: value
+                        for key, value in metadata.items()
+                        if key in {"icc_profile", "exif"}
+                    },
+                )
+                conversion_label = (
+                    f"JPEG q={self._jpeg_quality} subsampling={self._jpeg_subsampling}"
+                )
+            elif fmt in {"webp", "webp_lossless"}:
+                if im.mode == "P":
+                    im = im.convert("RGBA" if "transparency" in im.info else "RGB")
+                elif im.mode not in {"RGB", "RGBA"}:
+                    im = im.convert("RGBA" if "A" in im.getbands() else "RGB")
+                lossless = fmt == "webp_lossless"
+                quality = self._webp_lossless_effort if lossless else self._webp_quality
+                im.save(
+                    buf,
+                    format="WEBP",
+                    lossless=lossless,
+                    quality=quality,
+                    method=self._webp_method,
+                    alpha_quality=100,
+                    exact=True,
+                    **metadata,
+                )
+                conversion_label = (
+                    f"WebP lossless effort={quality} method={self._webp_method}"
+                    if lossless
+                    else f"WebP q={quality} method={self._webp_method}"
+                )
+            elif fmt == "png":
+                im.save(
+                    buf,
+                    format="PNG",
+                    optimize=self._png_compress_level == 9,
+                    compress_level=self._png_compress_level,
+                    **{
+                        key: value
+                        for key, value in metadata.items()
+                        if key in {"icc_profile", "exif"}
+                    },
+                )
+                conversion_label = f"PNG compress_level={self._png_compress_level}"
+
+            converted_data = buf.getvalue()
+            if converted_data:
+                data = converted_data
+                logger.debug(
+                    "[ImageManager] 格式转换: %s bytes -> %s bytes (%s)",
+                    len(original_data),
+                    len(data),
+                    conversion_label,
+                )
+        return data, conversion_label
+
+    async def save_image(self, data: bytes, *, output_format: str = "jpeg") -> Path:
+        """Persist image bytes after optional bounded background encoding.
+
+        Args:
+            data: Source image bytes.
+            output_format: Target format: jpeg, webp, webp_lossless, png, or auto.
+
+        Returns:
+            Path to the persisted image.
+        """
+
+        t0 = time.time()
         fmt = normalize_output_format(output_format)
         original_data = data
         conversion_label = ""
@@ -206,99 +323,18 @@ class ImageManager:
 
         if fmt != "auto" and not preserve_existing:
             try:
-                from PIL import Image as PILImage
-                from PIL import ImageOps
-
-                with PILImage.open(io.BytesIO(data)) as opened:
-                    im = ImageOps.exif_transpose(opened)
-                    im.load()
-                    metadata: dict[str, object] = {}
-                    for key in ("icc_profile", "exif", "xmp"):
-                        value = im.info.get(key)
-                        if value:
-                            metadata[key] = value
-
-                    buf = io.BytesIO()
-                    if fmt == "jpeg":
-                        if im.mode in {"RGBA", "LA"} or (
-                            im.mode == "P" and "transparency" in im.info
-                        ):
-                            rgba = im.convert("RGBA")
-                            bg = PILImage.new("RGB", rgba.size, (255, 255, 255))
-                            bg.paste(rgba, mask=rgba.split()[-1])
-                            im = bg
-                        elif im.mode != "RGB":
-                            im = im.convert("RGB")
-                        im.save(
-                            buf,
-                            format="JPEG",
-                            quality=self._jpeg_quality,
-                            subsampling=self._jpeg_subsampling,
-                            optimize=True,
-                            progressive=True,
-                            **{
-                                key: value
-                                for key, value in metadata.items()
-                                if key in {"icc_profile", "exif"}
-                            },
-                        )
-                        conversion_label = (
-                            f"JPEG q={self._jpeg_quality} "
-                            f"subsampling={self._jpeg_subsampling}"
-                        )
-                    elif fmt in {"webp", "webp_lossless"}:
-                        if im.mode == "P":
-                            im = im.convert(
-                                "RGBA" if "transparency" in im.info else "RGB"
-                            )
-                        elif im.mode not in {"RGB", "RGBA"}:
-                            im = im.convert("RGBA" if "A" in im.getbands() else "RGB")
-                        lossless = fmt == "webp_lossless"
-                        quality = (
-                            self._webp_lossless_effort
-                            if lossless
-                            else self._webp_quality
-                        )
-                        im.save(
-                            buf,
-                            format="WEBP",
-                            lossless=lossless,
-                            quality=quality,
-                            method=self._webp_method,
-                            alpha_quality=100,
-                            exact=True,
-                            **metadata,
-                        )
-                        conversion_label = (
-                            f"WebP lossless effort={quality} method={self._webp_method}"
-                            if lossless
-                            else f"WebP q={quality} method={self._webp_method}"
-                        )
-                    elif fmt == "png":
-                        im.save(
-                            buf,
-                            format="PNG",
-                            optimize=self._png_compress_level == 9,
-                            compress_level=self._png_compress_level,
-                            **{
-                                key: value
-                                for key, value in metadata.items()
-                                if key in {"icc_profile", "exif"}
-                            },
-                        )
-                        conversion_label = (
-                            f"PNG compress_level={self._png_compress_level}"
-                        )
-
-                    converted_data = buf.getvalue()
-                    if converted_data:
-                        data = converted_data
-                        logger.debug(
-                            "[ImageManager] 格式转换: %s bytes -> %s bytes (%s)",
-                            len(original_data),
-                            len(data),
-                            conversion_label,
-                        )
+                executor = self._encode_executor
+                if executor is None:
+                    raise RuntimeError("Image manager is closed")
+                (
+                    data,
+                    conversion_label,
+                ) = await asyncio.get_running_loop().run_in_executor(
+                    executor,
+                    self._convert_image,
+                    data,
+                    fmt,
+                )
             except Exception as e:
                 logger.warning("[ImageManager] 格式转换失败，使用原图: %s", e)
                 data = original_data
