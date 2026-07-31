@@ -24,6 +24,58 @@ class EmojiID:
     FAILED = 106  # 😞 失败 (委屈)
 
 
+# 运行期配置（由 configure_emoji_feedback 注入）
+_CONFIG: dict[str, Any] = {
+    "enabled": True,
+    "emoji_type": "1",
+    "processing": EmojiID.PROCESSING,
+    "success": EmojiID.SUCCESS,
+    "failed": EmojiID.FAILED,
+}
+
+
+def configure_emoji_feedback(config: dict | None) -> None:
+    """从插件配置中读取贴表情反馈设置。
+
+    Args:
+        config: 插件配置的 emoji_feedback 段；传空则使用内置默认值。
+    """
+    _CONFIG.clear()
+    _CONFIG.update(
+        {
+            "enabled": True,
+            "emoji_type": "1",
+            "processing": EmojiID.PROCESSING,
+            "success": EmojiID.SUCCESS,
+            "failed": EmojiID.FAILED,
+        }
+    )
+    if not isinstance(config, dict):
+        return
+
+    enabled = config.get("enabled")
+    if enabled is not None:
+        _CONFIG["enabled"] = bool(enabled)
+
+    emoji_type = str(config.get("emoji_type") or "").strip()
+    if emoji_type:
+        _CONFIG["emoji_type"] = emoji_type
+
+    for key in ("processing", "success", "failed"):
+        raw = config.get(key)
+        if raw in (None, ""):
+            continue
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            logger.warning("[emoji_feedback] 忽略无效的 %s 表情 ID: %r", key, raw)
+            continue
+        if 0 <= value <= 65535:
+            _CONFIG[key] = value
+        else:
+            logger.warning("[emoji_feedback] 忽略越界的 %s 表情 ID: %r", key, raw)
+
+
 async def _get_message_id(event: AstrMessageEvent) -> int | None:
     """从事件中提取消息 ID"""
     try:
@@ -70,6 +122,10 @@ async def set_emoji(
     Returns:
         是否成功
     """
+    if not _CONFIG.get("enabled", True):
+        return False
+    emoji_type = str(_CONFIG.get("emoji_type") or emoji_type or "1")
+
     message_id = await _get_message_id(event)
     if message_id is None:
         logger.debug("[emoji_feedback] 无法获取消息ID，跳过贴表情")
@@ -103,14 +159,14 @@ async def set_emoji(
 
 async def mark_processing(event: AstrMessageEvent) -> bool:
     """标记消息为处理中状态"""
-    return await set_emoji(event, EmojiID.PROCESSING)
+    return await set_emoji(event, int(_CONFIG.get("processing", EmojiID.PROCESSING)))
 
 
 async def mark_success(event: AstrMessageEvent) -> bool:
     """标记消息为成功状态"""
-    return await set_emoji(event, EmojiID.SUCCESS)
+    return await set_emoji(event, int(_CONFIG.get("success", EmojiID.SUCCESS)))
 
 
 async def mark_failed(event: AstrMessageEvent) -> bool:
     """标记消息为失败状态"""
-    return await set_emoji(event, EmojiID.FAILED)
+    return await set_emoji(event, int(_CONFIG.get("failed", EmojiID.FAILED)))

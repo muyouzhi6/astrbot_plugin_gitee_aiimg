@@ -524,6 +524,48 @@
       }
     }
   },
+  "emoji_feedback": {
+    "description": "贴表情反馈",
+    "hint": "在用户消息上贴表情标注任务状态（处理中/成功/失败）。仅支持 set_msg_emoji_like 的平台（如 aiocqhttp/QQ）生效，其余平台自动跳过。",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用贴表情反馈",
+        "hint": "关闭后不再在用户消息上贴任何表情。",
+        "default": true
+      },
+      "emoji_type": {
+        "type": "string",
+        "description": "表情类型",
+        "hint": "1=QQ 原生表情；2=Unicode emoji；326=QQ 黄豆表情。",
+        "options": [
+          "1",
+          "2",
+          "326"
+        ],
+        "default": "1"
+      },
+      "processing": {
+        "type": "int",
+        "description": "处理中表情 ID",
+        "hint": "默认 125=转圈。可改为其他表情 ID。",
+        "default": 125
+      },
+      "success": {
+        "type": "int",
+        "description": "成功表情 ID",
+        "hint": "默认 79=胜利。可改为其他表情 ID。",
+        "default": 79
+      },
+      "failed": {
+        "type": "int",
+        "description": "失败表情 ID",
+        "hint": "默认 106=委屈。可改为其他表情 ID。",
+        "default": 106
+      }
+    }
+  },
   "debounce_interval": {
     "description": "防抖时长(秒)",
     "hint": "防抖时间内无法重复提交生成/改图请求，每个用户单独计时",

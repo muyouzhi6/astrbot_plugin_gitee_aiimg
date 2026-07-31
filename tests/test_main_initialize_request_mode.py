@@ -352,6 +352,7 @@ def _load_module():
     )
     _install_stub_module(
         f"{CORE_PACKAGE_NAME}.emoji_feedback",
+        configure_emoji_feedback=lambda *args, **kwargs: None,
         mark_failed=lambda *args, **kwargs: None,
         mark_processing=lambda *args, **kwargs: None,
         mark_success=lambda *args, **kwargs: None,

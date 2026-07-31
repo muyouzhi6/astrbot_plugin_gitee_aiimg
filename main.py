@@ -56,7 +56,12 @@ from .core.batch_executor import BatchRunResult, run_batch
 from .core.debouncer import Debouncer
 from .core.draw_service import ImageDrawService
 from .core.edit_router import EditRouter
-from .core.emoji_feedback import mark_failed, mark_processing, mark_success
+from .core.emoji_feedback import (
+    configure_emoji_feedback,
+    mark_failed,
+    mark_processing,
+    mark_success,
+)
 from .core.gitee_sizes import (
     GITEE_SUPPORTED_RATIOS,
     normalize_size_text,
@@ -636,6 +641,8 @@ class GiteeAIImagePlugin(Star):
             pass
 
     async def initialize(self):
+        configure_emoji_feedback(self.config.get("emoji_feedback", {}))
+
         self.debouncer = Debouncer(self.config)
         self.imgr = ImageManager(self.config, self.data_dir)
         self.registry = ProviderRegistry(
