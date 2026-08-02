@@ -1,6 +1,6 @@
 # AstrBot Gitee AI 图像生成插件
 
-[![Plugin Version](https://img.shields.io/badge/Version-v5.1.4-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
+[![Plugin Version](https://img.shields.io/badge/Version-v5.1.5-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16.0%2C%20%3C5-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![Platform](https://img.shields.io/badge/Primary-aiocqhttp-4caf50?style=for-the-badge)](#平台与限制)
 [![CI](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml/badge.svg)](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml)
@@ -8,7 +8,7 @@
 多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件。`v5` 的核心升级是 **LLM 生图不再阻塞对话**：Bot 接下单图或批量任务后可以继续聊天，期间始终知道自己正在生成什么、完整提示词是什么，任务完成或失败后还会按当前人格主动回来回应。
 
 > [!IMPORTANT]
-> 这份文档对应 `v5.1.4` 配置结构。
+> 这份文档对应 `v5.1.5` 配置结构。
 >
 > - `v5` 延续 `v4` 配置结构；从 `v3 / v2` 升级时仍需重新检查 WebUI 配置。
 > - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了发送图片前优化。
@@ -71,11 +71,11 @@
 - `max_queued` 按图片张数预留容量。例如一组 `4` 张批量任务会原子占用 `4` 个容量，容量不足时整组拒绝，不会只接一半。
 - Tool 完成参数校验、完整提示词构建和输入图片固化后立即返回，真正的 planner、图片 Provider 调用和发送在后台执行。
 - 用户继续聊天或询问照片时，Bot 能看到任务处于 `planning`、`queued`、`running`、`sending` 或终态，并能读取真实 effective prompt；批量完整提示词可由只读 Tool `aiimg_task_status` 分页查询。
-- 图片先作为独立 image-only 消息发送，随后 Bot 再按当前人格自然说明完成、部分成功或失败。若 ContextAware session 已被清空或 conversation 已切换，则使用确定性主动通知，不把旧任务重新塞进新上下文。
+- 图片先作为独立 image-only 消息发送；只有原 conversation 和 ContextAware session 仍安全可用时，Bot 才会进入 Agent pipeline，按当前人格自然说明完成、部分成功或失败。模型请求失败、超时、ContextAware session 已清空或 conversation 已切换时，完成通知会静默终结，不发送固定统计话术，也不影响普通对话。
 - 同一会话中多个任务同时完成时，终态回应会按 UMO 串行进入 Agent pipeline，避免抢写历史或乱序说话；普通用户消息不使用这把通知锁，仍可继续聊天。
 - `/stop` 会取消当前会话中该用户的后台图片任务；成功的 `/reset`、`/new` 会通过发送闸门阻止晚到图片污染新会话。权限不足而失败的 reset 不会误取消任务。
-- AstrBot 或插件重启后，尚未完成的 Provider 请求不会自动续跑或重复扣费，而是标记为 `interrupted` 并通知用户。
-- 非优雅重启后若旧进程的 owner lease 尚未过期，插件不会阻塞 AstrBot 启动；它会低频后台重试，lease 过期后自动接管账本并继续发送重启中断通知。
+- AstrBot 或插件重启后，尚未完成的 Provider 请求不会自动续跑或重复扣费，而是标记为 `interrupted`；恢复过程只收敛任务与通知账本，不重入旧会话或发送固定中断文案。
+- 非优雅重启后若旧进程的 owner lease 尚未过期，插件不会阻塞 AstrBot 启动；它会低频后台重试，lease 过期后自动接管并收敛账本。
 - 插件每 5 分钟输出不含提示词的后台健康摘要并执行 passive WAL checkpoint；账本异常、通知积压或健康检查连续失败时停止后台接单并保留同步路径。
 
 > [!IMPORTANT]

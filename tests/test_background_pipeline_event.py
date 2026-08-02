@@ -476,7 +476,7 @@ async def test_transport_arm_suppresses_agent_reply_after_watchdog_takeover(tmp_
 
     assert event.is_stopped()
     assert not event.get_extra("_gitee_bg_transport_probe_armed", False)
-    await manager.mark_notification(token, "sent", attempt_id=watchdog_attempt)
+    await manager.mark_notification(token, "failed", attempt_id=watchdog_attempt)
     await manager.close()
 
 
@@ -617,7 +617,7 @@ async def test_astrbot_loaded_drains_recovery_notifications_once(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_restart_recovery_forces_deterministic_notification(tmp_path):
+async def test_restart_recovery_silently_closes_notification(tmp_path):
     mod, _ = _load_module()
     manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
     await manager.start()
@@ -636,36 +636,55 @@ async def test_restart_recovery_forces_deterministic_notification(tmp_path):
         },
         queue_notification=True,
     )
-    delivered = []
 
     async def unsafe_context(self, current_target):
         raise AssertionError("restart recovery must not re-enter the old conversation")
 
-    async def direct(
-        self,
-        current_manager,
-        current_record,
-        current_target,
-        *,
-        attempt_id,
-    ):
-        delivered.append(current_record["task_id"])
-        assert await current_manager.mark_notification(
-            current_record["notification_token"],
-            "sent",
-            attempt_id=attempt_id,
-        )
-
     plugin._background_context_is_safe = types.MethodType(unsafe_context, plugin)
-    plugin._send_deterministic_background_notification = types.MethodType(
-        direct,
-        plugin,
-    )
     await plugin._dispatch_background_completion(manager, terminal, target)
 
-    assert delivered == [record["task_id"]]
+    assert plugin.context.adapter.committed == []
     updated = await manager.get_task(record["task_id"])
-    assert updated["notification_state"] == "sent"
+    assert updated["notification_state"] == "failed"
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_empty_agent_completion_is_silenced(tmp_path):
+    mod, _ = _load_module()
+    manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await manager.start()
+    plugin = _plugin(mod, manager)
+    target = _target(mod)
+    record, _ = await manager.create_task_record(
+        _base_record(manager, "img_empty_completion", target),
+        reservation=1,
+    )
+    terminal = await manager.transition(
+        record["task_id"],
+        "completed",
+        {
+            "image_generated": True,
+            "image_sent": True,
+            "delivery_state": "confirmed",
+        },
+        queue_notification=True,
+    )
+    token = terminal["notification_token"]
+    attempt_id = "notify-agent-empty"
+    assert await manager.claim_notification(token, attempt_id) is not None
+    assert await manager.mark_notification(token, "queued", attempt_id=attempt_id)
+
+    event = _Event()
+    event.set_extra("_gitee_bg_task_id", record["task_id"])
+    event.set_extra("_gitee_bg_notification_token", token)
+    event.set_extra("_gitee_bg_notification_attempt", attempt_id)
+    await plugin.decorate_background_task_result(event)
+
+    assert event.is_stopped()
+    assert event.get_result().chain == []
+    updated = await manager.get_task(record["task_id"])
+    assert updated["notification_state"] == "failed"
     await manager.close()
 
 
@@ -816,8 +835,9 @@ async def test_completion_notifications_are_serialized_per_umo(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_deterministic_notification_without_transport_confirmation_is_unknown(
+async def test_notification_watchdog_silently_closes_queued_completion(
     tmp_path,
+    monkeypatch,
 ):
     mod, _ = _load_module()
     manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
@@ -825,7 +845,7 @@ async def test_deterministic_notification_without_transport_confirmation_is_unkn
     plugin = _plugin(mod, manager)
     target = _target(mod)
     record, _ = await manager.create_task_record(
-        _base_record(manager, "img_deterministic_unknown", target),
+        _base_record(manager, "img_watchdog_silent", target),
         reservation=1,
     )
     terminal = await manager.transition(
@@ -834,26 +854,23 @@ async def test_deterministic_notification_without_transport_confirmation_is_unkn
         queue_notification=True,
     )
     token = terminal["notification_token"]
-    attempt_id = "deterministic-sender"
-    claimed = await manager.claim_notification(token, attempt_id)
+    agent_attempt = "notify-agent-timeout"
+    assert await manager.claim_notification(token, agent_attempt) is not None
+    assert await manager.mark_notification(token, "queued", attempt_id=agent_attempt)
 
-    class _DirectEvent(_Event):
-        async def send(self, result):
-            self.sent_result = result
+    async def skip_watchdog_delay(seconds):
+        assert seconds == 90
 
-    async def rebuild(self, current_target, *, message=None, message_str=""):
-        return _DirectEvent()
-
-    plugin._rebuild_background_event = types.MethodType(rebuild, plugin)
-    await plugin._send_deterministic_background_notification(
+    monkeypatch.setattr(mod.asyncio, "sleep", skip_watchdog_delay)
+    await plugin._background_notification_watchdog(
         manager,
-        claimed,
-        target,
-        attempt_id=attempt_id,
+        record["task_id"],
+        token,
     )
 
+    assert plugin.context.adapter.committed == []
     updated = await manager.get_task(record["task_id"])
-    assert updated["notification_state"] == "unknown"
+    assert updated["notification_state"] == "failed"
     await manager.close()
 
 

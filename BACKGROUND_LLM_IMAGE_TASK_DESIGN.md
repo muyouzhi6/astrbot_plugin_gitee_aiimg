@@ -14,8 +14,8 @@
 4. 后续每次正常 LLM 请求，插件通过 `on_llm_request(priority=-20)` 注入单图或批量 parent/child 状态、已生成的详细提示词、耗时和发送状态。
 5. 图片生成完成后，后台 worker 先发送图片，并把 adapter 成功返回或 `unknown` 写入事务账本，再向原平台提交一个内部合成事件。
 6. 内部合成事件重新经过 AstrBot 正常 pipeline，因此会获得 LLM 阶段的 session lock，并执行 ContextAware 等插件的 `on_llm_request` Hook；`commit_event()` 只表示成功放入 Core event queue，不表示 pipeline 已启动或文本已经发出。
-7. 正常同进程、同 conversation 的成功、失败和 `/stop` 取消由主 Agent 根据原人格和当前上下文自然回应；`/reset`、`/new`、重启恢复等不应重入旧上下文的路径使用自然措辞的确定性主动通知。
-8. 当前接单事件进入发送前 decoration 时若没有非空自然文本，插件先补一条确定性接单短句，再由 `after_message_sent` 确认 transport accepted；终态 Agent 通知未被 synthetic event claim 时由 watchdog 兜底，已进入发送但结果不明时收敛为 unknown，禁止静默或盲目重复。
+7. 正常同进程、同 conversation 的成功、失败和 `/stop` 取消由主 Agent 根据原人格和当前上下文自然回应；`/reset`、`/new`、重启恢复等不应重入旧上下文的路径只收敛通知账本，不主动发送固定话术。
+8. 当前接单事件进入发送前 decoration 时若没有非空自然文本，插件先补一条确定性接单短句，再由 `after_message_sent` 确认 transport accepted；终态 Agent 通知没有产生自然文本或超过 watchdog 时限时静默收敛为 failed，已进入发送但结果不明时收敛为 unknown，禁止固定兜底或盲目重复。
 
 首版只覆盖插件元数据中声明支持的平台：
 
@@ -181,7 +181,7 @@ core/background_tasks.py
 
 批量任务不会为每张图片都唤醒一次 Agent，避免群聊被连续 N 条“第几张完成了”刷屏。生成过程中的逐项状态通过普通对话 Hook 查询；整批终态只自然回应一次。
 
-正常同 conversation 的失败和 `/stop` 取消走同一条 Agent 终态通知链；reset/new/restart 中断走确定性主动通知。所有路径都必须按账本如实区分 `image_sent=false`、`delivery_state=confirmed` 和 `delivery_state=unknown`；其中 `confirmed` 的用户可见文案可以说“已经发出来”，但技术日志和测试必须标注其真实语义是 adapter transport accepted。
+正常同 conversation 的失败和 `/stop` 取消走同一条 Agent 终态通知链；reset/new/restart 中断只静默收敛通知账本。所有路径都必须按账本如实区分 `image_sent=false`、`delivery_state=confirmed` 和 `delivery_state=unknown`；其中 `confirmed` 的用户可见文案可以说“已经发出来”，但技术日志和测试必须标注其真实语义是 adapter transport accepted。
 
 Tool 的接单回复有独立 acknowledgment 状态。正常情况由当前主 Agent 自然接单；若进入 `on_decorating_result` 时最终 chain 没有非空 Plain，Hook 直接补一次自然短句，随后由 `after_message_sent` 确认。worker 可以立即开始调用 provider，但在进入图片发送阶段前会短暂等待接单状态解析，避免极快任务出现“图片先到，接单话后到”的倒序。若主 Agent 连 decoration 阶段都没有进入，当前 session lock 通常也尚未释放，这属于聊天 LLM/pipeline 故障，不应再用一个会与迟到 Agent 回复竞态的独立定时接单消息掩盖。
 
@@ -596,7 +596,7 @@ ContextAware 当前使用 `priority=-10`。AstrBot Hook 按 priority 从高到�
 - 总长度上限 6000 字符。
 - TextPart 必须调用 `mark_as_temp()`，避免每轮重复持久化整个状态块。
 - user/effective prompt 必须做 XML 转义或改用严格 JSON 序列化，不能让提示词中的伪闭合标签破坏状态块结构。
-- reset/new 取消且被标记为 `suppress_future_injection=true` 的终态只用于当次确定性通知，不再注入清空后的新上下文。
+- reset/new 取消且被标记为 `suppress_future_injection=true` 的终态只用于账本收敛，不再注入清空后的新上下文或发送固定通知。
 
 ### 9.2 `aiimg_task_status` 只读 Tool
 
@@ -653,13 +653,13 @@ event.extra["gitee_bgimg_internal_event"] = true
 - `event._has_send_oper is True`。当前 `aiocqhttp` 和 `weixin_oc` 都只在 adapter 发送 await 成功返回后调用基类 `send()` 设置该字段；“Hook 被调用”本身不是传输成功证明。
 - `event.get_result()` 的最终 chain 中存在非空 `Plain` 文本。仅有 At/Reply、空结果或此前发送过的 Tool 使用提示，不能冒充人格化终态回复。
 - 最终 Plain 摘要与 `on_decorating_result` 记录的待发送摘要一致，避免其他插件在两个 Hook 之间替换结果后误确认。
-- notification 尚未进入 sent/fallback_sent 终态。
+- notification 尚未进入 sent/unknown/failed/expired 终态。
 
 同一 Hook 还负责：
 
 - 原始 Tool 事件携带 ack token，且 `_has_send_oper is True`、最终 chain 含非空 `Plain` 时，写 `ack_state=sent`。
-- 原始 Tool event 的 deterministic ack 如果由 decoration Hook 补入，也走相同 digest 和 `_has_send_oper` 校验后写 `ack_state=fallback_sent`。
-- 内部 notification event 已进入 `agent_sending` 但 `_has_send_oper=false` 时写 `notification_state=unknown`，不再由 watchdog 并发 fallback；仍停留 queued 的事件才允许 watchdog claim。
+- 原始 Tool event 的 deterministic ack 如果由 decoration Hook 补入，也走相同 digest 和 `_has_send_oper` 校验后写 `ack_state=sent`。
+- 内部 notification event 已进入 `agent_sending` 但 `_has_send_oper=false` 时写 `notification_state=unknown`；仍停留 queued 的事件允许 watchdog claim 后静默写 failed，不再并发发送 fallback。
 
 `_has_send_oper` 是当前 AstrBot 的内部字段，因此必须在启动能力检测中 feature-detect。它只能代表一次成功返回的发送操作，不能证明用户终端已收到。字段缺失时后台模式必须同步降级，不能把 `after_message_sent` 当成成功信号硬猜。
 
@@ -681,8 +681,8 @@ event.extra["gitee_bgimg_internal_event"] = true
 AstrBot 完成启动后 drain recovery outbox：
 
 - 重新按 platform ID 定位 adapter，平台尚不可用时做有限退避重试。
-- 对 interrupted/unknown 使用确定性主动消息，不提交 ContextAware 合成事件。
-- 只有主动发送成功后才把 recovery notice 标为 sent；失败项保留到下一次 drain 或首次正常平台消息触发时再试。
+- 对 interrupted/unknown 不提交 ContextAware 合成事件，只把 recovery notice 静默收敛为 failed。
+- recovery notice 不主动发送、不跨重启重试；任务事实仍保留在账本中供后续普通对话查询。
 - 热重载场景中平台通常已经存在，`initialize()` 可以额外启动一个短延迟 drain；该 drain 与 `on_astrbot_loaded()` 使用同一 outbox token 和事务 claim，避免同一进程内重复发送。平台在成功返回前断线时仍只能记为 unknown，不能承诺跨崩溃 exactly-once。
 
 ### 9.8 `terminate()`
@@ -770,7 +770,7 @@ The batch task is terminal. Images with image_sent=true were already sent in ori
 
 AstrBot 正常历史保存会把本次 `ProviderRequest.prompt` 作为一条 user-role 输入保存，再保存 Agent 的 assistant 回复。这个简短 internal lifecycle marker 是为了让完成回应进入正常对话历史，也是“Bot 之后知道任务已经结束”的一部分；它不是用户真实发言，因此必须保持通用、明确标注 internal，绝不能把完整 task JSON 塞进去。若要求 AstrBot history 中连这一条合成 user-role marker 都不存在，就需要 Core 提供 no-save 输入能力，超出了“只改插件”的边界。
 
-提交前必须重新确认当前 conversation ID 仍等于任务的原 cid，且 reset epoch、owner 和 task tombstone 均未变化。任一不一致时不再提交 Agent 合成事件，改走对应的确定性主动通知或直接结束，避免旧任务写入新 conversation。
+提交前必须重新确认当前 conversation ID 仍等于任务的原 cid，且 reset epoch、owner 和 task tombstone 均未变化。任一不一致时不再提交 Agent 合成事件，直接静默结束通知，避免旧任务写入新 conversation。
 
 Core session lock 只覆盖 Internal Agent 的 build/run/history 保存阶段，不覆盖 RespondStage 的平台发送，也不覆盖后台图片 worker。插件因此还需要每个 UMO 一个 notification dispatch queue：同一 UMO 同时只允许一个 token 进入 synthetic pipeline，后续 token 按 terminal timestamp 排队；这保证多个并发任务的人格化终态不会同时抢答，但不阻塞用户正常消息进入 Core session lock。
 
@@ -785,9 +785,9 @@ ContextAware 的 `on_message` 只有在 message chain 包含 Plain、Image 或 v
 - 插件不存在、未激活，当前 platform 不在其 `support_platforms`，或当前是私聊且其公开 config `only_group_chat=true` 时，不需要 ContextAware gate。
 - 插件已激活、当前 platform 受其支持且其配置会处理当前消息类型时，feature-detect `metadata.star_cls.has_session(umo)`。
 - 只有 `has_session(umo)=true` 才允许提交 Agent 合成事件。
-- API 缺失、调用异常或返回 false 时，使用确定性主动通知，不触发 ContextAware 懒初始化；不得导入它的私有模块、读写 `_sessions` 或修改其代码。
+- API 缺失、调用异常或返回 false 时，静默结束通知，不触发 ContextAware 懒初始化；不得导入它的私有模块、读写 `_sessions` 或修改其代码。
 
-因此本设计只对“原任务仍处于同一进程、同一 epoch、同一 conversation，且受支持平台上的 ContextAware session 仍存在”的正常终态使用 Agent 合成事件；`/reset`、`/new`、无权限 reset 导致 ContextAware session 被提前清空、进程重启恢复、conversation 漂移和 API 不确定路径均使用确定性主动通知。
+因此本设计只对“原任务仍处于同一进程、同一 epoch、同一 conversation，且受支持平台上的 ContextAware session 仍存在”的正常终态使用 Agent 合成事件；`/reset`、`/new`、无权限 reset 导致 ContextAware session 被提前清空、进程重启恢复、conversation 漂移和 API 不确定路径均静默结束通知。
 
 ContextAware 的 `on_llm_request(priority=-10)` 仍会读取该 UMO 已有的真实群聊快照并注入场景。Gitee 随后以 `priority=-20` 注入任务终态。
 
@@ -825,7 +825,7 @@ ContextAware 在 `on_llm_response` 阶段记录 Bot 文本，早于平台实际�
 4. 只有确认成功后，reset epoch 才加一并持久化，同时设置任务取消信号。
 5. decoration Hook 在事务提交后释放 send gate；worker 取得 gate 后再次比较 epoch、owner 和 tombstone。
 6. epoch 不一致时禁止图片发送，任务进入 cancelled。
-7. reset/new 对应的任务终态不再提交 Agent 合成事件，而是主动发送一条自然、确定性的取消说明，避免向已经清空或新建的 ContextAware session 注入合成消息。
+7. reset/new 对应的任务终态不再提交 Agent 合成事件，通知账本直接静默收敛，避免向已经清空或新建的 ContextAware session 注入合成消息。
 
 命令被拒绝、执行失败、pipeline 提前终止或 barrier 超时无法确认 marker 时，只解除 barrier，原任务继续运行。barrier 必须有独立 finalizer，确保异常路径释放 send gate。这样堵住“命令成功后才开始发送”的幽灵图片窗口，也不会因一次无权限 reset 误取消任务。
 
@@ -840,7 +840,7 @@ reset/new barrier 必须在 batch 每张图片发送前重新检查，而不是�
 ### 11.3 插件重载和 AstrBot 重启
 
 - 热重载：terminate 将任务标记 interrupted，新实例 initialize 后恢复通知。
-- 正常重启：启动时根据 SQLite 非终态记录标记 interrupted 并发送确定性通知，不重入 ContextAware pipeline。
+- 正常重启：启动时根据 SQLite 非终态记录标记 interrupted，并静默收敛通知，不重入 ContextAware pipeline。
 - 进程被强制 kill：无法在退出前写状态；启动时将残留 active 记录标记 interrupted。
 - 不尝试恢复不可重放的 provider 请求，避免重复扣费和重复发图。
 - 如果残留状态为 sending 且没有 confirmed receipt，通知必须说明“发送结果未知，为避免重复不会自动重发”，不能笼统声称用户一定没收到。
@@ -905,7 +905,7 @@ receipt 与 task tombstone 写入同一个 SQLite 事务，不再维护第二套
 - 每个任务只有一个 `notification_token`。
 - batch parent 只有一个 notification token，但每个 child 有独立 send_attempt_id 和 image receipt。
 - 终态和 notification outbox 在同一事务中持久化，再提交内部事件。
-- notification 状态只允许 `pending -> queued -> agent_sending|fallback_sending -> sent|fallback_sent|unknown`。
+- notification 状态只允许 `pending -> claimed -> queued|claimed -> sent|unknown|failed|expired`，每次迁移都校验 attempt ID 和 owner epoch。
 - `after_message_sent` 必须校验 task_id 和 token。
 - `after_message_sent` 还必须校验 `_has_send_oper is True`，并在 SQLite 单事务中写 notification receipt 和 sent 状态。
 - 相同 token 的第二个内部事件在进入 Agent 前停止。
@@ -913,33 +913,22 @@ receipt 与 task tombstone 写入同一个 SQLite 事务，不再维护第二套
 - worker 在 `image_generated=false` 时才允许 provider 链内部重试；一旦已有生成结果，绝不能为了发送失败重新调用 provider 或重新创建 task ID。平台 fallback 只允许发生在可以证明远端未接受的本地/明确拒绝错误，timeout 和断线直接 unknown。
 - `aiocqhttp` 当前丢弃 OneBot send 返回值，`weixin_oc` 使用本地随机 message ID；receipt 因此保存 adapter、attempt ID、response digest 和时间，不伪造平台真实 message ID。
 
-notification outbox 使用事务 claim：synthetic event 在 `on_decorating_result` 中只能把 `queued` CAS 为 `agent_sending`；watchdog 只能把仍为 `queued` 的 token CAS 为 `fallback_sending`。任一方 claim 后，另一方必须停止发送。若平台发送成功后进程在 SQLite commit 前崩溃，恢复时只能标记 unknown，不能自动重放 Agent 通知。
+notification outbox 使用事务 claim：synthetic event 在 `on_decorating_result` 中只能确认自己仍持有 `queued` claim；watchdog 只能接管仍为 `queued` 的 token 并静默写 failed。watchdog 接管后，迟到 Agent 必须停止发送。若平台发送成功后进程在 SQLite commit 前崩溃，恢复时只能标记 unknown，不能自动重放 Agent 通知。
 
 残余风险：消息平台可能已经接受图片或文本，但网络在确认返回前断开。首版遇到这种错误直接记 unknown 而不是自动 fallback，可优先避免重复；但无法同时保证“不重复”和“绝不漏发”。没有平台级 idempotency API 时只能二选一，本设计选择不自动重复发送。
 
 ## 14. 通知 watchdog
 
-接单确认由原事件的 `on_decorating_result` 补齐非空 Plain，并由 `after_message_sent` 收敛，不使用独立定时 watchdog，避免固定接单话和迟到的主 Agent 回复重复。若原 Agent 连 decoration 阶段都未进入，通常说明该次 LLM/pipeline 本身仍卡住，此时插件不能在不制造竞态的前提下保证额外接单消息。终态内部事件提交后启动 watchdog：
+接单确认由原事件的 `on_decorating_result` 补齐非空 Plain，并由 `after_message_sent` 收敛，不使用独立定时 watchdog，避免固定接单话和迟到的主 Agent 回复重复。若原 Agent 连 decoration 阶段都未进入，通常说明该次 LLM/pipeline 本身仍卡住，此时插件不额外发送接单消息。终态内部事件提交后启动 watchdog：
 
 - 默认等待 90 秒。
-- 如果 `notification_state=sent|fallback_sent|unknown`，结束。
-- 90 秒后只有仍为 `queued` 的 token 才能事务 claim 为 `fallback_sending`；已进入 `agent_sending` 的 token 不得并发 fallback，而是在平台超时后由原发送路径收敛为 sent 或 unknown。
-- fallback claim 成功后重新定位当前 adapter，并使用 `Context.send_message(umo, MessageChain)` 发送确定性短文本。
-- fallback 文本包含成功/失败/取消事实，但不包含内部 task ID、堆栈和敏感错误。
-- fallback await 成功返回后写 `notification_state=fallback_sent`；timeout/断线写 unknown，禁止自动再发。
+- 如果 `notification_state=sent|unknown|failed|expired`，结束。
+- 90 秒后只有仍为 `pending|queued` 的 token 才能被 watchdog 事务 claim；成功 claim 后直接写 `notification_state=failed`，不定位 adapter，不发送任何固定文本。
+- watchdog 接管后，迟到 Agent 在发送前重新确认 claim；失去 claim 时停止事件，避免晚到人格化回复与静默终结竞争。
+- Agent 已进入发送但 transport 结果不明时仍由原路径收敛为 unknown，不能用 failed 掩盖平台可能已经接收的事实。
+- ContextAware session 不安全、conversation 漂移、重启恢复、synthetic enqueue 失败或 Agent completion 为空时，同样静默写 failed。
 
-示例兜底：
-
-- 成功：`刚才那张图已经画好并发出来了。`
-- 失败：`刚才那次生图没成功，任务已经结束了。`
-- 取消：`刚才那次生图已经停下来了。`
-- 中断：`刚才的生图任务因为服务重载中断了，没有继续发送。`
-- 批量完成：`刚才那组图已经处理完了，计划 4 张，实际发出了 4 张。`
-- 批量部分成功：`刚才那组图处理完了，4 张里发出了 3 张，另外 1 张没成功。`
-
-正常路径仍由主 Agent 按人格生成，以上文本只用于防止静默。
-
-watchdog 的 fallback 发送成功后必须把实际发送文本和 transport=`fallback` 写入账本，供后续 `on_llm_request` 注入。进程重启时如果 notification 处于 `agent_sending|fallback_sending` 且没有 receipt，不自动重放 Agent 事件；将状态标为 unknown。是否再发送“上次通知结果不确定”的恢复说明也必须经过独立 recovery token，且文案不能重复宣称成功或失败。
+正常路径仍由主 Agent 按人格生成。这里接受“图片已独立发送，但完成文本可能缺席”的产品取舍，以避免机械话术破坏人格；任务真实状态仍可在后续普通对话中查询。
 
 ## 15. 能力检测和同步降级
 
@@ -1008,7 +997,7 @@ features.background_llm_image.max_queued
 - 单图、多个独立单图 parent，以及一个 batch parent 下的多 child 并发。
 - preparing、planning、queued、running、generated、sending、completed、partial、failed、cancelled、interrupted 状态，以及 Tool 层 `accepted` 回执。
 - 普通对话状态注入。
-- 正常同会话终态的 Agent 自然通知，以及 reset/new/restart 的确定性自然措辞通知。
+- 正常同会话终态的 Agent 自然通知，以及 reset/new/restart 的静默通知收敛。
 - `/stop`、`/reset`、`/new`。
 - 插件热重载和进程重启恢复。
 - `aiocqhttp` 和 `weixin_oc`。
@@ -1121,7 +1110,7 @@ tests/test_background_pipeline_event.py
 7. ContextAware 把自然完成回复记录为 Bot 回复，并关联原 requester。
 8. 完成事件中 Gitee 生图 Tool 被移除，不能递归调用。
 9. 同一 UMO 用户在任务完成瞬间发送消息，历史不丢失、不覆盖。
-10. completion event 仍为 queued 时 watchdog 能 CAS claim fallback；已经 agent_sending 的 event 不会并发 fallback。
+10. completion event 仍为 queued 时 watchdog 能 CAS claim 并静默写 failed；迟到 Agent 不会继续发送。
 11. ContextAware session 已存在时，`on_llm_request` 不触发空 session 懒初始化，也不新增 synthetic 用户消息。
 12. reset/new/restart、无权限 reset 已清空 ContextAware session、`has_session=false` 和 API 异常路径不提交合成 Agent 事件，不触发 ContextAware 空 session 懒初始化。
 13. completion Agent 生成文本但平台发送 timeout/断线时，账本进入 notification unknown，ContextAware 残余 Bot 记录由后续状态注入纠正，不自动重复文本。
@@ -1140,15 +1129,15 @@ tests/test_background_pipeline_event.py
 5. 制造 provider 失败，确认 Bot 主动说明失败。
 6. 运行中执行 `/stop`，确认 provider task 取消、无晚到图片，并收到取消说明。
 7. 普通群成员执行一个会被权限拒绝的 `/reset`，确认任务没有被误取消。
-8. 同一无权限 `/reset` 已让 ContextAware session 清空时，任务完成走确定性主动通知，不创建 synthetic 占位消息；用户再发一条真实消息恢复 session 后，后续任务可重新使用人格化 completion。
+8. 同一无权限 `/reset` 已让 ContextAware session 清空时，任务完成静默收敛通知，不创建 synthetic 占位消息；用户再发一条真实消息恢复 session 后，后续任务可重新使用人格化 completion。
 9. 管理员运行中执行 `/reset`，确认无幽灵图片污染重置后的会话。
 10. 运行中执行 `/new`，确认无旧任务写入新 conversation。
-11. 运行中热重载插件，确认重载后主动说明 interrupted。
-12. 运行中重启 AstrBot，确认启动恢复通知且不重复发图；sending 阶段恢复不得谎报一定成功或失败。
+11. 运行中热重载插件，确认任务标记 interrupted、通知静默收敛且不重复发图。
+12. 运行中重启 AstrBot，确认启动恢复不重入旧会话且不重复发图；sending 阶段恢复不得谎报一定成功或失败。
 13. 群聊由两个用户同时提交任务，确认任务和提示词不串人。
 14. 任务完成瞬间发送新消息，确认 conversation history 两边都保留。
 15. ContextAware 日志显示正常完成事件有场景注入，reset/new/restart 没有 synthetic 用户消息污染。
-16. 人为让 Agent completion 在入队前失败，确认 watchdog fallback；让平台发送在 await 中 timeout，确认 ContextAware 残余记录被 Gitee 权威状态覆盖且 notification=unknown、不盲目重发。
+16. 人为让 Agent completion 在入队前失败或超过 90 秒，确认通知静默写 failed；让平台发送在 await 中 timeout，确认 ContextAware 残余记录被 Gitee 权威状态覆盖且 notification=unknown、不盲目重发。
 17. 容器日志无未处理 task exception、session lock 死锁、无界队列和重复通知。
 18. 发起 4 张批量自拍，确认 Tool 在 planner 前接单，聊天不中断，随后 4 个 child 按 max_running 并发生成。
 19. 批量运行中询问“每张分别是什么提示词”，确认 planning 阶段不编造，规划完成后能返回全部 child effective prompt。
@@ -1186,9 +1175,9 @@ tests/test_background_pipeline_event.py
 | AstrBot 插件 KV 多 key 写入无法原子维护 task/reservation/outbox | P0 | 使用插件数据目录 SQLite 和单事务状态迁移 |
 | 两个插件实例同时执行导致重复 provider 调用或重复发图 | P0 | SQLite owner lease + owner_epoch fencing；不同数据目录 active-active 明确不支持 |
 | `/stop`、`/reset`、`/new` 管不到 detached task | P0 | 插件 task registry + cancellation tombstone + public message/decoration Hook + send gate |
-| 图片发出但 Bot 不说话 | P0 | Agent 通知 + 90 秒 watchdog fallback |
+| 图片发出但 Bot 不说话 | 已接受 | Agent 通知尽力而为；失败或超时静默，避免固定话术破坏人格 |
 | Tool 已接单但当前 Agent 没发接单话 | P0 | ack token + decoration 阶段补 Plain + after hook 确认 |
-| 失败、取消、重载静默 | P0 | 所有终态进入同一通知状态机 |
+| 失败、取消、重载后缺少主动说明 | 已接受 | 状态保留在账本和后续上下文注入中，不跨安全边界主动播报 |
 | CancelledError 跳过终态写入和 capacity release | P0 | shield 幂等 terminal transaction + gather(return_exceptions=True) |
 | 无权限 reset 被插件提前当成成功，误取消任务 | P0 | 前置 send barrier，decoration 阶段只认 `_clean_group_context_session` marker |
 | provider 任务无界堆积拖垮京东云 | P0 | max_running semaphore + max_queued 有界队列 |
@@ -1197,13 +1186,13 @@ tests/test_background_pipeline_event.py
 | 批量“生成成功”被误报成“发送成功” | P0 | 每个 child 独立 SendImageResult、delivery_state 和 receipt，parent 只汇总 confirmed send |
 | synthetic event 被 ContextAware 当用户消息 | P1 | message chain 只放 At，不放 Plain/Image |
 | ContextAware 空 session 在 on_llm_request 懒初始化 synthetic 消息 | P1 | reset/new/restart/conversation 漂移不使用合成 Agent 事件 |
-| 无权限 reset 提前清空 ContextAware session | P1 | synthetic 前调用公开 `has_session(umo)`；false/异常时确定性主动通知 |
+| 无权限 reset 提前清空 ContextAware session | P1 | synthetic 前调用公开 `has_session(umo)`；false/异常时静默结束通知 |
 | synthetic event 回复对象记录错误 | P1 | 保留原 sender ID/name |
 | 旧任务污染新 conversation | P1 | 绑定原 cid，并在 reset/new 时取消和校验 epoch |
 | 相同用户跨群串图或互相限流 | P1 | 统一 scope key |
 | 完成通知递归调用生图 Tool | P1 | Hook 中移除本插件生成 Tool |
 | `commit_event()` 入队被误当成通知已发送 | P1 | 终态+outbox 先事务落盘，queued 只代表入队，after hook 才确认 transport accepted |
-| Agent 与 watchdog 同时发送通知 | P1 | notification token + SQLite CAS claim + 单向状态迁移 |
+| 迟到 Agent 在 watchdog 收口后继续发送 | P1 | notification token + SQLite CAS claim + 单向状态迁移 |
 | after_message_sent 或 Tool 使用提示被误当作自然回复成功 | P1 | 必须同时校验 `_has_send_oper`、最终 Plain chain 和 receipt |
 | 发送阶段崩溃后无法判断图片是否到达 | P1 | delivery_state=unknown，禁止自动重发并如实通知 |
 | 后台 worker 持有已结束的原 event | P1 | PreparedImageJob + TaskDeliveryTarget，新建 delivery event |
@@ -1233,7 +1222,7 @@ tests/test_background_pipeline_event.py
 - 任务状态通过 `on_llm_request(priority=-20)` 注入。
 - `/stop`、`/reset`、`/new` 和重载均有取消或中断收敛，reset/new 只在 Core success marker 出现后推进 epoch。
 - `CancelledError`、planner 失败、partial batch、platform timeout、热重载和 DB 写失败均有明确终态与 reservation release。
-- 图片发送与自然通知有明确顺序、transport accepted 校验、receipt、接单 finalizer 和终态 watchdog。
+- 图片发送与自然通知有明确顺序、transport accepted 校验、receipt、接单 finalizer 和静默终态 watchdog。
 - 默认关闭、能力检测失败同步降级。
 - 京东云只运行一个 active AstrBot/Gitee owner，并完成真实 QQ 私聊、群聊、重启、断线、并发 batch 和至少 72 小时灰度观察。
 

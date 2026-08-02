@@ -1018,7 +1018,7 @@ class GiteeAIImagePlugin(Star):
 
     @filter.on_decorating_result()
     async def decorate_background_task_result(self, event: AstrMessageEvent) -> None:
-        """Ensure accepted and terminal events contain a sendable natural reply.
+        """Ensure accepted events contain text and suppress empty completions.
 
         Args:
             event: Event whose final result is about to be sent.
@@ -1033,14 +1033,32 @@ class GiteeAIImagePlugin(Star):
             return
         plain, _ = self._background_plain_digest(event)
         if not plain:
+            if completion_task_id:
+                token = str(event.get_extra("_gitee_bg_notification_token", "") or "")
+                attempt_id = str(
+                    event.get_extra("_gitee_bg_notification_attempt", "") or ""
+                )
+                if token and attempt_id:
+                    await self._silence_background_notification(
+                        manager,
+                        token=token,
+                        task_id=completion_task_id,
+                        attempt_id=attempt_id,
+                        reason="agent completion contained no natural text",
+                    )
+                else:
+                    logger.warning(
+                        "[background-image] empty completion missing notification claim: task=%s",
+                        completion_task_id,
+                    )
+                event.stop_event()
+                return
             result = event.get_result()
             if result is None:
                 result = event.plain_result("")
                 event.set_result(result)
-            record = await manager.get_task(completion_task_id or ack_task_id)
-            if completion_task_id and record is not None:
-                fallback = self._background_notification_text(record)
-            elif record and record.get("task_kind") == "batch":
+            record = await manager.get_task(ack_task_id)
+            if record and record.get("task_kind") == "batch":
                 fallback = "我开始准备这组照片了，你们可以继续聊，拍好后我会发出来。"
             else:
                 fallback = "我开始准备这张照片了，你们可以继续聊，拍好后我会发出来。"
@@ -4578,100 +4596,51 @@ class GiteeAIImagePlugin(Star):
                 )
         return cancelled
 
-    @staticmethod
-    def _background_notification_text(record: dict[str, Any]) -> str:
-        state = str(record.get("state") or "failed")
-        task_kind = str(record.get("task_kind") or "single")
-        if task_kind == "batch":
-            requested = int(record.get("requested_count") or 0)
-            sent = int(record.get("sent_count") or 0)
-            failed = int(record.get("failed_count") or 0)
-            cancelled = int(record.get("cancelled_count") or 0)
-            unknown = int(record.get("unknown_count") or 0)
-            if state == "completed":
-                return f"这组照片拍完啦，计划的 {requested} 张都已经发出来了。"
-            if state == "partial":
-                return (
-                    f"这组照片处理完了，计划 {requested} 张，已经发出 {sent} 张，"
-                    f"失败 {failed} 张，取消 {cancelled} 张。"
-                )
-            if unknown:
-                return (
-                    f"这组照片在发送时遇到连接中断，其中 {unknown} 张的送达状态暂时无法确认，"
-                    "我没有自动重发，免得重复刷出来。"
-                )
-            if state == "cancelled":
-                return f"这组照片已经停下来了，已发出 {sent} 张，剩余任务没有继续。"
-            return f"这组照片没能完成，计划 {requested} 张，实际发出 {sent} 张。"
-
-        if state == "completed":
-            return "照片拍好啦，我已经发出来了。"
-        if str(record.get("delivery_state") or "") == "unknown":
-            return (
-                "照片生成好了，但发送时连接断了一下，我现在无法确认你那边是否收到；"
-                "我先不自动重发，避免重复。"
-            )
-        if state == "cancelled":
-            if bool(record.get("image_sent")):
-                return "这张照片刚好已经发出来了，停止请求收到时发送已经完成。"
-            return "刚才那张照片已经停下来了，我没有再继续生成。"
-        if state == "interrupted":
-            return "刚才那张照片因为服务重启中断了，没有继续扣费或重复发送。"
-        return "刚才那张照片没能生成成功，这次任务已经结束了。"
-
-    async def _send_deterministic_background_notification(
+    async def _silence_background_notification(
         self,
         manager: BackgroundImageTaskManager,
-        record: dict[str, Any],
-        target: TaskDeliveryTarget,
         *,
+        token: str,
+        task_id: str,
         attempt_id: str,
+        reason: str,
     ) -> None:
-        text = self._background_notification_text(record)
-        token = str(record.get("notification_token") or "")
-        try:
-            event = await self._rebuild_background_event(target)
-            timeout = self._as_int(
-                self._get_send_conf().get("background_send_timeout_seconds", 120),
-                default=120,
-            )
-            await asyncio.wait_for(
-                event.send(event.chain_result([Plain(text)])),
-                timeout=float(max(15, min(300, timeout))),
-            )
-        except Exception as exc:
-            state = "unknown" if self._is_unknown_delivery_error(exc) else "failed"
-            await manager.mark_notification(
-                token,
-                state,
-                attempt_id=attempt_id,
-            )
-            logger.warning(
-                "[background-image] deterministic notification failed: task=%s err=%s",
-                record.get("task_id"),
-                manager.sanitize_error(exc),
-            )
-            return
-        if not bool(getattr(event, "_has_send_oper", False)):
-            await manager.mark_notification(
-                token,
-                "unknown",
-                attempt_id=attempt_id,
-            )
-            logger.warning(
-                "[background-image] deterministic notification returned without transport confirmation: task=%s",
-                record.get("task_id"),
-            )
-            return
-        await manager.mark_notification(token, "sent", attempt_id=attempt_id)
+        """Close a completion notification without sending fallback text.
+
+        Args:
+            manager: Owning durable task manager.
+            token: Notification outbox token.
+            task_id: Task whose completion notification is being abandoned.
+            attempt_id: Current notification claim ID.
+            reason: Internal reason recorded in logs.
+        """
+
+        marked = await manager.mark_notification(
+            token,
+            "failed",
+            attempt_id=attempt_id,
+        )
+        logger.info(
+            "[background-image] completion notification silenced: task=%s reason=%s marked=%s",
+            task_id,
+            reason,
+            marked,
+        )
 
     async def _background_notification_watchdog(
         self,
         manager: BackgroundImageTaskManager,
         task_id: str,
         token: str,
-        target: TaskDeliveryTarget,
     ) -> None:
+        """Silently close an Agent completion that exceeds its deadline.
+
+        Args:
+            manager: Owning durable task manager.
+            task_id: Task waiting for a natural Agent completion.
+            token: Notification outbox token.
+        """
+
         await asyncio.sleep(90)
         attempt_id = manager.new_task_id("notify-watchdog")
         record = await manager.claim_notification(
@@ -4681,11 +4650,12 @@ class GiteeAIImagePlugin(Star):
         )
         if record is None:
             return
-        await self._send_deterministic_background_notification(
+        await self._silence_background_notification(
             manager,
-            record,
-            target,
+            token=token,
+            task_id=task_id,
             attempt_id=attempt_id,
+            reason="agent completion exceeded the watchdog deadline",
         )
 
     async def _dispatch_background_completion(
@@ -4711,7 +4681,7 @@ class GiteeAIImagePlugin(Star):
         record: dict[str, Any],
         target: TaskDeliveryTarget,
     ) -> None:
-        """Route a claimed terminal task to Agent or deterministic delivery.
+        """Route a terminal task to Agent or silently close its notification.
 
         Args:
             manager: Owning task manager.
@@ -4735,16 +4705,21 @@ class GiteeAIImagePlugin(Star):
             safe, conversation = False, None
         else:
             safe, conversation = await self._background_context_is_safe(target)
-        attempt_id = manager.new_task_id("notify-agent" if safe else "notify-direct")
+        attempt_id = manager.new_task_id("notify-agent" if safe else "notify-silent")
         claimed = await manager.claim_notification(token, attempt_id)
         if claimed is None:
             return
         if not safe:
-            await self._send_deterministic_background_notification(
+            await self._silence_background_notification(
                 manager,
-                claimed,
-                target,
+                token=token,
+                task_id=str(claimed.get("task_id") or record.get("task_id") or ""),
                 attempt_id=attempt_id,
+                reason=(
+                    "restart recovery cannot safely re-enter the old conversation"
+                    if recovered_after_restart
+                    else "conversation context is unavailable"
+                ),
             )
             return
 
@@ -4802,11 +4777,12 @@ class GiteeAIImagePlugin(Star):
                 record.get("task_id"),
                 manager.sanitize_error(exc),
             )
-            await self._send_deterministic_background_notification(
+            await self._silence_background_notification(
                 manager,
-                claimed,
-                target,
+                token=token,
+                task_id=str(claimed.get("task_id") or record.get("task_id") or ""),
                 attempt_id=attempt_id,
+                reason="synthetic completion could not be enqueued",
             )
             return
         manager.start_managed(
@@ -4814,7 +4790,6 @@ class GiteeAIImagePlugin(Star):
                 manager,
                 str(record.get("task_id") or ""),
                 token,
-                target,
             ),
             name=f"background-notification-watchdog-{record.get('task_id')}",
         )
