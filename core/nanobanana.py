@@ -20,7 +20,7 @@ class NanoBananaService:
         )
         self.model = nb_conf.get("model", "gemini-2.0-flash-preview-image-generation")
         self.resolution = nb_conf.get("resolution", "4K")
-        self.timeout = int(nb_conf.get("timeout", 120))
+        self.timeout = int(nb_conf.get("timeout", 600))
         self.use_proxy = bool(nb_conf.get("use_proxy", False))
         self.proxy_url = str(nb_conf.get("proxy_url", "")).strip()
         self.max_images = int(nb_conf.get("max_images", 8))

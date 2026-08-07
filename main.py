@@ -6346,18 +6346,24 @@ class GiteeAIImagePlugin(Star):
         prefix = str(conf.get("prompt_prefix", "") or "").strip()
         if not prefix:
             prefix = (
-                "请根据参考图生成一张新的自拍照：\n"
+                "请根据参考图创作一张新的高质量人像摄影作品：\n"
                 "1) 以第1张参考图的人脸身份为准（仅人脸身份特征），保持五官/气质一致。\n"
                 "2) 如果还有其它参考图，请将它们仅作为服装/姿势/构图/场景的参考。\n"
-                "3) 输出一张高质量照片风格自拍，不要拼图，不要水印。"
+                "3) 呈现自然、真实的生活感人像构图，不要拼图，不要水印。"
             )
 
-        user_prompt = (prompt or "").strip() or "日常自拍照"
+        user_prompt = (prompt or "").strip() or "日常生活感人像摄影"
+        capture_constraints = (
+            "硬性拍摄约束：采用画面外固定机位的定时拍摄视角，人物双手自然且不持物。"
+            "严禁对镜自拍；画面中不得出现手机、手机屏幕、镜子、镜面反射、相机、"
+            "三脚架、其它拍摄设备或相机界面。"
+        )
         if extra_refs > 0:
             return (
                 f"{prefix}\n\n用户要求：{user_prompt}\n（额外参考图数量：{extra_refs}）"
+                f"\n\n{capture_constraints}"
             )
-        return f"{prefix}\n\n用户要求：{user_prompt}"
+        return f"{prefix}\n\n用户要求：{user_prompt}\n\n{capture_constraints}"
 
     def _merge_selfie_chain_with_edit_chain(
         self, selfie_chain: list[object]

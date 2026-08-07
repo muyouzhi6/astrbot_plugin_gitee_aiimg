@@ -590,7 +590,7 @@ class GeminiFlow2ApiBackend:
         self.api_url: str = normalize_flow2api_chat_url(conf.get("api_url"))
         self.model: str = str(conf.get("model") or "").strip()
         self.timeout: int = _clamp_int(
-            conf.get("timeout", 120), default=120, min_value=1, max_value=3600
+            conf.get("timeout", 600), default=600, min_value=1, max_value=3600
         )
 
         self.use_proxy: bool = bool(conf.get("use_proxy", False))
@@ -990,7 +990,7 @@ class Flow2ApiVideoBackend:
         self.api_url: str = normalize_flow2api_chat_url(conf.get("api_url"))
         self.model: str = str(conf.get("model") or "").strip()
         self.timeout: int = _clamp_int(
-            conf.get("timeout", 300), default=300, min_value=1, max_value=3600
+            conf.get("timeout", 600), default=600, min_value=1, max_value=3600
         )
 
         self.use_proxy: bool = bool(conf.get("use_proxy", False))

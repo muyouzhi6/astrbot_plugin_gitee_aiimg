@@ -4,6 +4,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "gemini_edit_auth_testpkg"
@@ -77,7 +78,10 @@ def _load_module():
 
 
 class _FakeResponse:
-    status = 200
+    def __init__(self, *, status=200, payload=None, text=""):
+        self.status = status
+        self.payload = payload if payload is not None else {"candidates": []}
+        self.response_text = text
 
     async def __aenter__(self):
         return self
@@ -86,24 +90,143 @@ class _FakeResponse:
         return False
 
     async def json(self):
-        return {"candidates": []}
+        return self.payload
 
     async def text(self):
-        return ""
+        return self.response_text
 
 
 class _FakeSession:
-    def __init__(self):
+    def __init__(self, responses=None):
         self.last_headers = None
         self.last_json = None
+        self.headers = []
+        self.responses = list(responses or [])
 
     def post(self, *args, **kwargs):
         self.last_headers = kwargs.get("headers")
         self.last_json = kwargs.get("json")
+        self.headers.append(self.last_headers)
+        if self.responses:
+            response = self.responses.pop(0)
+            if isinstance(response, BaseException):
+                raise response
+            return response
         return _FakeResponse()
 
 
 class GeminiEditAuthHeaderTests(unittest.IsolatedAsyncioTestCase):
+    def test_gemini_native_uses_new_runtime_defaults(self):
+        mod = _load_module()
+        backend = mod.GeminiEditBackend(
+            imgr=object(),
+            settings={"api_keys": ["test-key"], "api_url": "https://example.com"},
+        )
+
+        self.assertEqual(backend.timeout, 600)
+        self.assertEqual(backend.max_retries, 2)
+
+    def test_gemini_native_allows_disabling_retries(self):
+        mod = _load_module()
+        backend = mod.GeminiEditBackend(
+            imgr=object(),
+            settings={
+                "api_keys": ["test-key"],
+                "api_url": "https://example.com",
+                "max_retries": 0,
+            },
+        )
+
+        self.assertEqual(backend.max_retries, 0)
+
+    async def test_gemini_native_retries_server_errors_with_next_key(self):
+        mod = _load_module()
+        backend = mod.GeminiEditBackend(
+            imgr=object(),
+            settings={
+                "api_keys": ["first-key", "second-key"],
+                "api_url": "https://example.com",
+                "max_retries": 1,
+            },
+        )
+        session = _FakeSession(
+            [
+                _FakeResponse(status=503, text="temporarily unavailable"),
+                _FakeResponse(payload={"candidates": [{"content": {}}]}),
+            ]
+        )
+
+        async def fake_get_session():
+            return session
+
+        backend._get_session = fake_get_session
+
+        with patch.object(mod.asyncio, "sleep", new=AsyncMock()) as sleep:
+            data = await backend._request([{"text": "draw"}])
+
+        self.assertIn("candidates", data)
+        self.assertEqual(
+            [headers["x-goog-api-key"] for headers in session.headers],
+            ["first-key", "second-key"],
+        )
+        sleep.assert_awaited_once_with(1)
+
+    async def test_gemini_native_retries_timeouts(self):
+        mod = _load_module()
+        backend = mod.GeminiEditBackend(
+            imgr=object(),
+            settings={
+                "api_keys": ["first-key", "second-key"],
+                "api_url": "https://example.com",
+                "max_retries": 1,
+            },
+        )
+        session = _FakeSession(
+            [
+                mod.asyncio.TimeoutError(),
+                _FakeResponse(payload={"candidates": []}),
+            ]
+        )
+
+        async def fake_get_session():
+            return session
+
+        backend._get_session = fake_get_session
+
+        with patch.object(mod.asyncio, "sleep", new=AsyncMock()) as sleep:
+            data = await backend._request([{"text": "draw"}])
+
+        self.assertEqual(data, {"candidates": []})
+        self.assertEqual(
+            [headers["x-goog-api-key"] for headers in session.headers],
+            ["first-key", "second-key"],
+        )
+        sleep.assert_awaited_once_with(1)
+
+    async def test_gemini_native_does_not_retry_non_retryable_client_errors(self):
+        mod = _load_module()
+        backend = mod.GeminiEditBackend(
+            imgr=object(),
+            settings={
+                "api_keys": ["test-key"],
+                "api_url": "https://example.com",
+                "max_retries": 2,
+            },
+        )
+        session = _FakeSession([_FakeResponse(status=400, text="bad request")])
+
+        async def fake_get_session():
+            return session
+
+        backend._get_session = fake_get_session
+
+        with patch.object(mod.asyncio, "sleep", new=AsyncMock()) as sleep:
+            with self.assertRaisesRegex(RuntimeError, "Gemini API 错误 \\(400\\)"):
+                await backend._request([{"text": "draw"}])
+
+        self.assertEqual(len(session.headers), 1)
+        sleep.assert_not_awaited()
+
     async def test_gemini_native_uses_api_key_header_without_bearer_auth(self):
         mod = _load_module()
         backend = mod.GeminiEditBackend(

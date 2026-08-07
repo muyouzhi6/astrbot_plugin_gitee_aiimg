@@ -194,7 +194,7 @@ class OpenAICompatBackend:
         imgr,
         base_url: str,
         api_keys: list[str],
-        timeout: int = 120,
+        timeout: int = 600,
         max_retries: int = 2,
         default_model: str = "",
         default_size: str = "4096x4096",
@@ -208,7 +208,7 @@ class OpenAICompatBackend:
         self.imgr = imgr
         self.base_url = normalize_openai_compat_base_url(base_url)
         self.api_keys = [str(k).strip() for k in (api_keys or []) if str(k).strip()]
-        self.timeout = int(timeout or 120)
+        self.timeout = int(timeout or 600)
         self.max_retries = int(max_retries or 2)
         self.default_model = str(default_model or "").strip()
         self.default_size = normalize_size_text(

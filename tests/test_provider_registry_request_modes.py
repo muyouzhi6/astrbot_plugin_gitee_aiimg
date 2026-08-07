@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sys
 import types
 import unittest
@@ -143,6 +144,69 @@ def _load_module():
 
 
 class ProviderRegistryRequestModeTests(unittest.TestCase):
+    def test_provider_schema_uses_600_second_timeout_defaults(self):
+        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+        templates = schema["providers"]["templates"]
+        timeout_defaults = {
+            key: template["items"]["timeout"]["default"]
+            for key, template in templates.items()
+            if "timeout" in template.get("items", {})
+        }
+
+        self.assertTrue(timeout_defaults)
+        self.assertEqual(set(timeout_defaults.values()), {600})
+        self.assertEqual(
+            templates["gemini_native"]["items"]["max_retries"]["default"], 2
+        )
+
+    def test_gemini_native_legacy_config_uses_new_missing_field_defaults(self):
+        mod = _load_module()
+        legacy_provider = {
+            "id": "gemini-old",
+            "__template_key": "gemini_native",
+            "api_url": "https://example.invalid",
+            "api_keys": ["test-key"],
+            "model": "gemini-test",
+            "output_format": "png",
+        }
+        original_provider = dict(legacy_provider)
+        registry = mod.ProviderRegistry(
+            config={"providers": [legacy_provider]},
+            imgr=object(),
+            data_dir=Path("/tmp"),
+        )
+
+        backend = registry.get_backend("gemini-old")
+
+        self.assertEqual(backend.kwargs["settings"]["timeout"], 600)
+        self.assertEqual(backend.kwargs["settings"]["max_retries"], 2)
+        self.assertEqual(legacy_provider, original_provider)
+
+    def test_gemini_native_preserves_explicit_legacy_values(self):
+        mod = _load_module()
+        registry = mod.ProviderRegistry(
+            config={
+                "providers": [
+                    {
+                        "id": "gemini-custom",
+                        "__template_key": "gemini_native",
+                        "api_url": "https://example.invalid",
+                        "api_keys": ["test-key"],
+                        "model": "gemini-test",
+                        "timeout": 120,
+                        "max_retries": 0,
+                    }
+                ]
+            },
+            imgr=object(),
+            data_dir=Path("/tmp"),
+        )
+
+        backend = registry.get_backend("gemini-custom")
+
+        self.assertEqual(backend.kwargs["settings"]["timeout"], 120)
+        self.assertEqual(backend.kwargs["settings"]["max_retries"], 0)
+
     def test_registry_uses_modelscope_async_backend(self):
         mod = _load_module()
         registry = mod.ProviderRegistry(

@@ -42,7 +42,8 @@ class GeminiEditBackend:
         self.api_url = conf.get("api_url", "https://generativelanguage.googleapis.com")
         self.model = conf.get("model", "gemini-3-pro-image-preview")
         self.resolution = conf.get("resolution", "4K")
-        self.timeout = conf.get("timeout", 120)
+        self.timeout = max(1, min(int(conf.get("timeout", 600) or 600), 3600))
+        self.max_retries = max(0, min(int(conf.get("max_retries", 2) or 0), 10))
         self.use_proxy = conf.get("use_proxy", False)
         self.proxy_url = conf.get("proxy_url", "")
         self.output_format = (
@@ -310,7 +311,19 @@ class GeminiEditBackend:
         resolution: str | None = None,
         aspect_ratio: str | None = None,
     ) -> dict:
-        api_key = await self._next_key()
+        """Send a Gemini native request with bounded transport retries.
+
+        Args:
+            parts: Gemini content parts for the user message.
+            resolution: Optional image resolution override.
+            aspect_ratio: Optional image aspect ratio override.
+
+        Returns:
+            Parsed Gemini response payload.
+
+        Raises:
+            RuntimeError: The request fails or Gemini returns an error payload.
+        """
         url = self._build_url()
         image_size = str(resolution or self.resolution or "4K").strip() or "4K"
 
@@ -339,45 +352,88 @@ class GeminiEditBackend:
             ],
         }
 
-        headers = {
-            "Content-Type": "application/json",
-            "x-goog-api-key": api_key,
-        }
-
         proxy = self._proxy()
         if proxy:
             logger.debug(f"[Gemini] 使用代理: {proxy}")
 
         session = await self._get_session()
-        try:
-            async with session.post(
-                url,
-                json=payload,
-                headers=headers,
-                proxy=proxy,
-            ) as resp:
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    logger.error(
-                        f"[Gemini] API 错误 ({resp.status}): {error_text[:500]}"
-                    )
-                    raise RuntimeError(
-                        f"Gemini API 错误 ({resp.status}): {error_text[:200]}"
-                    )
-                data = await resp.json()
-        except asyncio.TimeoutError:
-            logger.error(f"[Gemini] 请求超时 (>{self.timeout}s)")
-            raise RuntimeError(f"Gemini 请求超时 (>{self.timeout}s)")
-        except aiohttp.ClientError as e:
-            logger.error(f"[Gemini] 网络错误: {e}")
-            raise RuntimeError(f"Gemini 网络错误: {e}")
+        for attempt in range(self.max_retries + 1):
+            api_key = await self._next_key()
+            headers = {
+                "Content-Type": "application/json",
+                "x-goog-api-key": api_key,
+            }
+            retry_error: RuntimeError | None = None
 
-        if "error" in data:
-            error_msg = data["error"]
-            logger.error(f"[Gemini] API 返回错误: {error_msg}")
-            raise RuntimeError(f"Gemini API 错误: {error_msg}")
+            try:
+                async with session.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    proxy=proxy,
+                ) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        error = RuntimeError(
+                            f"Gemini API 错误 ({resp.status}): {error_text[:200]}"
+                        )
+                        retryable = resp.status in {408, 409, 425, 429} or (
+                            500 <= resp.status < 600
+                        )
+                        if not retryable or attempt >= self.max_retries:
+                            logger.error(
+                                "[Gemini] API error (%s): %s",
+                                resp.status,
+                                error_text[:500],
+                            )
+                            raise error
+                        retry_error = error
+                    else:
+                        data = await resp.json()
+                        if "error" not in data:
+                            return data
 
-        return data
+                        error_msg = data["error"]
+                        error = RuntimeError(f"Gemini API 错误: {error_msg}")
+                        raw_code = (
+                            error_msg.get("code")
+                            if isinstance(error_msg, dict)
+                            else None
+                        )
+                        try:
+                            error_code = int(raw_code)
+                        except (TypeError, ValueError):
+                            error_code = 0
+                        retryable = error_code in {408, 409, 425, 429} or (
+                            500 <= error_code < 600
+                        )
+                        if not retryable or attempt >= self.max_retries:
+                            logger.error("[Gemini] API payload error: %s", error_msg)
+                            raise error
+                        retry_error = error
+            except asyncio.TimeoutError:
+                retry_error = RuntimeError(f"Gemini 请求超时 (>{self.timeout}s)")
+                if attempt >= self.max_retries:
+                    logger.error("[Gemini] Request timed out after %ss", self.timeout)
+                    raise retry_error
+            except aiohttp.ClientError as exc:
+                retry_error = RuntimeError(f"Gemini 网络错误: {exc}")
+                if attempt >= self.max_retries:
+                    logger.error("[Gemini] Network error: %s", exc)
+                    raise retry_error
+
+            if retry_error is not None:
+                delay = min(2**attempt, 8)
+                logger.warning(
+                    "[Gemini] Request failed, retrying %s/%s in %ss: %s",
+                    attempt + 1,
+                    self.max_retries,
+                    delay,
+                    retry_error,
+                )
+                await asyncio.sleep(delay)
+
+        raise RuntimeError("Gemini 请求失败")
 
     @staticmethod
     def _extract_images(data: dict) -> list[bytes]:

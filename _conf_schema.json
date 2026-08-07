@@ -684,7 +684,13 @@
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
-            "default": 120
+            "default": 600
+          },
+          "max_retries": {
+            "type": "int",
+            "description": "最大重试次数",
+            "hint": "请求超时、网络错误、限流或服务端错误时的重试次数；设为 0 可禁用重试。",
+            "default": 2
           },
           "use_proxy": {
             "type": "bool",
@@ -768,7 +774,7 @@
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
-            "default": 120
+            "default": 600
           },
           "use_proxy": {
             "type": "bool",
@@ -841,7 +847,7 @@
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
-            "default": 300
+            "default": 600
           },
           "max_retries": {
             "type": "int",
@@ -961,7 +967,7 @@
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
-            "default": 120
+            "default": 600
           },
           "max_retries": {
             "type": "int",
@@ -1068,7 +1074,7 @@
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
-            "default": 120
+            "default": 600
           },
           "max_retries": {
             "type": "int",
@@ -1163,7 +1169,7 @@
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
-            "default": 120
+            "default": 600
           },
           "max_retries": {
             "type": "int",
@@ -1258,7 +1264,7 @@
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
-            "default": 120
+            "default": 600
           },
           "max_retries": {
             "type": "int",
@@ -1357,7 +1363,7 @@
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
-            "default": 120
+            "default": 600
           },
           "max_retries": {
             "type": "int",
@@ -1447,7 +1453,7 @@
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
-            "default": 120
+            "default": 600
           },
           "default_size": {
             "type": "string",
@@ -1536,7 +1542,7 @@
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
-            "default": 120
+            "default": 600
           },
           "max_retries": {
             "type": "int",
@@ -1635,7 +1641,7 @@
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
-            "default": 120
+            "default": 600
           },
           "max_retries": {
             "type": "int",
@@ -1724,7 +1730,7 @@
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
-            "default": 300
+            "default": 600
           },
           "max_retries": {
             "type": "int",
@@ -1963,7 +1969,7 @@
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
-            "default": 120
+            "default": 600
           },
           "output_format": {
             "type": "string",
@@ -2102,7 +2108,7 @@
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
-            "default": 300
+            "default": 600
           },
           "use_proxy": {
             "type": "bool",
@@ -2330,7 +2336,7 @@
           "timeout": {
             "type": "int",
             "description": "超时(秒)",
-            "default": 120
+            "default": 600
           },
           "max_retries": {
             "type": "int",

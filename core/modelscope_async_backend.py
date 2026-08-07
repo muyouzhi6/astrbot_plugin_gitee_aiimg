@@ -43,7 +43,7 @@ class ModelScopeAsyncImageBackend:
         imgr,
         base_url: str,
         api_keys: list[str],
-        timeout: int = 120,
+        timeout: int = 600,
         max_retries: int = 2,
         default_model: str = "",
         default_size: str = "1024x1024",
@@ -57,7 +57,7 @@ class ModelScopeAsyncImageBackend:
         self.imgr = imgr
         self.base_url = _normalize_modelscope_base_url(base_url)
         self.api_keys = [str(key).strip() for key in api_keys if str(key).strip()]
-        self.timeout = max(10, min(int(timeout or 120), 600))
+        self.timeout = max(10, min(int(timeout or 600), 600))
         self.max_retries = max(0, min(int(max_retries or 0), 5))
         self.default_model = str(default_model or "").strip()
         self.default_size = normalize_size_text(default_size) or "1024x1024"

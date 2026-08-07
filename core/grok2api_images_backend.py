@@ -253,7 +253,7 @@ class Grok2ApiImagesBackend:
         imgr,
         base_url: str,
         api_keys: list[str],
-        timeout: int = 120,
+        timeout: int = 600,
         default_model: str = "",
         default_size: str = "1024x1024",
         extra_body: dict | None = None,
@@ -262,7 +262,7 @@ class Grok2ApiImagesBackend:
         self.imgr = imgr
         self.base_url = str(base_url or "").strip()
         self.api_key = _pick_first_api_key(api_keys)
-        self.timeout = max(1, min(int(timeout or 120), 3600))
+        self.timeout = max(1, min(int(timeout or 600), 3600))
         self.default_model = str(default_model or "").strip()
         self.default_size = str(default_size or "4096x4096").strip()
         self.extra_body = extra_body or {}

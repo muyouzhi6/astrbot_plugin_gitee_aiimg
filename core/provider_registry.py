@@ -25,6 +25,9 @@ from .vertex_ai_anonymous_backend import (
 )
 
 
+DEFAULT_PROVIDER_TIMEOUT_SECONDS = 600
+
+
 @dataclass(frozen=True)
 class ProviderRef:
     provider_id: str
@@ -457,7 +460,8 @@ class ProviderRegistry:
                 "api_keys": _as_list(conf.get("api_keys")),
                 "model": conf.get("model"),
                 "resolution": conf.get("default_resolution", "4K"),
-                "timeout": conf.get("timeout", 120),
+                "timeout": conf.get("timeout", DEFAULT_PROVIDER_TIMEOUT_SECONDS),
+                "max_retries": conf.get("max_retries", 2),
                 "use_proxy": bool(conf.get("use_proxy", False)),
                 "proxy_url": conf.get("proxy_url", ""),
                 "output_format": conf.get("output_format", "jpeg"),
@@ -470,7 +474,7 @@ class ProviderRegistry:
                 "api_keys": conf.get("api_keys"),
                 "api_key": conf.get("api_key"),
                 "model": conf.get("model"),
-                "timeout": conf.get("timeout", 120),
+                "timeout": conf.get("timeout", DEFAULT_PROVIDER_TIMEOUT_SECONDS),
                 "use_proxy": bool(conf.get("use_proxy", False)),
                 "proxy_url": conf.get("proxy_url", ""),
                 "output_format": conf.get("output_format", "jpeg"),
@@ -486,7 +490,7 @@ class ProviderRegistry:
                     for x in _as_list(conf.get("api_keys"))
                     if str(x).strip()
                 ],
-                timeout=int(conf.get("timeout") or 120),
+                timeout=int(conf.get("timeout") or DEFAULT_PROVIDER_TIMEOUT_SECONDS),
                 max_retries=int(conf.get("max_retries") or 2),
                 default_model=str(conf.get("model") or "").strip(),
                 default_size=str(conf.get("default_size") or "4096x4096").strip(),
@@ -505,7 +509,7 @@ class ProviderRegistry:
                     for x in _as_list(conf.get("api_keys"))
                     if str(x).strip()
                 ],
-                timeout=int(conf.get("timeout") or 120),
+                timeout=int(conf.get("timeout") or DEFAULT_PROVIDER_TIMEOUT_SECONDS),
                 max_retries=int(conf.get("max_retries") or 2),
                 default_model=str(conf.get("model") or "").strip(),
                 default_size=str(conf.get("default_size") or "4096x4096").strip(),
@@ -525,7 +529,7 @@ class ProviderRegistry:
                     for x in _as_list(conf.get("api_keys"))
                     if str(x).strip()
                 ],
-                timeout=int(conf.get("timeout") or 120),
+                timeout=int(conf.get("timeout") or DEFAULT_PROVIDER_TIMEOUT_SECONDS),
                 max_retries=int(conf.get("max_retries") or 2),
                 default_model=str(conf.get("model") or "").strip(),
                 default_size=str(conf.get("default_size") or "4096x4096").strip(),
@@ -543,7 +547,7 @@ class ProviderRegistry:
                     for x in _as_list(conf.get("api_keys"))
                     if str(x).strip()
                 ],
-                timeout=int(conf.get("timeout") or 120),
+                timeout=int(conf.get("timeout") or DEFAULT_PROVIDER_TIMEOUT_SECONDS),
                 max_retries=int(conf.get("max_retries") or 2),
                 default_model=str(conf.get("model") or "").strip(),
                 default_size=str(conf.get("default_size") or "1024x1024").strip(),
@@ -564,7 +568,7 @@ class ProviderRegistry:
                     for x in _as_list(conf.get("api_keys"))
                     if str(x).strip()
                 ],
-                timeout=int(conf.get("timeout") or 120),
+                timeout=int(conf.get("timeout") or DEFAULT_PROVIDER_TIMEOUT_SECONDS),
                 max_retries=int(conf.get("max_retries") or 2),
                 default_model=str(conf.get("model") or "").strip(),
                 supports_edit=bool(conf.get("supports_edit", True)),
@@ -586,7 +590,7 @@ class ProviderRegistry:
                     for x in _as_list(conf.get("api_keys"))
                     if str(x).strip()
                 ],
-                timeout=int(conf.get("timeout") or 120),
+                timeout=int(conf.get("timeout") or DEFAULT_PROVIDER_TIMEOUT_SECONDS),
                 default_model=str(conf.get("model") or "").strip(),
                 default_size=str(conf.get("default_size") or "4096x4096").strip(),
                 extra_body=_as_dict(conf.get("extra_body")) or None,
@@ -610,7 +614,7 @@ class ProviderRegistry:
                     for x in _as_list(conf.get("api_keys"))
                     if str(x).strip()
                 ],
-                timeout=int(conf.get("timeout") or 300),
+                timeout=int(conf.get("timeout") or DEFAULT_PROVIDER_TIMEOUT_SECONDS),
                 max_retries=int(conf.get("max_retries") or 2),
                 default_model=model,
                 default_size=str(conf.get("default_size") or "1024x1024").strip(),
@@ -636,7 +640,7 @@ class ProviderRegistry:
                 default_style=str(conf.get("default_style") or "真实").strip(),
                 default_ratio=str(conf.get("default_ratio") or "1:1").strip(),
                 default_model=str(conf.get("default_model") or "Seedream 4.0").strip(),
-                timeout=int(conf.get("timeout") or 120),
+                timeout=int(conf.get("timeout") or DEFAULT_PROVIDER_TIMEOUT_SECONDS),
                 output_format=str(conf.get("output_format") or "jpeg"),
             )
 
@@ -646,7 +650,9 @@ class ProviderRegistry:
                 raise RuntimeError(f"Provider '{pid}' missing graphql_api_key")
             settings = VertexAIAnonymousSettings(
                 model=str(conf.get("model") or "gemini-3-pro-image-preview").strip(),
-                timeout_seconds=int(conf.get("timeout") or 300),
+                timeout_seconds=int(
+                    conf.get("timeout") or DEFAULT_PROVIDER_TIMEOUT_SECONDS
+                ),
                 max_retries=int(conf.get("max_retries") or 10),
                 proxy_url=str(conf.get("proxy_url") or "").strip() or None,
                 recaptcha_base_api=str(conf.get("recaptcha_base_api") or "").strip()
@@ -687,7 +693,7 @@ class ProviderRegistry:
                 "api_keys": p.get("api_keys"),
                 "api_key": p.get("api_key"),
                 "model": p.get("model"),
-                "timeout": p.get("timeout", 300),
+                "timeout": p.get("timeout", DEFAULT_PROVIDER_TIMEOUT_SECONDS),
                 "use_proxy": bool(p.get("use_proxy", False)),
                 "proxy_url": p.get("proxy_url", ""),
             }

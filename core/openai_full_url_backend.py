@@ -225,7 +225,7 @@ class OpenAIFullURLBackend:
         api_keys: list[str],
         default_model: str = "",
         full_edit_url: str = "",
-        timeout: int = 120,
+        timeout: int = 600,
         max_retries: int = 2,
         default_size: str = "4096x4096",
         supports_edit: bool = True,
@@ -237,7 +237,7 @@ class OpenAIFullURLBackend:
         self.full_edit_url = str(full_edit_url or "").strip()
         self.api_keys = [str(k).strip() for k in (api_keys or []) if str(k).strip()]
         self.default_model = str(default_model or "").strip()
-        self.timeout = max(1, int(timeout or 120))
+        self.timeout = max(1, int(timeout or 600))
         self.max_retries = max(0, int(max_retries or 0))
         self.default_size = normalize_size_text(
             str(default_size or "4096x4096").strip()

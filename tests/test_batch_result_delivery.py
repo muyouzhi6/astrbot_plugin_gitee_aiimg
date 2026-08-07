@@ -685,6 +685,39 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fallback._get_selfie_default_output(), "3:4 4K")
         self.assertEqual(configured._get_selfie_default_output(), "16:9 4K")
 
+    def test_selfie_default_prompt_excludes_phones_and_mirror_shots(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={"features": {"selfie": {"prompt_prefix": ""}}},
+        )
+
+        prompt = plugin._build_selfie_prompt("窗边自然光", extra_refs=0)
+
+        self.assertIn("请根据参考图创作一张新的高质量人像摄影作品", prompt)
+        self.assertNotIn("自拍照", prompt)
+        self.assertIn("用户要求：窗边自然光", prompt)
+        self.assertIn("严禁对镜自拍", prompt)
+        self.assertIn("不得出现手机、手机屏幕、镜子、镜面反射", prompt)
+        self.assertGreater(prompt.index("硬性拍摄约束"), prompt.index("用户要求"))
+
+    def test_selfie_custom_prefix_cannot_remove_capture_constraints(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={
+                "features": {"selfie": {"prompt_prefix": "固定角色外貌，电影感照片。"}}
+            },
+        )
+
+        prompt = plugin._build_selfie_prompt("", extra_refs=2)
+
+        self.assertIn("固定角色外貌，电影感照片。", prompt)
+        self.assertIn("用户要求：日常生活感人像摄影", prompt)
+        self.assertIn("额外参考图数量：2", prompt)
+        self.assertIn("严禁对镜自拍", prompt)
+        self.assertIn("不得出现手机", prompt)
+
     async def test_weixin_send_temp_file_is_removed_after_send(self):
         mod = _load_module()
         with TemporaryDirectory() as td:
