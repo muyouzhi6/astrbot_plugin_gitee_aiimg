@@ -694,12 +694,18 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         prompt = plugin._build_selfie_prompt("窗边自然光", extra_refs=0)
 
-        self.assertIn("请根据参考图创作一张新的高质量人像摄影作品", prompt)
+        self.assertIn(
+            "请根据参考图创作一张新的高质量、清晰锐利、真实的人像摄影照片", prompt
+        )
         self.assertNotIn("自拍照", prompt)
+        self.assertNotIn("生活感人像构图", prompt)
         self.assertIn("用户要求：窗边自然光", prompt)
-        self.assertIn("严禁对镜自拍", prompt)
+        self.assertIn("中性日光白平衡", prompt)
+        self.assertIn("真实肤色", prompt)
+        self.assertIn("硬性构图约束", prompt)
+        self.assertIn("不是镜面自拍", prompt)
         self.assertIn("不得出现手机、手机屏幕、镜子、镜面反射", prompt)
-        self.assertGreater(prompt.index("硬性拍摄约束"), prompt.index("用户要求"))
+        self.assertGreater(prompt.index("硬性构图约束"), prompt.index("用户要求"))
 
     def test_selfie_custom_prefix_cannot_remove_capture_constraints(self):
         mod = _load_module()
@@ -713,9 +719,9 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
         prompt = plugin._build_selfie_prompt("", extra_refs=2)
 
         self.assertIn("固定角色外貌，电影感照片。", prompt)
-        self.assertIn("用户要求：日常生活感人像摄影", prompt)
+        self.assertIn("用户要求：自然人像摄影", prompt)
         self.assertIn("额外参考图数量：2", prompt)
-        self.assertIn("严禁对镜自拍", prompt)
+        self.assertIn("不是镜面自拍", prompt)
         self.assertIn("不得出现手机", prompt)
 
     async def test_weixin_send_temp_file_is_removed_after_send(self):
