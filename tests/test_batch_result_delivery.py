@@ -685,29 +685,74 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fallback._get_selfie_default_output(), "3:4 4K")
         self.assertEqual(configured._get_selfie_default_output(), "16:9 4K")
 
-    def test_selfie_default_prompt_excludes_phones_and_mirror_shots(self):
+    def test_selfie_default_prompt_preserves_user_capture_intent(self):
         mod = _load_module()
         plugin = mod.GiteeAIImagePlugin(
             context=types.SimpleNamespace(),
             config={"features": {"selfie": {"prompt_prefix": ""}}},
         )
 
-        prompt = plugin._build_selfie_prompt("窗边自然光", extra_refs=0)
-
-        self.assertIn(
-            "请根据参考图创作一张新的高质量、清晰锐利、真实的人像摄影照片", prompt
+        prompt = plugin._build_selfie_prompt(
+            "手持前置摄像头自拍，窗边自然光",
+            extra_refs=0,
         )
-        self.assertNotIn("自拍照", prompt)
-        self.assertNotIn("生活感人像构图", prompt)
-        self.assertIn("用户要求：窗边自然光", prompt)
-        self.assertIn("中性日光白平衡", prompt)
-        self.assertIn("真实肤色", prompt)
-        self.assertIn("硬性构图约束", prompt)
-        self.assertIn("不是镜面自拍", prompt)
-        self.assertIn("不得出现手机、手机屏幕、镜子、镜面反射", prompt)
-        self.assertGreater(prompt.index("硬性构图约束"), prompt.index("用户要求"))
 
-    def test_selfie_custom_prefix_cannot_remove_capture_constraints(self):
+        self.assertIn("请根据参考图创作一张符合用户要求的人像图片", prompt)
+        self.assertIn("用户指定的图像类型、拍摄视角", prompt)
+        self.assertIn("普通手持自拍或前置摄像头自拍", prompt)
+        self.assertIn("拍摄设备位于画面外", prompt)
+        self.assertIn("以上规则只用于保持拍摄逻辑一致", prompt)
+        self.assertIn(
+            "用户要求（最高优先级）：手持前置摄像头自拍，窗边自然光",
+            prompt,
+        )
+        self.assertNotIn("专业人像摄影质感", prompt)
+        self.assertNotIn("中性日光白平衡", prompt)
+        self.assertNotIn("固定机位", prompt)
+        self.assertNotIn("双手自然且不持物", prompt)
+        self.assertLess(prompt.index("用户要求"), prompt.index("拍摄设备一致性"))
+
+    def test_selfie_prompt_allows_explicit_mirror_selfie_and_visible_phone(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={"features": {"selfie": {"prompt_prefix": ""}}},
+        )
+
+        prompt = plugin._build_selfie_prompt(
+            "对镜自拍，手机自然入镜",
+            extra_refs=0,
+        )
+
+        self.assertIn("明确要求对镜自拍、手机入镜或展示拍摄设备", prompt)
+        self.assertIn("才让相应设备自然出现", prompt)
+        self.assertIn("数量、持握位置和镜面反射合理", prompt)
+        self.assertIn("不得覆盖或改写用户明确要求", prompt)
+        self.assertIn("用户要求（最高优先级）：对镜自拍，手机自然入镜", prompt)
+        self.assertNotIn("不是镜面自拍", prompt)
+        self.assertNotIn("画面不得出现手机", prompt)
+
+    def test_selfie_prompt_preserves_third_person_actions_and_held_objects(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={"features": {"selfie": {"prompt_prefix": ""}}},
+        )
+
+        prompt = plugin._build_selfie_prompt(
+            "恋人视角随手拍，手里拿着咖啡杯",
+            extra_refs=0,
+        )
+
+        self.assertIn("第三人拍摄、恋人视角或定时拍摄", prompt)
+        self.assertIn("人物手势和手持日常物品遵循用户要求", prompt)
+        self.assertIn(
+            "用户要求（最高优先级）：恋人视角随手拍，手里拿着咖啡杯",
+            prompt,
+        )
+        self.assertNotIn("双手自然且不持物", prompt)
+
+    def test_selfie_custom_prefix_keeps_capture_policy_without_overriding_user(self):
         mod = _load_module()
         plugin = mod.GiteeAIImagePlugin(
             context=types.SimpleNamespace(),
@@ -719,10 +764,11 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
         prompt = plugin._build_selfie_prompt("", extra_refs=2)
 
         self.assertIn("固定角色外貌，电影感照片。", prompt)
-        self.assertIn("用户要求：自然人像摄影", prompt)
+        self.assertIn("用户要求（最高优先级）：自然真实的人像照片", prompt)
         self.assertIn("额外参考图数量：2", prompt)
-        self.assertIn("不是镜面自拍", prompt)
-        self.assertIn("不得出现手机", prompt)
+        self.assertIn("拍摄设备一致性", prompt)
+        self.assertIn("明确要求对镜自拍、手机入镜或展示拍摄设备", prompt)
+        self.assertLess(prompt.index("用户要求"), prompt.index("拍摄设备一致性"))
 
     async def test_weixin_send_temp_file_is_removed_after_send(self):
         mod = _load_module()

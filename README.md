@@ -1,6 +1,6 @@
 # AstrBot Gitee AI 图像生成插件
 
-[![Plugin Version](https://img.shields.io/badge/Version-v5.1.7-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
+[![Plugin Version](https://img.shields.io/badge/Version-v5.1.8-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16.0%2C%20%3C5-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![Platform](https://img.shields.io/badge/Primary-aiocqhttp-4caf50?style=for-the-badge)](#平台与限制)
 [![CI](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml/badge.svg)](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml)
@@ -8,7 +8,7 @@
 多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件。`v5` 的核心升级是 **LLM 生图不再阻塞对话**：Bot 接下单图或批量任务后可以继续聊天，期间始终知道自己正在生成什么、完整提示词是什么，任务完成或失败后还会按当前人格主动回来回应。
 
 > [!IMPORTANT]
-> 这份文档对应 `v5.1.7` 配置结构。
+> 这份文档对应 `v5.1.8` 配置结构。
 >
 > - `v5` 延续 `v4` 配置结构；从 `v3 / v2` 升级时仍需重新检查 WebUI 配置。
 > - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了发送图片前优化。
@@ -500,7 +500,7 @@ Q版化:Convert to chibi illustration style
 
 留空则使用插件内置的默认前缀。
 
-内置默认前缀强调清晰锐利的人像摄影、真实肤色、中性日光白平衡和准确细节，不主动添加黄色或暖色滤镜。无论使用内置默认还是自定义前缀，插件都会在最终提示词末尾追加画面外固定机位、双手不持物、禁止镜面自拍以及画面不得出现手机、镜子和拍摄设备的约束，避免上游人格要求在工具参数改写后丢失。
+内置默认前缀只负责参考图身份保持、自然质感和基础画面质量，不会替用户指定摄影风格、白平衡、视角、动作或构图。无论使用内置默认还是自定义前缀，插件都会补充拍摄设备的逻辑一致性要求：普通手持自拍时拍摄设备保持在画面外；明确要求对镜自拍、手机入镜或展示设备时允许相应设备自然出现，但不会无故复制其它设备；他拍、定时拍摄、人物手势和手持物品均遵循用户要求。
 
 ## 视频生成
 

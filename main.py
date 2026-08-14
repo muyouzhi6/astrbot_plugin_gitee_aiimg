@@ -6346,26 +6346,29 @@ class GiteeAIImagePlugin(Star):
         prefix = str(conf.get("prompt_prefix", "") or "").strip()
         if not prefix:
             prefix = (
-                "请根据参考图创作一张新的高质量、清晰锐利、真实的人像摄影照片：\n"
+                "请根据参考图创作一张符合用户要求的人像图片：\n"
                 "1) 以第1张参考图的人脸身份为准（仅人脸身份特征），保持五官/气质一致。\n"
                 "2) 如果还有其它参考图，请将它们仅作为服装/姿势/构图/场景的参考。\n"
-                "3) 使用专业人像摄影质感：主体清晰对焦，面部和头发细节丰富，真实肤色，自然对比度。\n"
-                "4) 默认使用中性日光白平衡，准确还原肤色和白色物体，不主动添加黄色或暖色滤镜；仅在用户明确要求时改变色调。\n"
-                "5) 不要拼图，不要水印，不要模糊、柔焦、雾化、低清晰度或塑料感。"
+                "3) 用户指定的图像类型、拍摄视角、构图、动作、光线、色调和风格具有最高优先级，不得擅自改成其它拍摄方式或摄影风格。\n"
+                "4) 未指定风格时使用自然真实的照片质感，保留自然光影和真实皮肤纹理，细节清楚但不过度锐化、磨皮或美化。\n"
+                "5) 不要拼图，不要水印，避免明显失真或不合理细节。"
             )
 
-        user_prompt = (prompt or "").strip() or "自然人像摄影"
-        capture_constraints = (
-            "硬性构图约束：采用画面外固定机位的第三人或定时拍摄视角，人物双手自然且不持物，"
-            "不是镜面自拍；画面不得出现手机、手机屏幕、镜子、镜面反射、相机、三脚架、"
-            "其它拍摄设备或相机界面。"
+        user_prompt = (prompt or "").strip() or "自然真实的人像照片"
+        capture_policy = (
+            "拍摄设备一致性（不得改变用户指定的拍摄视角）：普通手持自拍或前置摄像头自拍时，"
+            "拍摄设备位于画面外，不要在成片中额外生成手机、屏幕或相机界面；"
+            "仅当用户明确要求对镜自拍、手机入镜或展示拍摄设备时，才让相应设备自然出现，"
+            "并保持数量、持握位置和镜面反射合理，不要复制或无故增加其它拍摄设备。"
+            "第三人拍摄、恋人视角或定时拍摄时，"
+            "也不要无故添加拍摄设备或拍摄界面。人物手势和手持日常物品遵循用户要求。"
+            "以上规则只用于保持拍摄逻辑一致，不得覆盖或改写用户明确要求。"
         )
-        if extra_refs > 0:
-            return (
-                f"{prefix}\n\n用户要求：{user_prompt}\n（额外参考图数量：{extra_refs}）"
-                f"\n\n{capture_constraints}"
-            )
-        return f"{prefix}\n\n用户要求：{user_prompt}\n\n{capture_constraints}"
+        extra_ref_note = f"\n（额外参考图数量：{extra_refs}）" if extra_refs > 0 else ""
+        return (
+            f"{prefix}{extra_ref_note}\n\n用户要求（最高优先级）：{user_prompt}"
+            f"\n\n{capture_policy}"
+        )
 
     def _merge_selfie_chain_with_edit_chain(
         self, selfie_chain: list[object]
