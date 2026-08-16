@@ -5356,13 +5356,13 @@ class GiteeAIImagePlugin(Star):
         value = self._as_int(
             self._get_feature("draw").get("batch_concurrency", 2), default=2
         )
-        return max(1, min(8, value))
+        return max(1, min(30, value))
 
     def _get_edit_batch_concurrency(self) -> int:
         value = self._as_int(
             self._get_feature("edit").get("batch_concurrency", 2), default=2
         )
-        return max(1, min(8, value))
+        return max(1, min(30, value))
 
     def _get_draw_presets(self) -> dict[str, str]:
         presets: dict[str, str] = {}

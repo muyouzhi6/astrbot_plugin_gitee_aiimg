@@ -1,6 +1,6 @@
 # AstrBot Gitee AI 图像生成插件
 
-[![Plugin Version](https://img.shields.io/badge/Version-v5.1.8-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
+[![Plugin Version](https://img.shields.io/badge/Version-v5.1.9-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16.0%2C%20%3C5-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![Platform](https://img.shields.io/badge/Primary-aiocqhttp-4caf50?style=for-the-badge)](#平台与限制)
 [![CI](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml/badge.svg)](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml)
@@ -8,7 +8,7 @@
 多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件。`v5` 的核心升级是 **LLM 生图不再阻塞对话**：Bot 接下单图或批量任务后可以继续聊天，期间始终知道自己正在生成什么、完整提示词是什么，任务完成或失败后还会按当前人格主动回来回应。
 
 > [!IMPORTANT]
-> 这份文档对应 `v5.1.8` 配置结构。
+> 这份文档对应 `v5.1.9` 配置结构。
 >
 > - `v5` 延续 `v4` 配置结构；从 `v3 / v2` 升级时仍需重新检查 WebUI 配置。
 > - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了发送图片前优化。
@@ -67,7 +67,7 @@
 }
 ```
 
-- `max_running` 是所有单图和 batch child 共用的图片 Provider 并发数，一般建议从 `2` 开始，再根据机器资源和上游限流情况调整。
+- `max_running` 是所有单图和 batch child 共用的图片 Provider 并发数，可设置 `1-30`；一般建议从 `2` 开始，再根据机器资源和上游限流情况调整。
 - `max_queued` 按图片张数预留容量。例如一组 `4` 张批量任务会原子占用 `4` 个容量，容量不足时整组拒绝，不会只接一半。
 - Tool 完成参数校验、完整提示词构建和输入图片固化后立即返回，真正的 planner、图片 Provider 调用和发送在后台执行。
 - 用户继续聊天或询问照片时，Bot 能看到任务处于 `planning`、`queued`、`running`、`sending` 或终态，并能读取真实 effective prompt；批量完整提示词可由只读 Tool `aiimg_task_status` 分页查询。
@@ -444,8 +444,8 @@ Q版化:Convert to chibi illustration style
 ### 同步批量命令行为
 
 - 单次数量上限由 `features.batch.max_count` 控制，默认 `8`
-- 文生图批量并发由 `features.draw.batch_concurrency` 控制，默认 `2`
-- 改图 / 自拍批量并发由 `features.edit.batch_concurrency` 控制，默认 `2`
+- 文生图批量并发由 `features.draw.batch_concurrency` 控制，默认 `2`，最高 `30`
+- 改图 / 自拍批量并发由 `features.edit.batch_concurrency` 控制，默认 `2`，最高 `30`
 - 改图批量和自拍批量都要求当前消息里能读到输入图片；文生图批量不需要图片
 - 批量结果会按顺序直接发送单张图片
 - 除原插件自带表情反馈外，不额外发送标题、提示词、状态、失败摘要这类通知文本
@@ -589,8 +589,8 @@ Q版化:Convert to chibi illustration style
 ### 批量相关
 
 - `features.batch.max_count`：单次批量最大张数
-- `features.draw.batch_concurrency`：文生图批量并发
-- `features.edit.batch_concurrency`：改图 / 自拍批量并发
+- `features.draw.batch_concurrency`：文生图批量并发，可设置 `1-30`
+- `features.edit.batch_concurrency`：改图 / 自拍批量并发，可设置 `1-30`
 
 ### 图片输出编码
 

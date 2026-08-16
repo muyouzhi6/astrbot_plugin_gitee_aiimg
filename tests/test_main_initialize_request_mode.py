@@ -409,6 +409,27 @@ def _load_module():
 
 
 class MainInitializeRequestModeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_batch_concurrency_is_clamped_to_supported_range(self):
+        mod, _ = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={
+                "features": {
+                    "draw": {"batch_concurrency": 31},
+                    "edit": {"batch_concurrency": 30},
+                }
+            },
+        )
+
+        self.assertEqual(plugin._get_draw_batch_concurrency(), 30)
+        self.assertEqual(plugin._get_edit_batch_concurrency(), 30)
+
+        plugin.config["features"]["draw"]["batch_concurrency"] = 0
+        plugin.config["features"]["edit"]["batch_concurrency"] = -1
+
+        self.assertEqual(plugin._get_draw_batch_concurrency(), 1)
+        self.assertEqual(plugin._get_edit_batch_concurrency(), 1)
+
     async def test_initialize_logs_fallback_warning_and_builds_consistent_backend(self):
         mod, logger = _load_module()
         plugin = mod.GiteeAIImagePlugin(

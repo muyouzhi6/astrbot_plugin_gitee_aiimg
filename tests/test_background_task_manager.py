@@ -28,6 +28,24 @@ def _load_module():
 bg = _load_module()
 
 
+def test_provider_concurrency_is_clamped_to_supported_range(tmp_path):
+    upper = bg.BackgroundImageTaskManager(
+        tmp_path / "upper",
+        max_running=31,
+        max_queued=1,
+    )
+    lower = bg.BackgroundImageTaskManager(
+        tmp_path / "lower",
+        max_running=0,
+        max_queued=1,
+    )
+
+    assert upper.max_running == 30
+    assert upper.max_queued == 30
+    assert lower.max_running == 1
+    assert lower.max_queued == 1
+
+
 def _record(
     manager,
     task_id: str,

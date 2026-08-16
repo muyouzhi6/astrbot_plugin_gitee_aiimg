@@ -177,7 +177,7 @@ class BackgroundImageTaskManager:
     ) -> None:
         self.base_dir = Path(data_dir) / "background_tasks"
         self.db_path = self.base_dir / "background_tasks.sqlite3"
-        self.max_running = max(1, min(8, int(max_running)))
+        self.max_running = max(1, min(30, int(max_running)))
         self.max_queued = max(self.max_running, min(128, int(max_queued)))
         self.max_notification_backlog = max(32, self.max_queued * 4)
         self.log = log
