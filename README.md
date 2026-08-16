@@ -1,6 +1,6 @@
 # AstrBot Gitee AI 图像生成插件
 
-[![Plugin Version](https://img.shields.io/badge/Version-v5.1.9-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
+[![Plugin Version](https://img.shields.io/badge/Version-v5.1.10-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16.0%2C%20%3C5-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![Platform](https://img.shields.io/badge/Primary-aiocqhttp-4caf50?style=for-the-badge)](#平台与限制)
 [![CI](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml/badge.svg)](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml)
@@ -8,7 +8,7 @@
 多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件。`v5` 的核心升级是 **LLM 生图不再阻塞对话**：Bot 接下单图或批量任务后可以继续聊天，期间始终知道自己正在生成什么、完整提示词是什么，任务完成或失败后还会按当前人格主动回来回应。
 
 > [!IMPORTANT]
-> 这份文档对应 `v5.1.9` 配置结构。
+> 这份文档对应 `v5.1.10` 配置结构。
 >
 > - `v5` 延续 `v4` 配置结构；从 `v3 / v2` 升级时仍需重新检查 WebUI 配置。
 > - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了发送图片前优化。
@@ -443,7 +443,7 @@ Q版化:Convert to chibi illustration style
 
 ### 同步批量命令行为
 
-- 单次数量上限由 `features.batch.max_count` 控制，默认 `8`
+- 单次数量上限由 `features.batch.max_count` 控制，默认 `8`，可设置 `1-32`
 - 文生图批量并发由 `features.draw.batch_concurrency` 控制，默认 `2`，最高 `30`
 - 改图 / 自拍批量并发由 `features.edit.batch_concurrency` 控制，默认 `2`，最高 `30`
 - 改图批量和自拍批量都要求当前消息里能读到输入图片；文生图批量不需要图片
@@ -545,7 +545,7 @@ Q版化:Convert to chibi illustration style
 主要参数：
 
 - `prompt`
-- `count`：默认 `4`，建议 `2-8`，最终不会超过 `features.batch.max_count`
+- `count`：默认 `4`，允许 `1-32`；用户明确指定数量时会以用户原话为准，最终不会超过 `features.batch.max_count`
 - `mode`: `auto` / `text` / `edit` / `selfie_ref`
 - `backend`
 - `output`: 与单图工具相同, 支持精确尺寸、比例、分辨率和组合形式
@@ -588,7 +588,7 @@ Q版化:Convert to chibi illustration style
 
 ### 批量相关
 
-- `features.batch.max_count`：单次批量最大张数
+- `features.batch.max_count`：单次批量最大张数，可设置 `1-32`
 - `features.draw.batch_concurrency`：文生图批量并发，可设置 `1-30`
 - `features.edit.batch_concurrency`：改图 / 自拍批量并发，可设置 `1-30`
 

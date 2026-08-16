@@ -183,6 +183,45 @@ def _plugin(mod, manager):
 
 
 @pytest.mark.asyncio
+async def test_batch_tool_honors_explicit_user_count_over_model_count():
+    mod, _ = _load_module()
+    plugin = _plugin(mod, manager=object())
+    plugin.config["features"]["batch"]["max_count"] = 30
+    plugin.debouncer = types.SimpleNamespace(
+        llm_tool_is_duplicate=lambda *args: False,
+        hit=lambda *args: False,
+    )
+    plugin._background_manager_for_event = lambda event: object()
+    captured = []
+
+    async def resolve_mode(self, event, mode, prompt):
+        return "draw"
+
+    async def accept_batch(self, event, **kwargs):
+        captured.append(kwargs["count"])
+        return "accepted"
+
+    plugin._resolve_llm_batch_mode = types.MethodType(resolve_mode, plugin)
+    plugin._accept_background_batch = types.MethodType(accept_batch, plugin)
+    event = _Event()
+    event.message_str = "别只拍8张，这次拍30张"
+
+    result = await plugin.aiimg_batch_generate(
+        event,
+        prompt="thirty distinct portraits",
+        count=8,
+        mode="text",
+    )
+
+    assert result == "accepted"
+    assert captured == [30]
+    assert "用户明确指定数量时，count 必须原样传入" in (
+        mod.GiteeAIImagePlugin.aiimg_batch_generate.__doc__ or ""
+    )
+    assert "建议 2-8" not in (mod.GiteeAIImagePlugin.aiimg_batch_generate.__doc__ or "")
+
+
+@pytest.mark.asyncio
 async def test_single_tool_returns_before_provider_finishes(tmp_path):
     mod, _ = _load_module()
     manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)

@@ -3268,11 +3268,12 @@ class GiteeAIImagePlugin(Star):
         使用建议（给 LLM 的决策规则）：
         - 当用户明确想要一组不重复但同主题的图片时，优先调用这个工具。
         - 先规划多条不同 prompt，再批量执行，不要自己重复调用单图工具。
+        - 用户明确指定数量时，count 必须原样传入，不得自行减少、拆分或拒绝。
         - 用户未指定比例时保持 aspect_ratio=auto，内部 planner 会为每张图按构图选择不同的合适比例。
 
         Args:
             prompt(string): 用户的总要求。应包含整组图片共同要满足的条件。
-            count(number): 目标数量。建议 2-8。
+            count(number): 目标数量，允许 1-32。用户明确指定时必须原样传入；未指定时默认 4。
             mode(string): auto=自动判断, text=文生图, edit=改图, selfie_ref=参考照自拍
             backend(string): auto=自动选择；也可填 provider_id（你在 WebUI providers 里配置的 id）
             output(string): 兼容输出参数。只有用户明确指定时才传；不得自行填入 1:1 或正方形默认值
@@ -3286,8 +3287,23 @@ class GiteeAIImagePlugin(Star):
                 "Batch image planning failed because no prompt was provided."
             )
 
-        target_count = self._as_int(count, default=4)
-        target_count = max(1, min(self._get_batch_max_count(), target_count))
+        tool_count = self._as_int(count, default=4)
+        requested_count = tool_count
+        explicit_counts = re.findall(
+            r"(?<![0-9])([0-9]{1,3})\s*张",
+            str(getattr(event, "message_str", "") or ""),
+        )
+        if explicit_counts:
+            requested_count = self._as_int(explicit_counts[-1], default=tool_count)
+        target_count = max(1, min(self._get_batch_max_count(), requested_count))
+        if requested_count != tool_count:
+            logger.info(
+                "[aiimg_batch_generate] honoring explicit user count: "
+                "tool_count=%s user_count=%s effective_count=%s",
+                tool_count,
+                requested_count,
+                target_count,
+            )
         resolved_mode = await self._resolve_llm_batch_mode(event, mode, prompt)
         target_backend = self._resolve_target_backend(backend)
 
