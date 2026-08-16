@@ -139,6 +139,49 @@ class GeminiEditAuthHeaderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(backend.max_retries, 0)
 
+    async def test_gemini_native_session_allows_max_batch_concurrency(self):
+        mod = _load_module()
+        backend = mod.GeminiEditBackend(
+            imgr=object(),
+            settings={
+                "api_keys": ["test-key"],
+                "api_url": "https://example.com",
+                "timeout": 1200,
+            },
+        )
+
+        session = await backend._get_session()
+        try:
+            self.assertEqual(session.connector.limit, 30)
+            self.assertEqual(session.connector.limit_per_host, 30)
+            self.assertEqual(session.timeout.total, 1200)
+            self.assertIsNone(session.timeout.connect)
+            self.assertEqual(session.timeout.sock_connect, 30)
+            self.assertEqual(session.timeout.sock_read, 1200)
+        finally:
+            await backend.close()
+
+    async def test_gemini_native_timeout_message_does_not_claim_total_elapsed(self):
+        mod = _load_module()
+        backend = mod.GeminiEditBackend(
+            imgr=object(),
+            settings={
+                "api_keys": ["test-key"],
+                "api_url": "https://example.com",
+                "timeout": 1200,
+                "max_retries": 0,
+            },
+        )
+        session = _FakeSession([mod.asyncio.TimeoutError()])
+
+        async def fake_get_session():
+            return session
+
+        backend._get_session = fake_get_session
+
+        with self.assertRaisesRegex(RuntimeError, "^Gemini 请求超时$"):
+            await backend._request([{"text": "draw"}])
+
     async def test_gemini_native_retries_server_errors_with_next_key(self):
         mod = _load_module()
         backend = mod.GeminiEditBackend(

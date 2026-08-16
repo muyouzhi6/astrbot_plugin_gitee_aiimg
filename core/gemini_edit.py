@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import aiohttp
+
 from astrbot.api import logger
 
 from .image_format import guess_image_mime_and_ext
@@ -411,10 +412,14 @@ class GeminiEditBackend:
                             logger.error("[Gemini] API payload error: %s", error_msg)
                             raise error
                         retry_error = error
-            except asyncio.TimeoutError:
-                retry_error = RuntimeError(f"Gemini 请求超时 (>{self.timeout}s)")
+            except asyncio.TimeoutError as exc:
+                retry_error = RuntimeError("Gemini 请求超时")
                 if attempt >= self.max_retries:
-                    logger.error("[Gemini] Request timed out after %ss", self.timeout)
+                    logger.error(
+                        "[Gemini] Request timed out (total=%ss, sock_connect=30s): %s",
+                        self.timeout,
+                        exc,
+                    )
                     raise retry_error
             except aiohttp.ClientError as exc:
                 retry_error = RuntimeError(f"Gemini 网络错误: {exc}")
@@ -596,14 +601,14 @@ class GeminiEditBackend:
                 # Double-check pattern
                 if self._session is None or self._session.closed:
                     connector = aiohttp.TCPConnector(
-                        limit=10,
-                        limit_per_host=5,
+                        limit=30,
+                        limit_per_host=30,
                         ttl_dns_cache=300,
                         enable_cleanup_closed=True,
                     )
                     timeout = aiohttp.ClientTimeout(
                         total=self.timeout,
-                        connect=30,
+                        sock_connect=30,
                         sock_read=self.timeout,
                     )
                     self._session = aiohttp.ClientSession(
