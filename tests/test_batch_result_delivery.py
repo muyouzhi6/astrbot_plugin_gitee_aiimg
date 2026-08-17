@@ -712,6 +712,75 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("双手自然且不持物", prompt)
         self.assertLess(prompt.index("用户要求"), prompt.index("拍摄设备一致性"))
 
+    async def test_selfie_prompt_uses_cached_life_context_without_generation(self):
+        mod = _load_module()
+        calls = []
+
+        class _LifeScheduler:
+            async def get_life_context(self, **kwargs):
+                calls.append(kwargs)
+                return {
+                    "outfit": "白色衬衫搭配蓝色半裙，赤足",
+                    "schedule": "上午去咖啡店，下午在家看书",
+                }
+
+        context = types.SimpleNamespace(
+            get_registered_star=lambda name: (
+                types.SimpleNamespace(star_cls=_LifeScheduler())
+                if name == "astrbot_plugin_life_scheduler"
+                else None
+            )
+        )
+        plugin = mod.GiteeAIImagePlugin(
+            context=context,
+            config={"features": {"selfie": {"prompt_prefix": ""}}},
+        )
+
+        life_context = await plugin._get_life_context_without_llm()
+        prompt = plugin._build_selfie_prompt(
+            "窗边自然光自拍",
+            extra_refs=0,
+            life_context=life_context,
+        )
+
+        self.assertEqual(calls, [{"allow_generate": False}])
+        self.assertIn("今日穿搭：白色衬衫搭配蓝色半裙，赤足", prompt)
+        self.assertIn("今日日程：上午去咖啡店，下午在家看书", prompt)
+        self.assertIn("用户要求（最高优先级）：窗边自然光自拍", prompt)
+
+    async def test_selfie_life_context_degrades_without_optional_plugin(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={"features": {"selfie": {"prompt_prefix": ""}}},
+        )
+
+        self.assertEqual(await plugin._get_life_context_without_llm(), {})
+        prompt = plugin._build_selfie_prompt("自然自拍", extra_refs=0)
+        self.assertNotIn("今日生活状态", prompt)
+
+    async def test_selfie_life_context_does_not_fallback_to_legacy_generating_api(self):
+        mod = _load_module()
+        called = False
+
+        class _LegacyLifeScheduler:
+            async def get_life_context(self):
+                nonlocal called
+                called = True
+                return {"outfit": "不应读取"}
+
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(
+                get_registered_star=lambda name: types.SimpleNamespace(
+                    star_cls=_LegacyLifeScheduler()
+                )
+            ),
+            config={},
+        )
+
+        self.assertEqual(await plugin._get_life_context_without_llm(), {})
+        self.assertFalse(called)
+
     def test_selfie_prompt_allows_explicit_mirror_selfie_and_visible_phone(self):
         mod = _load_module()
         plugin = mod.GiteeAIImagePlugin(

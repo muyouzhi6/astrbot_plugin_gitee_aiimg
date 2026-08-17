@@ -3829,9 +3829,11 @@ class GiteeAIImagePlugin(Star):
         effective_user_prompt = self._build_selfie_follow_up_prompt(
             prompt, follow_up_meta
         )
+        life_context = await self._get_life_context_without_llm()
         effective_prompt = self._build_selfie_prompt(
             effective_user_prompt,
             extra_refs=len(extra_bytes),
+            life_context=life_context,
         )
 
         chain_override: list[dict] | None = None
@@ -3871,6 +3873,7 @@ class GiteeAIImagePlugin(Star):
             "reference_source": ref_source,
             "reference_count": len(ref_images),
             "extra_reference_count": len(extra_bytes),
+            "life_context": life_context,
         }
         task_meta = self._build_image_task_meta(
             mode="selfie_ref",
@@ -5113,6 +5116,7 @@ class GiteeAIImagePlugin(Star):
                     effective_prompt = self._build_selfie_prompt(
                         planned.prompt,
                         extra_refs=int(job.options.get("extra_reference_count") or 0),
+                        life_context=job.options.get("life_context"),
                     )
                 item_intent = merge_output_intents(
                     common_intent,
@@ -6357,7 +6361,43 @@ class GiteeAIImagePlugin(Star):
         )
         return True
 
-    def _build_selfie_prompt(self, prompt: str, extra_refs: int) -> str:
+    async def _get_life_context_without_llm(self) -> dict[str, Any]:
+        """Read today's cached life schedule without triggering generation.
+
+        Returns:
+            The optional life scheduler context, or an empty dictionary when it
+            is unavailable or does not support the read-only API.
+        """
+        get_registered_star = getattr(self.context, "get_registered_star", None)
+        if not callable(get_registered_star):
+            return {}
+        try:
+            metadata = get_registered_star("astrbot_plugin_life_scheduler")
+            life_scheduler = getattr(metadata, "star_cls", None)
+            get_context = getattr(life_scheduler, "get_life_context", None)
+            if not callable(get_context):
+                return {}
+            result = get_context(allow_generate=False)
+            if inspect.isawaitable(result):
+                result = await result
+            return result if isinstance(result, dict) else {}
+        except TypeError:
+            # Never retry without the keyword: older implementations may invoke
+            # the LLM whenever their cache is empty.
+            logger.debug(
+                "[selfie] life_scheduler does not support read-only context access"
+            )
+            return {}
+        except Exception as exc:
+            logger.debug("[selfie] life_scheduler context unavailable: %s", exc)
+            return {}
+
+    def _build_selfie_prompt(
+        self,
+        prompt: str,
+        extra_refs: int,
+        life_context: dict[str, Any] | None = None,
+    ) -> str:
         conf = self._get_selfie_conf()
         prefix = str(conf.get("prompt_prefix", "") or "").strip()
         if not prefix:
@@ -6371,6 +6411,18 @@ class GiteeAIImagePlugin(Star):
             )
 
         user_prompt = (prompt or "").strip() or "自然真实的人像照片"
+        life_context = life_context if isinstance(life_context, dict) else {}
+        outfit = str(life_context.get("outfit") or "").strip()
+        schedule = str(life_context.get("schedule") or "").strip()
+        life_context_note = ""
+        if outfit or schedule:
+            life_context_note = (
+                "\n\n今日生活状态（仅作为默认背景；用户本次明确要求优先）：\n"
+                f"- 今日穿搭：{outfit or '未记录'}\n"
+                f"- 今日日程：{schedule or '未记录'}\n"
+                "如果用户没有指定其它穿搭或场景，应让画面自然体现上述状态；"
+                "用户明确指定的内容不得被这份状态覆盖。"
+            )
         capture_policy = (
             "拍摄设备一致性（不得改变用户指定的拍摄视角）：普通手持自拍或前置摄像头自拍时，"
             "拍摄设备位于画面外，不要在成片中额外生成手机、屏幕或相机界面；"
@@ -6382,7 +6434,8 @@ class GiteeAIImagePlugin(Star):
         )
         extra_ref_note = f"\n（额外参考图数量：{extra_refs}）" if extra_refs > 0 else ""
         return (
-            f"{prefix}{extra_ref_note}\n\n用户要求（最高优先级）：{user_prompt}"
+            f"{prefix}{extra_ref_note}{life_context_note}\n\n"
+            f"用户要求（最高优先级）：{user_prompt}"
             f"\n\n{capture_policy}"
         )
 
@@ -6445,8 +6498,11 @@ class GiteeAIImagePlugin(Star):
         effective_user_prompt = self._build_selfie_follow_up_prompt(
             prompt, follow_up_meta
         )
+        life_context = await self._get_life_context_without_llm()
         final_prompt = self._build_selfie_prompt(
-            effective_user_prompt, extra_refs=len(extra_bytes)
+            effective_user_prompt,
+            extra_refs=len(extra_bytes),
+            life_context=life_context,
         )
 
         chain_override: list[dict] | None = None
