@@ -309,7 +309,7 @@ async def test_batch_tool_returns_while_planner_is_still_running(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_llm_injection_contains_prompt_and_removes_recursive_tools(tmp_path):
+async def test_llm_injection_contains_safe_status_and_removes_recursive_tools(tmp_path):
     mod, _ = _load_module()
     manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
     await manager.start()
@@ -338,10 +338,72 @@ async def test_llm_injection_contains_prompt_and_removes_recursive_tools(tmp_pat
     assert not isinstance(injected, dict)
     serialized = injected.model_dump_for_context()
     assert serialized["_no_save"] is True
-    assert "cinematic portrait with window light" in serialized["text"]
+    assert "cinematic portrait with window light" not in serialized["text"]
+    assert "effective_prompt" not in serialized["text"]
+    assert '"prompt_available":true' in serialized["text"]
+    assert "aiimg_task_status" in serialized["text"]
+    assert len(serialized["text"]) < 2400
     assert [tool.name for tool in req.func_tool.tools] == ["safe_tool"]
     await manager.cancel_task(record["task_id"], "test cleanup")
     await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_ordinary_turn_never_injects_raw_task_prompts(tmp_path):
+    mod, _ = _load_module()
+    manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await manager.start()
+    plugin = _plugin(mod, manager)
+    target = _target(mod)
+    await manager.create_task_record(
+        _base_record(manager, "img_ordinary_turn", target),
+        reservation=1,
+    )
+    req = types.SimpleNamespace(
+        conversation=types.SimpleNamespace(cid="conversation"),
+        extra_user_content_parts=[],
+        system_prompt="",
+        func_tool=None,
+    )
+
+    await plugin.inject_background_image_tasks(_Event(), req)
+
+    assert len(req.extra_user_content_parts) == 1
+    injected = req.extra_user_content_parts[0].model_dump_for_context()
+    assert "cinematic portrait with window light" not in injected["text"]
+    assert "background_image_task_summary" in injected["text"]
+    assert "effective_prompt" not in injected["text"]
+    assert len(injected["text"]) < 2400
+    await manager.close()
+
+
+def test_background_task_summary_is_prompt_free_and_timestamp_tolerant():
+    mod, _ = _load_module()
+    record = {
+        "task_id": "img_summary",
+        "task_kind": "single",
+        "state": "failed",
+        "mode": "draw",
+        "sender_name": "Alice",
+        "sender_id": "user",
+        "created_at": "not-a-timestamp",
+        "user_prompt": "private prompt with sensitive content",
+        "effective_prompt": "provider prompt with sensitive content",
+        "error_message": "x" * 5000,
+        "items": [{"state": "failed", "effective_prompt": "child secret"}],
+    }
+
+    summary = mod.GiteeAIImagePlugin._background_task_context_summary(record, 123)
+    block = mod.GiteeAIImagePlugin._background_task_context_block([summary])
+
+    assert summary["requester"] == "Alice"
+    assert "elapsed_seconds" not in summary
+    assert summary["prompt_available"] is True
+    assert summary["prompt_lookup"] == "aiimg_task_status"
+    assert "private prompt" not in block
+    assert "provider prompt" not in block
+    assert "child secret" not in block
+    assert len(block) <= 2400
 
 
 @pytest.mark.asyncio

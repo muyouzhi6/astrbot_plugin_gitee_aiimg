@@ -1,14 +1,14 @@
 # AstrBot Gitee AI 图像生成插件
 
-[![Plugin Version](https://img.shields.io/badge/Version-v5.1.10-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
+[![Plugin Version](https://img.shields.io/badge/Version-v5.1.13-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16.0%2C%20%3C5-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![Platform](https://img.shields.io/badge/Primary-aiocqhttp-4caf50?style=for-the-badge)](#平台与限制)
 [![CI](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml/badge.svg)](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml)
 
-多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件。`v5` 的核心升级是 **LLM 生图不再阻塞对话**：Bot 接下单图或批量任务后可以继续聊天，期间始终知道自己正在生成什么、完整提示词是什么，任务完成或失败后还会按当前人格主动回来回应。
+多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件。`v5` 的核心升级是 **LLM 生图不再阻塞对话**：Bot 接下单图或批量任务后可以继续聊天，期间始终知道任务状态和安全摘要，完整提示词按需查询，任务完成或失败后还会按当前人格主动回来回应。
 
 > [!IMPORTANT]
-> 这份文档对应 `v5.1.10` 配置结构。
+> 这份文档对应 `v5.1.13` 配置结构。
 >
 > - `v5` 延续 `v4` 配置结构；从 `v3 / v2` 升级时仍需重新检查 WebUI 配置。
 > - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了发送图片前优化。
@@ -20,7 +20,7 @@
 传统 LLM Tool 生图会把整条对话管线卡到 Provider 返回，慢模型动辄等待几分钟。`v5.0` 将单图、自拍、改图和批量 planner/child 执行放入插件自己的持久化后台任务系统：Tool 接单后立即把真实任务事实交还给 LLM，对话可以继续，图片完成后再由 Bot 主动发送并自然接上话题。
 
 - **不阻塞聊天**：单图和 `aiimg_batch_generate` 从 planner 阶段后台执行，用户与 Bot 在等待期间可以继续正常对话
-- **Bot 知道自己在做什么**：临时上下文包含任务阶段、原始请求、完整 effective prompt、批量 child 状态和图片发送结果
+- **Bot 知道自己在做什么**：临时上下文包含任务阶段、状态摘要和图片发送结果；完整 effective prompt 通过只读 Tool `aiimg_task_status` 按需查询
 - **像人一样回来交代**：图片完成、部分成功、失败、取消或重启中断后，Bot 会按当前人格主动回应，而不是悄悄发图或无声失败
 - **单图和多图都能并发后台跑**：SQLite 事务账本、全局有界并发和 parent round-robin 调度共同限制资源占用，batch 不会长期霸占 Provider
 - **会话边界清楚**：`/stop`、`/reset`、`/new`、conversation 漂移与 ContextAware session 清理都会收敛旧任务，避免图片和提示词串进新会话
@@ -70,7 +70,7 @@
 - `max_running` 是所有单图和 batch child 共用的图片 Provider 并发数，可设置 `1-30`；一般建议从 `2` 开始，再根据机器资源和上游限流情况调整。
 - `max_queued` 按图片张数预留容量。例如一组 `4` 张批量任务会原子占用 `4` 个容量，容量不足时整组拒绝，不会只接一半。
 - Tool 完成参数校验、完整提示词构建和输入图片固化后立即返回，真正的 planner、图片 Provider 调用和发送在后台执行。
-- 用户继续聊天或询问照片时，Bot 能看到任务处于 `planning`、`queued`、`running`、`sending` 或终态，并能读取真实 effective prompt；批量完整提示词可由只读 Tool `aiimg_task_status` 分页查询。
+- 用户继续聊天或询问照片时，Bot 能看到任务处于 `planning`、`queued`、`running`、`sending` 或终态，并能读取有界状态摘要；批量完整提示词可由只读 Tool `aiimg_task_status` 分页查询。
 - 图片先作为独立 image-only 消息发送；只有原 conversation 和 ContextAware session 仍安全可用时，Bot 才会进入 Agent pipeline，按当前人格自然说明完成、部分成功或失败。模型请求失败、超时、ContextAware session 已清空或 conversation 已切换时，完成通知会静默终结，不发送固定统计话术，也不影响普通对话。
 - 同一会话中多个任务同时完成时，终态回应会按 UMO 串行进入 Agent pipeline，避免抢写历史或乱序说话；普通用户消息不使用这把通知锁，仍可继续聊天。
 - `/stop` 会取消当前会话中该用户的后台图片任务；成功的 `/reset`、`/new` 会通过发送闸门阻止晚到图片污染新会话。权限不足而失败的 reset 不会误取消任务。

@@ -14,7 +14,6 @@ import asyncio
 import base64
 import copy
 import hashlib
-import html
 import inspect
 import io
 import json
@@ -788,9 +787,133 @@ class GiteeAIImagePlugin(Star):
             target = self._delivery_target_from_record(record)
             await self._dispatch_background_completion(manager, record, target)
 
+    @staticmethod
+    def _background_task_context_summary(
+        record: dict[str, Any], now_ms: int
+    ) -> dict[str, Any]:
+        """Build a bounded, prompt-free summary for ordinary LLM turns."""
+
+        summary: dict[str, Any] = {}
+        for key in (
+            "task_id",
+            "task_kind",
+            "state",
+            "mode",
+            "image_generated",
+            "image_sent",
+            "delivery_state",
+            "requested_count",
+            "planned_count",
+            "generated_count",
+            "sent_count",
+            "failed_count",
+            "cancelled_count",
+            "unknown_count",
+        ):
+            value = record.get(key)
+            if value is not None and value != "":
+                summary[key] = value
+
+        requester = (
+            record.get("requester")
+            or record.get("sender_name")
+            or record.get("sender_id")
+        )
+        if requester:
+            summary["requester"] = str(requester)
+
+        created_at = record.get("created_at")
+        if created_at:
+            try:
+                summary["elapsed_seconds"] = max(
+                    0, (now_ms - int(float(created_at))) // 1000
+                )
+            except (TypeError, ValueError, OverflowError):
+                pass
+
+        items = record.get("items")
+        if isinstance(items, list):
+            summary["item_count"] = len(items)
+            states: dict[str, int] = {}
+            for item in items:
+                state = str(item.get("state") or "unknown")
+                states[state] = states.get(state, 0) + 1
+            summary["item_states"] = states
+
+        has_prompt = bool(record.get("user_prompt") or record.get("effective_prompt"))
+        if not has_prompt and isinstance(items, list):
+            has_prompt = any(
+                bool(item.get("user_prompt") or item.get("effective_prompt"))
+                for item in items
+            )
+        summary["prompt_available"] = has_prompt
+        if has_prompt:
+            summary["prompt_lookup"] = "aiimg_task_status"
+
+        error_message = str(record.get("error_message") or "").strip()
+        if error_message:
+            summary["error_message"] = BackgroundImageTaskManager.sanitize_error(
+                error_message, 180
+            )
+        return summary
+
+    @classmethod
+    def _background_task_context_block(cls, summaries: list[dict[str, Any]]) -> str:
+        """Serialize task facts without ever placing raw prompts in context."""
+
+        max_chars = 2400
+        suffix = (
+            "\nThese are authoritative live task facts. Use the recorded state and delivery counts. "
+            "Do not invent progress, prompts, or delivery results."
+        )
+        payload: dict[str, Any] = {
+            "schema_version": 2,
+            "tasks": summaries,
+            "prompt_details": "Use aiimg_task_status only when the user asks for task details.",
+        }
+        serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        wrapper_len = len(
+            "<background_image_task_summary></background_image_task_summary>"
+        )
+        if len(serialized) + wrapper_len + len(suffix) > max_chars:
+            minimal = [
+                {
+                    key: summary[key]
+                    for key in (
+                        "task_id",
+                        "task_kind",
+                        "state",
+                        "mode",
+                        "delivery_state",
+                    )
+                    if key in summary
+                }
+                for summary in summaries
+            ]
+            payload = {
+                "schema_version": 2,
+                "tasks": minimal[:3],
+                "truncated": True,
+                "prompt_details": "Use aiimg_task_status only when the user asks for task details.",
+            }
+            serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        block = (
+            "<background_image_task_summary>"
+            + serialized
+            + "</background_image_task_summary>"
+            + suffix
+        )
+        if len(block) <= max_chars:
+            return block
+        return (
+            '<background_image_task_summary>{"schema_version":2,"tasks":[],"truncated":true,'
+            '"prompt_details":"Use aiimg_task_status only when the user asks for task details."}'
+            "</background_image_task_summary>" + suffix
+        )
+
     @filter.on_llm_request(priority=-20)
     async def inject_background_image_tasks(self, event: AstrMessageEvent, req) -> None:
-        """Inject authoritative background image facts into the current LLM turn.
+        """Inject bounded task state; detailed prompts stay behind the status tool.
 
         Args:
             event: Current pipeline event.
@@ -875,71 +998,10 @@ class GiteeAIImagePlugin(Star):
             return
 
         now = manager.now_ms()
-        summaries: list[dict[str, Any]] = []
-        for record in records[:3]:
-            if "user_prompt" not in record:
-                summary = dict(record)
-                summary["elapsed_seconds"] = max(
-                    0,
-                    (now - int(record.get("created_at") or now)) // 1000,
-                )
-                summaries.append(summary)
-                continue
-            summary = {
-                "task_id": record.get("task_id"),
-                "task_kind": record.get("task_kind"),
-                "state": record.get("state"),
-                "mode": record.get("mode"),
-                "requester": record.get("sender_name") or record.get("sender_id"),
-                "elapsed_seconds": max(
-                    0,
-                    (now - int(record.get("created_at") or now)) // 1000,
-                ),
-                "user_prompt": record.get("user_prompt"),
-                "effective_prompt": record.get("effective_prompt"),
-                "image_generated": bool(record.get("image_generated")),
-                "image_sent": bool(record.get("image_sent")),
-                "delivery_state": record.get("delivery_state"),
-                "notification_state": record.get("notification_state"),
-                "requested_count": record.get("requested_count"),
-                "planned_count": record.get("planned_count"),
-                "generated_count": record.get("generated_count"),
-                "sent_count": record.get("sent_count"),
-                "failed_count": record.get("failed_count"),
-                "cancelled_count": record.get("cancelled_count"),
-                "unknown_count": record.get("unknown_count"),
-                "error_message": record.get("error_message"),
-            }
-            items = record.get("items")
-            if isinstance(items, list):
-                summary["items"] = [
-                    {
-                        "index": item.get("index"),
-                        "state": item.get("state"),
-                        "effective_prompt": item.get("effective_prompt"),
-                        "aspect_ratio": item.get("aspect_ratio"),
-                        "image_generated": bool(item.get("image_generated")),
-                        "image_sent": bool(item.get("image_sent")),
-                        "delivery_state": item.get("delivery_state"),
-                        "error_message": item.get("error_message"),
-                    }
-                    for item in items[:8]
-                ]
-                summary["prompts_truncated"] = len(items) > 8
-            summaries.append(summary)
-
-        serialized = json.dumps(summaries, ensure_ascii=False, separators=(",", ":"))
-        if len(serialized) > 6000:
-            serialized = serialized[:5900] + '..."prompts_truncated":true'
-        block = (
-            "<background_image_tasks_json>"
-            + html.escape(serialized)
-            + "</background_image_tasks_json>\n"
-            "These are authoritative live task facts. If an image is still planning, "
-            "queued, running, or sending, say it is in progress. If image_sent is true "
-            "and delivery_state is confirmed, the adapter accepted the image send. Never "
-            "invent progress percentages or prompts."
-        )
+        summaries = [
+            self._background_task_context_summary(record, now) for record in records[:3]
+        ]
+        block = self._background_task_context_block(summaries)
         extra_parts = getattr(req, "extra_user_content_parts", None)
         if isinstance(extra_parts, list) and TextPart is not None:
             extra_parts.append(TextPart(text=block).mark_as_temp())
