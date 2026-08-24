@@ -265,53 +265,118 @@ class VideoManager:
             )
         )
         redirects = 0
+        max_download_attempts = 3
         try:
-            while True:
-                await ensure_url_allowed(current, policy=policy)
-                current_origin = _normalized_origin(current)
-                request_headers = (
-                    auth_headers
-                    if auth_headers and current_origin == auth_origin
-                    else None
-                )
-                async with httpx.AsyncClient(
-                    timeout=timeout, follow_redirects=False
-                ) as client:
-                    async with client.stream(
-                        "GET", current, headers=request_headers
-                    ) as resp:
-                        if resp.status_code in {301, 302, 303, 307, 308}:
-                            if redirects >= self._media_max_redirects:
-                                raise RuntimeError("Too many redirects")
-                            loc = (resp.headers.get("location") or "").strip()
-                            if not loc:
-                                raise RuntimeError("Redirect without location")
-                            current = str(httpx.URL(current).join(loc))
-                            redirects += 1
-                            continue
-
-                        resp.raise_for_status()
-
-                        total = 0
-                        prefix = bytearray()
-                        content_type = resp.headers.get("content-type") or ""
-                        async with aiofiles.open(tmp_path, "wb") as f:
-                            async for chunk in resp.aiter_bytes(chunk_size=1024 * 256):
-                                if not chunk:
-                                    continue
-                                total += len(chunk)
-                                if len(prefix) < 32:
-                                    prefix.extend(chunk[: 32 - len(prefix)])
-                                if total > self._media_max_video_bytes:
-                                    raise RuntimeError("Video too large")
-                                await f.write(chunk)
-                        _validate_video_payload(
-                            content_type=content_type,
-                            prefix=bytes(prefix),
-                            total_bytes=total,
+            for attempt in range(max_download_attempts):
+                try:
+                    while True:
+                        await ensure_url_allowed(current, policy=policy)
+                        current_origin = _normalized_origin(current)
+                        request_headers = dict(
+                            auth_headers
+                            if auth_headers and current_origin == auth_origin
+                            else {}
                         )
+                        resume_from = (
+                            tmp_path.stat().st_size if tmp_path.exists() else 0
+                        )
+                        if resume_from:
+                            request_headers["Range"] = f"bytes={resume_from}-"
 
-                break
+                        async with httpx.AsyncClient(
+                            timeout=timeout, follow_redirects=False
+                        ) as client:
+                            async with client.stream(
+                                "GET", current, headers=request_headers or None
+                            ) as resp:
+                                if resp.status_code in {301, 302, 303, 307, 308}:
+                                    if redirects >= self._media_max_redirects:
+                                        raise RuntimeError("Too many redirects")
+                                    loc = (resp.headers.get("location") or "").strip()
+                                    if not loc:
+                                        raise RuntimeError("Redirect without location")
+                                    current = str(httpx.URL(current).join(loc))
+                                    redirects += 1
+                                    continue
+
+                                resp.raise_for_status()
+                                content_range = resp.headers.get("content-range", "")
+                                range_match = re.match(
+                                    r"bytes\s+(\d+)-(\d+)/(\d+|\*)",
+                                    content_range,
+                                    re.IGNORECASE,
+                                )
+                                if resume_from and resp.status_code == 206:
+                                    if (
+                                        not range_match
+                                        or int(range_match.group(1)) != resume_from
+                                    ):
+                                        raise RuntimeError(
+                                            "Upstream returned an unexpected video byte range"
+                                        )
+                                    write_mode = "ab"
+                                else:
+                                    # A server that ignores Range must restart from byte 0.
+                                    resume_from = 0
+                                    write_mode = "wb"
+
+                                total = resume_from
+                                prefix = bytearray()
+                                content_type = resp.headers.get("content-type") or ""
+                                content_length = _clamp_int(
+                                    resp.headers.get("content-length"),
+                                    default=0,
+                                    min_value=0,
+                                    max_value=self._media_max_video_bytes,
+                                )
+                                expected_total = (
+                                    int(range_match.group(3))
+                                    if range_match and range_match.group(3) != "*"
+                                    else (
+                                        resume_from + content_length
+                                        if content_length
+                                        else 0
+                                    )
+                                )
+                                async with aiofiles.open(tmp_path, write_mode) as f:
+                                    async for chunk in resp.aiter_bytes(
+                                        chunk_size=1024 * 256
+                                    ):
+                                        if not chunk:
+                                            continue
+                                        total += len(chunk)
+                                        if len(prefix) < 32:
+                                            prefix.extend(chunk[: 32 - len(prefix)])
+                                        if total > self._media_max_video_bytes:
+                                            raise RuntimeError("Video too large")
+                                        await f.write(chunk)
+                                if expected_total and total < expected_total:
+                                    raise httpx.ReadError(
+                                        "Upstream closed the video response before completion"
+                                    )
+                                _validate_video_payload(
+                                    content_type=content_type,
+                                    prefix=bytes(prefix),
+                                    total_bytes=total,
+                                )
+
+                        break
+                    break
+                except (
+                    httpx.ReadError,
+                    httpx.RemoteProtocolError,
+                    httpx.ConnectError,
+                    httpx.ReadTimeout,
+                ) as exc:
+                    if attempt + 1 >= max_download_attempts:
+                        raise
+                    logger.warning(
+                        "[VideoManager] 视频下载中断，将从已下载字节续传: attempt=%s/%s error=%r",
+                        attempt + 1,
+                        max_download_attempts,
+                        exc,
+                    )
+                    await asyncio.sleep(min(2**attempt, 8))
         except Exception:
             try:
                 if tmp_path.exists():

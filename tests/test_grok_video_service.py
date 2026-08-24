@@ -74,6 +74,13 @@ class GrokVideoServiceEndpointTests(unittest.IsolatedAsyncioTestCase):
             "https://gateway.example/v1/videos/generations",
         )
 
+    def test_numeric_resolution_is_normalized_to_xai_enum(self):
+        mod = _load_module()
+
+        service = mod.GrokVideoService(settings={"resolution": 1080})
+
+        self.assertEqual(service.resolution, "1080p")
+
     async def test_request_payload_uses_xai_async_image_shape_and_parses_content(self):
         mod = _load_module()
         calls = []

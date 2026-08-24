@@ -4,6 +4,7 @@ import types
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import AsyncMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -159,6 +160,65 @@ class VideoManagerAuthTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 ("GET", "https://cdn.example/video.mp4", None),
             ],
+        )
+
+    async def test_interrupted_download_resumes_from_existing_part_file(self):
+        mod = _load_module()
+        requests = []
+        responses = [
+            _Response(
+                status_code=200,
+                headers={"content-type": "video/mp4", "content-length": "10"},
+                chunks=[b"1234"],
+            ),
+            _Response(
+                status_code=206,
+                headers={
+                    "content-type": "video/mp4",
+                    "content-length": "6",
+                    "content-range": "bytes 4-9/10",
+                },
+                chunks=[b"567890"],
+            ),
+        ]
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                return None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def stream(self, method, url, *, headers=None):
+                requests.append((method, url, headers))
+                return responses.pop(0)
+
+        async def _allow_url(*args, **kwargs):
+            return None
+
+        mod.httpx.AsyncClient = _Client
+        mod.ensure_url_allowed = _allow_url
+
+        with TemporaryDirectory() as temp_dir:
+            manager = mod.VideoManager(
+                {"storage": {"max_cached_videos": 20}},
+                Path(temp_dir),
+            )
+            with patch.object(mod.asyncio, "sleep", new=AsyncMock()):
+                result = await manager.download_video(
+                    "https://gateway.example/v1/videos/task/content",
+                    headers={"Authorization": "Bearer test-key"},
+                )
+
+            self.assertEqual(result.read_bytes(), b"1234567890")
+
+        self.assertEqual(requests[0][2], {"Authorization": "Bearer test-key"})
+        self.assertEqual(
+            requests[1][2],
+            {"Authorization": "Bearer test-key", "Range": "bytes=4-"},
         )
 
     async def test_json_error_body_is_not_saved_as_video(self):

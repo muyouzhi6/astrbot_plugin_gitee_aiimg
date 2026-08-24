@@ -51,6 +51,21 @@ def _build_data_url(image_bytes: bytes) -> str:
     return f"data:{mime};base64,{b64}"
 
 
+def _normalize_video_resolution(value: Any) -> str:
+    """Normalize common numeric resolution values to the xAI enum spelling."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    normalized = raw.lower()
+    if normalized in {"480", "480p"}:
+        return "480p"
+    if normalized in {"720", "720p"}:
+        return "720p"
+    if normalized in {"1080", "1080p"}:
+        return "1080p"
+    return raw
+
+
 def _chat_completions_endpoint(server_url: str) -> str:
     base = (server_url or "https://api.x.ai").strip().rstrip("/")
     path = urlsplit(base).path.rstrip("/")
@@ -358,7 +373,7 @@ class GrokVideoService:
             max_value=15,
         )
         self.aspect_ratio = str(self.settings.get("aspect_ratio") or "").strip()
-        self.resolution = str(self.settings.get("resolution") or "").strip()
+        self.resolution = _normalize_video_resolution(self.settings.get("resolution"))
         self.timeout_seconds = _clamp_int(
             self.settings.get("timeout_seconds", 600),
             default=600,
