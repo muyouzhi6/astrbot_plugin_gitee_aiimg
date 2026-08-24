@@ -440,6 +440,67 @@ def _make_success_result(mod, index: int, image_name: str, mode: str = "selfie_r
 
 
 class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_video_image_snapshot_survives_event_temp_file_cleanup(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={"features": {"video": {"chain": ["video"]}}},
+        )
+        raw_image = b"\x89PNG\r\n\x1a\nvideo-reference"
+
+        with TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "context-aware-compressed-test.jpg"
+            image_path.write_bytes(raw_image)
+
+            class _ImageSegment:
+                async def convert_to_base64(self):
+                    image_path.read_bytes()
+                    image_path.unlink()
+                    return "ignored"
+
+            async def _get_images_from_event(*args, **kwargs):
+                return [_ImageSegment()]
+
+            mod.get_images_from_event = _get_images_from_event
+            mod.decode_base64_image_payload = lambda payload: raw_image
+
+            snapshot = await plugin._capture_video_image_snapshot(_DummyEvent())
+            self.assertEqual(snapshot, (True, raw_image))
+            self.assertFalse(image_path.exists())
+
+            calls: list[bytes | None] = []
+
+            class _Backend:
+                async def generate_video_url(self, *, prompt, image_bytes):
+                    calls.append(image_bytes)
+                    return "https://cdn.example/video.mp4"
+
+            plugin.registry = types.SimpleNamespace(
+                get_video_backend=lambda provider_id: _Backend()
+            )
+            plugin._get_video_chain = lambda: ["video"]
+
+            async def _send_video_result(*args, **kwargs):
+                return None
+
+            plugin._send_video_result = _send_video_result
+            plugin._video_end = _send_video_result
+
+            async def _noop(*args, **kwargs):
+                return None
+
+            mod.mark_success = _noop
+            mod.mark_failed = _noop
+
+            await plugin._async_generate_video(
+                _DummyEvent(),
+                "animate the reference",
+                "user-1",
+                image_snapshot=snapshot,
+            )
+
+            self.assertEqual(calls, [raw_image])
+
     async def test_auto_video_send_prefers_url_before_file_download(self):
         mod = _load_module()
         plugin = mod.GiteeAIImagePlugin(

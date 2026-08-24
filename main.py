@@ -2696,6 +2696,31 @@ class GiteeAIImagePlugin(Star):
 
     # ==================== 视频生成 ====================
 
+    async def _capture_video_image_snapshot(
+        self,
+        event: AstrMessageEvent,
+    ) -> tuple[bool, bytes | None]:
+        """Materialize the reference image before the event temp files are cleaned."""
+        image_segs = await get_images_from_event(
+            event,
+            include_avatar=True,
+            include_sender_avatar_fallback=False,
+        )
+        had_image = bool(image_segs)
+        for i, seg in enumerate(image_segs):
+            try:
+                b64 = await seg.convert_to_base64()
+                image_bytes = decode_base64_image_payload(b64)
+                logger.debug(
+                    "[视频] 图片快照完成: index=%s bytes=%s",
+                    i + 1,
+                    len(image_bytes),
+                )
+                return had_image, image_bytes
+            except Exception as exc:
+                logger.warning("[视频] 图片 %s 快照失败，尝试下一张: %s", i + 1, exc)
+        return had_image, None
+
     @filter.command("视频")
     async def generate_video_command(self, event: AstrMessageEvent):
         """生成视频
@@ -2743,9 +2768,14 @@ class GiteeAIImagePlugin(Star):
             return
 
         try:
+            image_snapshot = await self._capture_video_image_snapshot(event)
             task = asyncio.create_task(
                 self._async_generate_video(
-                    event, prompt, user_id, provider_id=provider_override
+                    event,
+                    prompt,
+                    user_id,
+                    provider_id=provider_override,
+                    image_snapshot=image_snapshot,
                 )
             )
         except Exception:
@@ -2812,9 +2842,14 @@ class GiteeAIImagePlugin(Star):
             return
 
         try:
+            image_snapshot = await self._capture_video_image_snapshot(event)
             task = asyncio.create_task(
                 self._async_generate_video(
-                    event, prompt, user_id, provider_id=provider_override
+                    event,
+                    prompt,
+                    user_id,
+                    provider_id=provider_override,
+                    image_snapshot=image_snapshot,
                 )
             )
         except Exception:
@@ -3695,6 +3730,7 @@ class GiteeAIImagePlugin(Star):
 
         try:
             await mark_processing(event)
+            image_snapshot = await self._capture_video_image_snapshot(event)
             task = asyncio.create_task(
                 self._async_generate_video(
                     event,
@@ -3702,6 +3738,7 @@ class GiteeAIImagePlugin(Star):
                     user_id,
                     provider_id=provider_override,
                     llm_tool_failure=True,
+                    image_snapshot=image_snapshot,
                 )
             )
         except Exception:
@@ -5922,22 +5959,12 @@ class GiteeAIImagePlugin(Star):
         *,
         provider_id: str | None = None,
         llm_tool_failure: bool = False,
+        image_snapshot: tuple[bool, bytes | None] | None = None,
     ) -> None:
         try:
-            image_segs = await get_images_from_event(
-                event,
-                include_avatar=True,
-                include_sender_avatar_fallback=False,
-            )
-            had_image = bool(image_segs)
-            image_bytes: bytes | None = None
-            for i, seg in enumerate(image_segs):
-                try:
-                    b64 = await seg.convert_to_base64()
-                    image_bytes = decode_base64_image_payload(b64)
-                    break
-                except Exception as e:
-                    logger.warning(f"[视频] 图片 {i + 1} 转换失败，跳过: {e}")
+            if image_snapshot is None:
+                image_snapshot = await self._capture_video_image_snapshot(event)
+            had_image, image_bytes = image_snapshot
 
             # 允许文生视频（无图）走支持的后端；但若用户确实发了图却读不到，则直接失败
             if had_image and not image_bytes:
