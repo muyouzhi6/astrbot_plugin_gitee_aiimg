@@ -533,6 +533,59 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
             [("chain", [("video_file", str(video_path))])],
         )
 
+    async def test_authenticated_video_skips_url_send_and_downloads_with_headers(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={"features": {"video": {"send_mode": "auto"}}},
+        )
+        calls: list[object] = []
+        video_path = Path("/tmp/video.mp4")
+
+        class _Video:
+            @staticmethod
+            def fromURL(url: str):
+                calls.append("url_component")
+                return ("video_url", url)
+
+            @staticmethod
+            def fromFileSystem(path: str):
+                calls.append("file_component")
+                return ("video_file", path)
+
+        async def _download_video(url: str, **kwargs):
+            calls.append(("download", url, kwargs))
+            return video_path
+
+        mod.Video = _Video
+        plugin.videomgr = types.SimpleNamespace(download_video=_download_video)
+        event = _DummyEvent()
+
+        await plugin._send_video_result(
+            event,
+            "https://gateway.example/v1/videos/task/content",
+            download_headers={"Authorization": "Bearer test-key"},
+        )
+
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "download",
+                    "https://gateway.example/v1/videos/task/content",
+                    {
+                        "timeout_seconds": 300,
+                        "headers": {"Authorization": "Bearer test-key"},
+                    },
+                ),
+                "file_component",
+            ],
+        )
+        self.assertEqual(
+            event.sent,
+            [("chain", [("video_file", str(video_path))])],
+        )
+
     async def test_video_send_ignores_invalid_timeout_config_values(self):
         mod = _load_module()
         plugin = mod.GiteeAIImagePlugin(

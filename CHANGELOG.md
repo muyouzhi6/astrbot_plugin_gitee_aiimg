@@ -1,5 +1,19 @@
 # 更新日志
 
+## [v5.1.14] - 2026-08-24
+
+### 新增
+
+- 将原 `sora2_video` 模板泛化为通用 OpenAI Videos `/v1/videos` 异步视频服务商，新增 `openai_video` 别名并继续兼容 `x666_sora2` 旧配置。
+- 支持 New API 风格的 `metadata.url` 结果，以及任务完成后通过鉴权 `/v1/videos/{task_id}/content` 下载视频。
+- 鉴权视频会先下载为本地文件再发送，跨域重定向时自动移除 `Authorization`，避免把 API Key 转发给第三方 CDN。
+- 修正 `grok_video`：按 xAI 官方异步 `/v1/videos/generations` 协议发送 `prompt`、`image.url`、`duration`、`aspect_ratio`、`resolution`，并轮询 `request_id`；不再错误调用 `/v1/chat/completions`。
+- 下载器拒绝 JSON/HTML 错误页、空文件和无法识别的视频字节，避免把错误响应伪装成 MP4 发送。
+
+### 测试
+
+- 新增 New API 元数据、鉴权内容下载、OpenAI Videos provider 别名和跨域重定向凭据隔离回归测试。
+
 ## [v5.1.13] - 2026-08-17
 
 ### 修复

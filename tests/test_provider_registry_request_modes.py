@@ -278,6 +278,31 @@ class ProviderRegistryRequestModeTests(unittest.TestCase):
 
         self.assertEqual(backend.__class__.__name__, "Sora2VideoService")
 
+    def test_registry_resolves_openai_video_provider_alias(self):
+        mod = _load_module()
+        registry = mod.ProviderRegistry(
+            config={
+                "providers": [
+                    {
+                        "id": "openai_video",
+                        "base_url": "https://gateway.example/v1",
+                        "api_keys": ["test-key"],
+                        "model": "video-model",
+                    }
+                ]
+            },
+            imgr=object(),
+            data_dir=Path("/tmp"),
+        )
+
+        backend = registry.get_video_backend("openai_video")
+
+        self.assertEqual(backend.__class__.__name__, "Sora2VideoService")
+        self.assertEqual(
+            backend.kwargs["settings"]["base_url"],
+            "https://gateway.example/v1",
+        )
+
     def test_validate_requires_sora2_api_key_source(self):
         mod = _load_module()
         registry = mod.ProviderRegistry(

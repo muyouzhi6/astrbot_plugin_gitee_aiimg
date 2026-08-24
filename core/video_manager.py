@@ -10,12 +10,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import aiofiles
 import httpx
@@ -36,6 +38,52 @@ def _clamp_int(value: Any, *, default: int, min_value: int, max_value: int) -> i
     except (TypeError, ValueError):
         return default
     return max(min_value, min(max_value, value_int))
+
+
+def _normalized_origin(url: str) -> tuple[str, str, int | None]:
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    port = parts.port
+    if port is None:
+        port = 443 if scheme == "https" else 80 if scheme == "http" else None
+    return scheme, (parts.hostname or "").lower(), port
+
+
+def _looks_like_video_bytes(prefix: bytes) -> bool:
+    return bool(
+        (len(prefix) >= 12 and prefix[4:8] == b"ftyp")
+        or prefix.startswith(b"\x1a\x45\xdf\xa3")
+        or prefix.startswith(b"OggS")
+        or (prefix.startswith(b"RIFF") and prefix[8:12] == b"AVI ")
+        or prefix.startswith(b"\x00\x00\x01\xba")
+    )
+
+
+def _validate_video_payload(
+    *, content_type: str, prefix: bytes, total_bytes: int
+) -> None:
+    if total_bytes <= 0:
+        raise RuntimeError("Downloaded video is empty")
+
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    if (
+        media_type.startswith("text/")
+        or media_type
+        in {
+            "application/json",
+            "application/problem+json",
+        }
+        or media_type.endswith("+json")
+    ):
+        raise RuntimeError(f"Upstream returned non-video content: {media_type}")
+
+    if media_type.startswith("video/") or media_type == "application/mp4":
+        return
+    if _looks_like_video_bytes(prefix):
+        return
+    raise RuntimeError(
+        f"Upstream response is not a recognized video: {media_type or 'unknown type'}"
+    )
 
 
 class VideoManager:
@@ -76,7 +124,13 @@ class VideoManager:
         )
         self.cleanup_batch_ratio = 0.5
 
-    async def _resolve_video_url(self, url: str, *, timeout: httpx.Timeout) -> str:
+    async def _resolve_video_url(
+        self,
+        url: str,
+        *,
+        timeout: httpx.Timeout,
+        policy: URLFetchPolicy,
+    ) -> str:
         """Resolve a possibly indirect URL into a direct mp4 URL.
 
         Some providers return an HTML page or JSON wrapper that contains the real mp4 link.
@@ -84,50 +138,97 @@ class VideoManager:
         u = str(url or "").strip()
         if not u:
             return ""
-        if u.lower().endswith(".mp4"):
+        if urlsplit(u).path.lower().endswith((".mp4", ".webm", ".mov")):
             return u
 
-        # Try a lightweight GET and inspect content.
-        try:
+        current = u
+        redirects = 0
+        while True:
+            await ensure_url_allowed(current, policy=policy)
             async with httpx.AsyncClient(
-                timeout=timeout, follow_redirects=True
+                timeout=timeout, follow_redirects=False
             ) as client:
-                resp = await client.get(
-                    u, headers={"Accept": "text/html,application/json"}
+                try:
+                    async with client.stream(
+                        "GET",
+                        current,
+                        headers={"Accept": "text/html,application/json,video/*"},
+                    ) as resp:
+                        if resp.status_code in {301, 302, 303, 307, 308}:
+                            if redirects >= self._media_max_redirects:
+                                raise RuntimeError("Too many redirects")
+                            loc = (resp.headers.get("location") or "").strip()
+                            if not loc:
+                                raise RuntimeError("Redirect without location")
+                            current = str(httpx.URL(current).join(loc))
+                            redirects += 1
+                            continue
+
+                        if resp.status_code >= 400:
+                            return current
+
+                        ct = (resp.headers.get("content-type") or "").lower()
+                        if ct.startswith("video/") or ct.startswith(
+                            "application/octet-stream"
+                        ):
+                            return current
+
+                        body = bytearray()
+                        async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
+                            body.extend(chunk)
+                            if len(body) > 1024 * 1024:
+                                return current
+                except (httpx.HTTPError, OSError):
+                    return current
+
+            text = bytes(body).decode("utf-8", errors="replace")
+
+            if "application/json" in ct:
+                try:
+                    data = json.loads(text)
+                    if isinstance(data, dict):
+                        candidates = [
+                            data.get(k) for k in ("url", "video_url", "download_url")
+                        ]
+                        nested = data.get("data")
+                        if (
+                            isinstance(nested, list)
+                            and nested
+                            and isinstance(nested[0], dict)
+                        ):
+                            candidates.append(nested[0].get("url"))
+                        for candidate in candidates:
+                            value = str(candidate or "").strip()
+                            resolved = (
+                                str(httpx.URL(current).join(value)) if value else ""
+                            )
+                            if (
+                                urlsplit(resolved)
+                                .path.lower()
+                                .endswith((".mp4", ".webm", ".mov"))
+                            ):
+                                return resolved
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+
+            if "text/html" in ct or text.lstrip().lower().startswith("<!doctype"):
+                match = re.search(
+                    r"https?://[^\s\"']+?\.(?:mp4|webm|mov)(?:\?[^\s\"']*)?",
+                    text,
+                    re.IGNORECASE,
                 )
-                ct = (resp.headers.get("content-type") or "").lower()
-                text = resp.text or ""
+                if match:
+                    return match.group(0)
 
-                # JSON that contains url
-                if "application/json" in ct:
-                    try:
-                        data = resp.json()
-                        if isinstance(data, dict):
-                            for k in ("url", "video_url", "download_url"):
-                                v = str(data.get(k) or "").strip()
-                                if v.lower().endswith(".mp4"):
-                                    return v
-                            # OpenAI-like {data:[{url:...}]}
-                            d0 = (data.get("data") or [{}])[0]
-                            if isinstance(d0, dict):
-                                v = str(d0.get("url") or "").strip()
-                                if v.lower().endswith(".mp4"):
-                                    return v
-                    except Exception:
-                        pass
+            return current
 
-                # HTML page that contains an mp4 link
-                if "text/html" in ct or text.lstrip().lower().startswith("<!doctype"):
-                    m = re.search(r"https?://[^\s\"']+?\.mp4", text)
-                    if m:
-                        return m.group(0)
-
-        except Exception:
-            pass
-
-        return u
-
-    async def download_video(self, url: str, *, timeout_seconds: int = 300) -> Path:
+    async def download_video(
+        self,
+        url: str,
+        *,
+        timeout_seconds: int = 300,
+        headers: dict[str, str] | None = None,
+    ) -> Path:
         if not url:
             raise ValueError("缺少视频 URL")
 
@@ -151,15 +252,34 @@ class VideoManager:
         )
 
         t0 = time.perf_counter()
-        current = await self._resolve_video_url(str(url or "").strip(), timeout=timeout)
+        original_url = str(url or "").strip()
+        auth_headers = dict(headers or {})
+        auth_origin = _normalized_origin(original_url)
+        current = (
+            original_url
+            if auth_headers
+            else await self._resolve_video_url(
+                original_url,
+                timeout=timeout,
+                policy=policy,
+            )
+        )
         redirects = 0
         try:
             while True:
                 await ensure_url_allowed(current, policy=policy)
+                current_origin = _normalized_origin(current)
+                request_headers = (
+                    auth_headers
+                    if auth_headers and current_origin == auth_origin
+                    else None
+                )
                 async with httpx.AsyncClient(
                     timeout=timeout, follow_redirects=False
                 ) as client:
-                    async with client.stream("GET", current) as resp:
+                    async with client.stream(
+                        "GET", current, headers=request_headers
+                    ) as resp:
                         if resp.status_code in {301, 302, 303, 307, 308}:
                             if redirects >= self._media_max_redirects:
                                 raise RuntimeError("Too many redirects")
@@ -173,14 +293,23 @@ class VideoManager:
                         resp.raise_for_status()
 
                         total = 0
+                        prefix = bytearray()
+                        content_type = resp.headers.get("content-type") or ""
                         async with aiofiles.open(tmp_path, "wb") as f:
                             async for chunk in resp.aiter_bytes(chunk_size=1024 * 256):
                                 if not chunk:
                                     continue
                                 total += len(chunk)
+                                if len(prefix) < 32:
+                                    prefix.extend(chunk[: 32 - len(prefix)])
                                 if total > self._media_max_video_bytes:
                                     raise RuntimeError("Video too large")
                                 await f.write(chunk)
+                        _validate_video_payload(
+                            content_type=content_type,
+                            prefix=bytes(prefix),
+                            total_bytes=total,
+                        )
 
                 break
         except Exception:

@@ -72,6 +72,122 @@ class Sora2VideoServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, "https://x666.me/video/result.mp4")
 
+    def test_extract_video_url_reads_new_api_metadata_url(self):
+        mod = _load_module()
+
+        result = mod._extract_video_url(
+            {"status": "completed", "metadata": {"url": "/video/result.mp4"}},
+            base_origin="https://gateway.example",
+        )
+
+        self.assertEqual(result, "https://gateway.example/video/result.mp4")
+
+    async def test_completed_task_without_public_url_returns_authenticated_content(
+        self,
+    ):
+        mod = _load_module()
+        calls = []
+
+        async def _no_sleep(_seconds):
+            return None
+
+        mod.asyncio.sleep = _no_sleep
+
+        class Service(mod.Sora2VideoService):
+            async def _request_json_with_retries(self, *args, **kwargs):
+                calls.append((args, kwargs))
+                if args[1] == "POST":
+                    return {"id": "task-public", "status": "queued"}
+                return {"id": "task-public", "status": "completed"}
+
+        service = Service(
+            settings={
+                "base_url": "https://gateway.example/v1",
+                "api_keys": ["test-key"],
+                "poll_interval_seconds": 1,
+            }
+        )
+
+        result = await service.generate_video_url("prompt")
+
+        self.assertIsInstance(result, mod.VideoResult)
+        self.assertEqual(
+            result.url,
+            "https://gateway.example/v1/videos/task-public/content",
+        )
+        self.assertEqual(
+            result.download_headers,
+            {"Authorization": "Bearer test-key"},
+        )
+        self.assertEqual(calls[1][0][1], "GET")
+
+    async def test_metadata_content_url_keeps_download_authentication(self):
+        mod = _load_module()
+
+        class Service(mod.Sora2VideoService):
+            async def _request_json_with_retries(self, *args, **kwargs):
+                return {
+                    "id": "task-public",
+                    "status": "completed",
+                    "metadata": {"url": "/v1/videos/task-public/content"},
+                }
+
+        service = Service(
+            settings={
+                "base_url": "https://gateway.example/v1",
+                "api_keys": ["test-key"],
+            }
+        )
+
+        result = await service.generate_video_url("prompt")
+
+        self.assertIsInstance(result, mod.VideoResult)
+        self.assertEqual(
+            result.url,
+            "https://gateway.example/v1/videos/task-public/content",
+        )
+        self.assertEqual(
+            result.download_headers,
+            {"Authorization": "Bearer test-key"},
+        )
+
+    async def test_queued_metadata_url_waits_for_completed_status(self):
+        mod = _load_module()
+        calls = []
+
+        async def _no_sleep(_seconds):
+            return None
+
+        mod.asyncio.sleep = _no_sleep
+
+        class Service(mod.Sora2VideoService):
+            async def _request_json_with_retries(self, *args, **kwargs):
+                calls.append(args[1])
+                if args[1] == "POST":
+                    return {
+                        "id": "task-pending",
+                        "status": "queued",
+                        "metadata": {"url": "/video/not-ready.mp4"},
+                    }
+                return {
+                    "id": "task-pending",
+                    "status": "completed",
+                    "metadata": {"url": "/video/ready.mp4"},
+                }
+
+        service = Service(
+            settings={
+                "base_url": "https://gateway.example/v1",
+                "api_keys": ["test-key"],
+                "poll_interval_seconds": 1,
+            }
+        )
+
+        result = await service.generate_video_url("prompt")
+
+        self.assertEqual(result, "https://gateway.example/video/ready.mp4")
+        self.assertEqual(calls, ["POST", "GET"])
+
     async def test_extra_body_cannot_override_core_payload_fields(self):
         mod = _load_module()
         calls = []

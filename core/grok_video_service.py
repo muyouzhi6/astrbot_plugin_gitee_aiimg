@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import random
 import re
 import time
 from collections import deque
+from dataclasses import dataclass
 from typing import Any
-from urllib.parse import parse_qs, urljoin, urlsplit
+from urllib.parse import parse_qs, quote, urljoin, urlsplit
 
 import httpx
 
@@ -49,6 +49,41 @@ def _build_data_url(image_bytes: bytes) -> str:
     mime = _guess_image_mime(image_bytes)
     b64 = base64.b64encode(image_bytes).decode("utf-8")
     return f"data:{mime};base64,{b64}"
+
+
+def _chat_completions_endpoint(server_url: str) -> str:
+    base = (server_url or "https://api.x.ai").strip().rstrip("/")
+    path = urlsplit(base).path.rstrip("/")
+    if path.endswith("/chat/completions"):
+        return base
+    if path.endswith("/v1"):
+        return f"{base}/chat/completions"
+    return f"{base}/v1/chat/completions"
+
+
+def _video_generations_endpoint(server_url: str) -> str:
+    base = (server_url or "https://api.x.ai").strip().rstrip("/")
+    path = urlsplit(base).path.rstrip("/")
+    if path.endswith("/videos/generations"):
+        return base
+    if path.endswith("/v1"):
+        return f"{base}/videos/generations"
+    return f"{base}/v1/videos/generations"
+
+
+def _origin_from_url(url: str) -> str:
+    parts = urlsplit(url)
+    if not parts.scheme or not parts.netloc:
+        return ""
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+@dataclass(frozen=True)
+class VideoResult:
+    """Video URL plus optional headers required to download it."""
+
+    url: str
+    download_headers: dict[str, str] | None = None
 
 
 def _looks_like_proxy_video_url(url: str) -> bool:
@@ -301,79 +336,168 @@ def _extract_video_url_from_response(
 
 
 class GrokVideoService:
+    """xAI-compatible asynchronous video generation service."""
+
+    _DONE = {"done", "completed", "succeeded", "success"}
+    _FAILED = {"failed", "expired", "error", "cancelled", "canceled", "rejected"}
+
     def __init__(self, *, settings: dict):
         self.settings = settings if isinstance(settings, dict) else {}
-
-        self.server_url: str = str(
+        self.server_url = str(
             self.settings.get("server_url", "https://api.x.ai")
-        ).rstrip("/")
-        self.api_key: str = str(self.settings.get("api_key", "")).strip()
-        self.model: str = (
-            str(self.settings.get("model", "grok-imagine-0.9")).strip()
-            or "grok-imagine-0.9"
+        ).strip()
+        self.api_key = str(self.settings.get("api_key", "")).strip()
+        self.model = (
+            str(self.settings.get("model", "grok-imagine-video-1.5")).strip()
+            or "grok-imagine-video-1.5"
         )
-
-        self.timeout_seconds: int = _clamp_int(
-            self.settings.get("timeout_seconds", 180),
-            default=180,
+        self.duration = _clamp_int(
+            self.settings.get("duration", 5),
+            default=5,
             min_value=1,
+            max_value=15,
+        )
+        self.aspect_ratio = str(self.settings.get("aspect_ratio") or "").strip()
+        self.resolution = str(self.settings.get("resolution") or "").strip()
+        self.timeout_seconds = _clamp_int(
+            self.settings.get("timeout_seconds", 600),
+            default=600,
+            min_value=30,
             max_value=3600,
         )
-        self.max_retries: int = _clamp_int(
+        self.poll_interval_seconds = max(
+            1.0, min(float(self.settings.get("poll_interval_seconds", 5)), 120.0)
+        )
+        self.max_retries = _clamp_int(
             self.settings.get("max_retries", 2),
             default=2,
             min_value=0,
             max_value=10,
         )
-        self.empty_response_retry: int = _clamp_int(
-            self.settings.get("empty_response_retry", 2),
-            default=2,
+        self.create_max_retries = _clamp_int(
+            self.settings.get("create_max_retries", 0),
+            default=0,
             min_value=0,
-            max_value=10,
+            max_value=3,
         )
-        self.retry_delay: int = _clamp_int(
+        self.retry_delay = _clamp_int(
             self.settings.get("retry_delay", 2),
             default=2,
             min_value=0,
             max_value=60,
         )
-
-        self.presets: dict[str, str] = self._load_presets()
-
-        self.api_url = urljoin(self.server_url + "/", "v1/chat/completions")
+        self.presets = self._load_presets()
+        self.api_url = _video_generations_endpoint(self.server_url)
+        self.base_origin = _origin_from_url(self.api_url)
 
         logger.info(
-            "[GrokVideo] Initialized: model=%s, timeout=%ss, retries=%s, empty_retry=%s, presets=%s",
+            "[GrokVideo] Initialized: model=%s, endpoint=%s, duration=%ss, timeout=%ss",
             self.model,
+            self.api_url,
+            self.duration,
             self.timeout_seconds,
-            self.max_retries,
-            self.empty_response_retry,
-            len(self.presets),
         )
 
     def _load_presets(self) -> dict[str, str]:
         presets: dict[str, str] = {}
-        items = self.settings.get("presets", [])
-        for item in items:
+        for item in self.settings.get("presets", []):
             if isinstance(item, str) and ":" in item:
-                key, val = item.split(":", 1)
-                key = key.strip()
-                val = val.strip()
-                if key and val:
-                    presets[key] = val
+                key, value = item.split(":", 1)
+                if key.strip() and value.strip():
+                    presets[key.strip()] = value.strip()
         return presets
 
     def get_preset_names(self) -> list[str]:
         return list(self.presets.keys())
 
     def build_prompt(self, prompt: str, preset: str | None = None) -> str:
-        prompt = (prompt or "").strip()
+        value = (prompt or "").strip()
         if preset and preset in self.presets:
-            preset_prompt = self.presets[preset]
-            if prompt:
-                return f"{preset_prompt}, {prompt}"
-            return preset_prompt
-        return prompt
+            prefix = self.presets[preset]
+            return f"{prefix}, {value}" if value else prefix
+        return value
+
+    def _absolute_video_url(self, value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if text.startswith(("http://", "https://")):
+            return text
+        if text.startswith("/") and self.base_origin:
+            return urljoin(self.base_origin + "/", text.lstrip("/"))
+        return ""
+
+    def _video_result(self, url: str, headers: dict[str, str]) -> str | VideoResult:
+        parts = urlsplit(url)
+        if (
+            _origin_from_url(url) == self.base_origin
+            and "/v1/videos/" in parts.path
+            and parts.path.rstrip("/").endswith("/content")
+        ):
+            return VideoResult(url, {"Authorization": headers["Authorization"]})
+        return url
+
+    def _extract_async_video_url(self, data: Any) -> str:
+        if not isinstance(data, dict):
+            return ""
+        candidates: list[Any] = [data.get("video_url"), data.get("url")]
+        video = data.get("video")
+        if isinstance(video, dict):
+            candidates.extend([video.get("url"), video.get("video_url")])
+        metadata = data.get("metadata")
+        if isinstance(metadata, dict):
+            candidates.extend([metadata.get("url"), metadata.get("video_url")])
+        for candidate in candidates:
+            url = self._absolute_video_url(candidate)
+            if url:
+                return url
+        return ""
+
+    @staticmethod
+    def _task_id(data: Any) -> str:
+        if not isinstance(data, dict):
+            return ""
+        for key in ("request_id", "task_id", "id"):
+            value = str(data.get(key) or "").strip()
+            if value:
+                return value
+        return ""
+
+    @staticmethod
+    def _error_text(data: Any) -> str:
+        if not isinstance(data, dict):
+            return str(data)[:300]
+        error = data.get("error")
+        if isinstance(error, dict):
+            return str(error.get("message") or error.get("code") or error)[:300]
+        return str(data.get("message") or error or data)[:300]
+
+    async def _request_json(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        payload: dict[str, Any] | None = None,
+    ) -> Any:
+        response = await client.request(
+            method,
+            url,
+            headers=headers,
+            json=payload,
+        )
+        if response.status_code >= 400:
+            detail = response.text[:500]
+            raise RuntimeError(
+                f"Grok API 请求失败 HTTP {response.status_code}: {detail}"
+            )
+        try:
+            return response.json()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Grok API 响应 JSON 解析失败: {exc}, body={response.text[:200]}"
+            ) from exc
 
     async def generate_video_url(
         self,
@@ -381,145 +505,123 @@ class GrokVideoService:
         image_bytes: bytes | None = None,
         *,
         preset: str | None = None,
-    ) -> str:
+    ) -> str | VideoResult:
         if not self.api_key:
             raise RuntimeError("Missing API key for video provider (api_key)")
-        if not image_bytes:
-            raise ValueError("缺少参考图")
-
         final_prompt = self.build_prompt(prompt, preset=preset)
         if not final_prompt:
             raise ValueError("缺少提示词")
 
-        image_url = _build_data_url(image_bytes)
-
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": final_prompt},
-                        {"type": "image_url", "image_url": {"url": image_url}},
-                    ],
-                }
-            ],
+            "prompt": final_prompt,
+            "duration": self.duration,
         }
+        if image_bytes:
+            payload["image"] = {"url": _build_data_url(image_bytes)}
+        if self.aspect_ratio:
+            payload["aspect_ratio"] = self.aspect_ratio
+        if self.resolution:
+            payload["resolution"] = self.resolution
 
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
         }
-
         timeout = httpx.Timeout(
             connect=10.0,
             read=float(self.timeout_seconds),
             write=10.0,
             pool=float(self.timeout_seconds) + 10.0,
         )
-
-        async def _request_once() -> Any:
-            async with httpx.AsyncClient(
-                timeout=timeout, follow_redirects=True
-            ) as client:
-                resp = await client.post(self.api_url, json=payload, headers=headers)
-
-            if resp.status_code != 200:
-                detail = resp.text[:500]
-                if resp.status_code == 401:
-                    raise RuntimeError("Grok API Key 无效或已过期 (401)")
-                if resp.status_code == 403:
-                    raise RuntimeError("Grok API 访问被拒绝 (403)")
-                raise RuntimeError(
-                    f"Grok API 请求失败 HTTP {resp.status_code}: {detail}"
-                )
-
-            try:
-                return resp.json()
-            except Exception as e:
-                # Some gateways return SSE-ish payload even when stream=false, e.g.
-                # "data: {...}\n\n" or multiple "data:" lines.
-                text = (resp.text or "").strip()
-                if text.startswith("data:"):
-                    # keep only data lines, drop [DONE]
-                    lines = [
-                        ln.strip()
-                        for ln in text.splitlines()
-                        if ln.strip().startswith("data:")
-                    ]
-                    chunks: list[dict[str, Any]] = []
-                    for ln in lines:
-                        data_str = ln[5:].strip()
-                        if not data_str or data_str == "[DONE]":
-                            continue
-                        try:
-                            chunks.append(json.loads(data_str))
-                        except Exception:
-                            continue
-                    if chunks:
-                        # If it's chat.completion.chunk, reconstruct into a non-stream response-like dict
-                        # so downstream extractor can work.
-                        if all(
-                            isinstance(c, dict)
-                            and str(c.get("object", "")).endswith(".chunk")
-                            for c in chunks
-                        ):
-                            content_parts: list[str] = []
-                            for c in chunks:
-                                for ch in c.get("choices", []) or []:
-                                    delta = ch.get("delta") or {}
-                                    part = delta.get("content")
-                                    if isinstance(part, str) and part:
-                                        content_parts.append(part)
-                            content = "".join(content_parts)
-                            return {"choices": [{"message": {"content": content}}]}
-                        return chunks[-1]
-                raise RuntimeError(
-                    f"API 响应 JSON 解析失败: {e}, body={resp.text[:200]}"
-                ) from e
-
-        async def _request_with_retries() -> Any:
-            last_exc: Exception | None = None
-            for attempt in range(self.max_retries + 1):
+        deadline = time.monotonic() + self.timeout_seconds
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            data: Any | None = None
+            last_error: Exception | None = None
+            for attempt in range(self.create_max_retries + 1):
                 try:
                     logger.info(
-                        f"[GrokVideo] 调用 API attempt={attempt + 1}/{self.max_retries + 1}, "
-                        f"prompt={final_prompt[:60]}..."
+                        "[GrokVideo] 创建任务: endpoint=%s, model=%s, duration=%ss",
+                        self.api_url,
+                        self.model,
+                        self.duration,
                     )
-                    return await _request_once()
-                except Exception as e:
-                    last_exc = e
-                    if attempt >= self.max_retries:
-                        break
-                    delay = max(0, self.retry_delay) * (2**attempt) + random.uniform(
-                        0, 0.5
+                    data = await self._request_json(
+                        client,
+                        "POST",
+                        self.api_url,
+                        headers=headers,
+                        payload=payload,
                     )
-                    logger.warning(f"[GrokVideo] 请求失败: {e}，{delay:.1f}s 后重试...")
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if attempt >= self.create_max_retries:
+                        raise
+                    delay = self.retry_delay * (2**attempt) + random.uniform(0, 0.5)
+                    logger.warning("[GrokVideo] 创建失败: %s，%.1fs 后重试", exc, delay)
                     await asyncio.sleep(delay)
-            raise last_exc or RuntimeError("请求失败")
 
-        t_start = time.perf_counter()
-        last_parse_error: str | None = None
+            if data is None:
+                raise last_error or RuntimeError("Grok 视频任务创建失败")
 
-        # 对「200但没有视频 URL」做额外重试（与网络重试分离，提升成功率）
-        for attempt in range(self.empty_response_retry + 1):
-            data = await _request_with_retries()
-            video_url, parse_error = _extract_video_url_from_response(data)
-            if video_url:
-                t_end = time.perf_counter()
-                logger.info(
-                    f"[GrokVideo] 成功: 耗时={t_end - t_start:.2f}s, url={video_url[:80]}..."
-                )
-                return video_url
-
-            last_parse_error = parse_error or "API 响应未包含视频 URL"
-            if attempt >= self.empty_response_retry:
-                break
-
-            delay = max(0, self.retry_delay) * (2**attempt) + random.uniform(0, 0.5)
-            logger.warning(
-                f"[GrokVideo] 响应无视频URL: {last_parse_error}，{delay:.1f}s 后重试..."
+            status = (
+                str(data.get("status") or "").strip().lower()
+                if isinstance(data, dict)
+                else ""
             )
-            await asyncio.sleep(delay)
+            video_url = self._extract_async_video_url(data)
+            if video_url and (not status or status in self._DONE):
+                return self._video_result(video_url, headers)
+            if status in self._FAILED:
+                raise RuntimeError(f"Grok 视频任务失败: {self._error_text(data)}")
 
-        raise RuntimeError(f"Grok 视频生成失败: {last_parse_error}")
+            task_id = self._task_id(data)
+            if not task_id:
+                raise RuntimeError(f"Grok API 未返回 request_id: {str(data)[:300]}")
+            status_base = self.api_url.removesuffix("/generations")
+            status_url = f"{status_base}/{quote(task_id, safe='')}"
+
+            while True:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f"Grok 视频任务超时: request_id={task_id}")
+                await asyncio.sleep(self.poll_interval_seconds)
+                for poll_attempt in range(self.max_retries + 1):
+                    try:
+                        data = await self._request_json(
+                            client,
+                            "GET",
+                            status_url,
+                            headers=headers,
+                        )
+                        break
+                    except Exception as exc:
+                        if poll_attempt >= self.max_retries:
+                            raise
+                        delay = self.retry_delay * (2**poll_attempt) + random.uniform(
+                            0, 0.5
+                        )
+                        logger.warning(
+                            "[GrokVideo] 轮询失败: %s，%.1fs 后重试",
+                            exc,
+                            delay,
+                        )
+                        await asyncio.sleep(delay)
+                status = (
+                    str(data.get("status") or "").strip().lower()
+                    if isinstance(data, dict)
+                    else ""
+                )
+                video_url = self._extract_async_video_url(data)
+                if video_url and (not status or status in self._DONE):
+                    logger.info("[GrokVideo] 成功: request_id=%s", task_id)
+                    return self._video_result(video_url, headers)
+                if status in self._FAILED:
+                    raise RuntimeError(
+                        f"Grok 视频任务失败: request_id={task_id}, {self._error_text(data)}"
+                    )
+                logger.info(
+                    "[GrokVideo] 等待任务: request_id=%s, status=%s",
+                    task_id,
+                    status or "unknown",
+                )

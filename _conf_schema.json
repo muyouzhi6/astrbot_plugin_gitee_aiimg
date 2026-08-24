@@ -2008,7 +2008,7 @@
       },
       "grok_video": {
         "name": "Grok（视频）",
-        "description": "用于视频生成链路（Image-to-Video）。",
+        "description": "用于 xAI 异步视频生成链路（Text-to-Video / Image-to-Video）。",
         "hint": "仅对 features.video.chain 生效；图片生成/改图请用其它模板。",
         "items": {
           "id": {
@@ -2024,7 +2024,7 @@
           "server_url": {
             "type": "string",
             "description": "API 服务地址",
-            "hint": "默认：https://api.x.ai（内部补全 /v1/chat/completions）",
+            "hint": "可填站点根地址或 /v1，例如：https://api.3365api.cn/v1；内部补全 /v1/videos/generations。",
             "default": "https://api.x.ai"
           },
           "api_key": {
@@ -2036,7 +2036,30 @@
           "model": {
             "type": "string",
             "description": "模型 ID",
-            "default": "grok-imagine-0.9"
+            "default": "grok-imagine-video-1.5"
+          },
+          "duration": {
+            "type": "int",
+            "description": "视频时长(秒)",
+            "hint": "xAI Grok 视频支持 1-15 秒；具体聚合网关以模型限制为准。",
+            "slider": {
+              "min": 1,
+              "max": 15,
+              "step": 1
+            },
+            "default": 5
+          },
+          "aspect_ratio": {
+            "type": "string",
+            "description": "视频宽高比",
+            "hint": "可选：16:9、9:16、1:1、4:3、3:4、3:2、2:3；留空使用模型默认。",
+            "default": ""
+          },
+          "resolution": {
+            "type": "string",
+            "description": "视频分辨率",
+            "hint": "可选：480p、720p、1080p；留空使用模型默认。",
+            "default": ""
           },
           "timeout_seconds": {
             "type": "int",
@@ -2046,11 +2069,11 @@
               "max": 3600,
               "step": 10
             },
-            "default": 180
+            "default": 600
           },
           "max_retries": {
             "type": "int",
-            "description": "最大重试次数",
+            "description": "轮询请求最大重试次数",
             "slider": {
               "min": 0,
               "max": 5,
@@ -2058,9 +2081,21 @@
             },
             "default": 2
           },
+          "create_max_retries": {
+            "type": "int",
+            "description": "创建任务最大重试次数",
+            "hint": "异步任务可能已在上游创建；默认 0，避免网络超时后重复扣费。",
+            "slider": {
+              "min": 0,
+              "max": 3,
+              "step": 1
+            },
+            "default": 0
+          },
           "empty_response_retry": {
             "type": "int",
-            "description": "无视频URL重试次数",
+            "description": "旧配置兼容字段（异步协议不使用）",
+            "hint": "保留旧版本配置；当前服务通过 request_id 轮询，不按空 URL 重复创建任务。",
             "slider": {
               "min": 0,
               "max": 10,
@@ -2077,6 +2112,16 @@
               "step": 1
             },
             "default": 2
+          },
+          "poll_interval_seconds": {
+            "type": "int",
+            "description": "轮询间隔(秒)",
+            "slider": {
+              "min": 1,
+              "max": 120,
+              "step": 1
+            },
+            "default": 5
           },
           "output_format": {
             "type": "string",
@@ -2156,25 +2201,25 @@
         }
       },
       "sora2_video": {
-        "name": "Sora2 视频 (/v1/videos)",
-        "description": "用于 Sora2/OpenAI 兼容异步视频任务（POST /v1/videos 后轮询任务状态）。",
-        "hint": "适配 x666.me：POST /v1/videos 返回 task_id，随后 GET /v1/videos/{task_id} 获取 video_url。无图走文生视频；有图时会作为 input_reference 上传。",
+        "name": "OpenAI Videos（异步视频）",
+        "description": "用于 OpenAI 兼容异步视频任务（POST /v1/videos 后轮询任务状态）。",
+        "hint": "适配标准 OpenAI Videos 与 New API 网关：无图走文生视频，有图时以 input_reference 上传；任务完成后支持公开 URL 或鉴权 /content 下载。旧 x666_sora2 配置继续兼容。",
         "items": {
           "id": {
             "type": "string",
             "description": "服务商 ID（唯一）",
-            "default": "x666_sora2"
+            "default": "openai_video"
           },
           "label": {
             "type": "string",
             "description": "显示名称（可选）",
-            "default": "x666 Sora2"
+            "default": "OpenAI Videos"
           },
           "base_url": {
             "type": "string",
             "description": "API 服务地址",
-            "hint": "例如：https://x666.me（内部补全 /v1/videos）",
-            "default": "https://x666.me"
+            "hint": "例如：https://api.3365api.cn/v1 或 https://meinianda.top（内部补全 /v1/videos）。",
+            "default": "https://api.openai.com"
           },
           "api_keys": {
             "type": "list",
@@ -2191,7 +2236,7 @@
           "api_key_env": {
             "type": "string",
             "description": "API Key 环境变量名",
-            "hint": "可填 X666_API_KEY；优先级高于 api_keys/api_key，避免把密钥写入配置。",
+            "hint": "可填 OPENAI_VIDEO_API_KEY；优先级高于 api_keys/api_key，避免把密钥写入配置。",
             "default": "",
             "obvious_hint": true
           },
@@ -2203,7 +2248,7 @@
           "seconds": {
             "type": "string",
             "description": "视频秒数",
-            "hint": "x666.me 要求字符串，例如 5 不要填数字类型。",
+            "hint": "按字符串发送；meinianda 可选 4/6/8/10（建议 4），其他网关按模型要求填写，例如旧 x666 配置可继续使用 5。",
             "default": "5"
           },
           "size": {
@@ -2276,7 +2321,7 @@
           "extra_body": {
             "type": "object",
             "description": "额外请求参数",
-            "hint": "会合并到 POST /v1/videos JSON 中。",
+            "hint": "会合并到 POST /v1/videos 请求；带参考图时自动转换为 multipart 表单字段。",
             "default": {},
             "items": {}
           },

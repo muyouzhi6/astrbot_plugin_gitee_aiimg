@@ -52,6 +52,7 @@ _TEMPLATE_KEY_ALIASES: dict[str, str] = {
     "grok": "grok_images",
     "grok2api": "grok2api_images",
     "grok2api_video": "grok2api_video",
+    "openai_video": "sora2_video",
     "sora2": "sora2_video",
     "sora2_video": "sora2_video",
     "x666_sora2": "sora2_video",
@@ -173,7 +174,7 @@ class ProviderRegistry:
             return "grok_video"
         if pid in {"flow2api_video"}:
             return "flow2api_video"
-        if pid in {"sora2_video", "x666_sora2"}:
+        if pid in {"openai_video", "sora2_video", "x666_sora2"}:
             return "sora2_video"
         return ""
 

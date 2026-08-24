@@ -5841,7 +5841,13 @@ class GiteeAIImagePlugin(Star):
     async def _video_end(self, user_id: str) -> None:
         await self._end_user_job(str(user_id or ""), kind="video")
 
-    async def _send_video_result(self, event: AstrMessageEvent, video_url: str) -> None:
+    async def _send_video_result(
+        self,
+        event: AstrMessageEvent,
+        video_url: str,
+        *,
+        download_headers: dict[str, str] | None = None,
+    ) -> None:
         vconf = self._get_feature("video")
         mode = str(vconf.get("send_mode", "auto")).strip().lower()
         if mode not in {"auto", "url", "file"}:
@@ -5858,7 +5864,9 @@ class GiteeAIImagePlugin(Star):
         async def _send_file(url: str) -> bool:
             try:
                 video_path = await self.videomgr.download_video(
-                    url, timeout_seconds=download_timeout
+                    url,
+                    timeout_seconds=download_timeout,
+                    headers=download_headers,
                 )
                 await asyncio.wait_for(
                     event.send(
@@ -5881,6 +5889,11 @@ class GiteeAIImagePlugin(Star):
             except Exception as e:
                 logger.warning(f"[视频] URL 发送失败: {e}")
                 return False
+
+        if download_headers:
+            if await _send_file(video_url):
+                return
+            raise RuntimeError("鉴权视频下载失败")
 
         # file/url forced
         if mode == "file":
@@ -5951,16 +5964,27 @@ class GiteeAIImagePlugin(Star):
 
             last_error: Exception | None = None
             video_url: str | None = None
+            download_headers: dict[str, str] | None = None
             used_pid: str | None = None
             for pid in candidates:
                 try:
                     backend = self.registry.get_video_backend(pid)
-                    candidate_url = await backend.generate_video_url(
+                    candidate_result = await backend.generate_video_url(
                         prompt=prompt, image_bytes=image_bytes
                     )
-                    candidate_url = str(candidate_url or "").strip()
+                    candidate_url = str(
+                        getattr(candidate_result, "url", candidate_result) or ""
+                    ).strip()
                     if not candidate_url:
                         raise RuntimeError("Provider returned empty video url")
+                    candidate_headers = getattr(
+                        candidate_result, "download_headers", None
+                    )
+                    download_headers = (
+                        dict(candidate_headers)
+                        if isinstance(candidate_headers, dict)
+                        else None
+                    )
                     video_url = candidate_url
                     used_pid = pid
                     break
@@ -5971,7 +5995,11 @@ class GiteeAIImagePlugin(Star):
             if not video_url:
                 raise RuntimeError(f"视频生成失败: {last_error}") from last_error
 
-            await self._send_video_result(event, video_url)
+            await self._send_video_result(
+                event,
+                video_url,
+                download_headers=download_headers,
+            )
             await mark_success(event)
             if llm_tool_failure:
                 await self._append_plugin_conversation_note(

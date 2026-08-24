@@ -122,7 +122,7 @@ chain 里可以填多个 provider，第一个是主用，后面的是自动兜�
 | Gitee AI 文生图 | `gitee_images` |
 | Gitee AI 异步改图 | `gitee_async` |
 | Grok / xAI | `grok_images` 或 `grok_chat` |
-| 视频生成 | `grok_video` / `flow2api_video` / `sora2_video` |
+| 视频生成 | `grok_video`（xAI `/v1/videos/generations`） / `flow2api_video` / `sora2_video`（通用 OpenAI Videos `/v1/videos`） |
 
 provider 模板中的通用 `timeout` 默认均为 `600` 秒。升级时会保留现有 provider 的 URL、Key、模型、超时和其它自定义值；旧配置缺少新字段时才使用新版运行时默认值。`gemini_native` 额外支持 `max_retries`，默认重试 `2` 次，设为 `0` 可关闭重试。
 

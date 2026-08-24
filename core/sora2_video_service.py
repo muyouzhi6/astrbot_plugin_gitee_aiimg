@@ -6,6 +6,7 @@ import json
 import os
 import random
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote, urljoin, urlsplit
@@ -15,6 +16,14 @@ import httpx
 from astrbot.api import logger
 
 from .image_format import guess_image_mime_and_ext
+
+
+@dataclass(frozen=True)
+class VideoResult:
+    """Video URL plus optional headers required to download it."""
+
+    url: str
+    download_headers: dict[str, str] | None = None
 
 
 def _clamp_int(value: Any, *, default: int, min_value: int, max_value: int) -> int:
@@ -121,7 +130,7 @@ def _extract_video_url(data: Any, *, base_origin: str) -> str:
             if url:
                 return url
 
-        for key in ("data", "output", "videos", "result"):
+        for key in ("data", "output", "videos", "result", "metadata"):
             value = data.get(key)
             if isinstance(value, list):
                 for item in value:
@@ -405,7 +414,7 @@ class Sora2VideoService:
         image_bytes: bytes | None = None,
         *,
         preset: str | None = None,
-    ) -> str:
+    ) -> str | VideoResult:
         final_prompt = (prompt or "").strip()
         if not final_prompt:
             raise ValueError("缺少视频提示词")
@@ -491,10 +500,30 @@ class Sora2VideoService:
             if data is None or headers is None:
                 raise RuntimeError("Sora2 视频任务创建失败")
 
+            status = (
+                str(data.get("status") or "").strip().lower()
+                if isinstance(data, dict)
+                else ""
+            )
             video_url = _extract_video_url(data, base_origin=self.base_origin)
-            if video_url:
+            if video_url and (not status or status in self._DONE):
                 logger.info("[Sora2Video] 创建响应直接返回视频 URL")
+                video_parts = urlsplit(video_url)
+                if (
+                    _origin_from_url(video_url) == self.base_origin
+                    and "/v1/videos/" in video_parts.path
+                    and video_parts.path.rstrip("/").endswith("/content")
+                ):
+                    return VideoResult(
+                        video_url,
+                        {"Authorization": headers["Authorization"]},
+                    )
                 return video_url
+
+            if status in self._FAILED:
+                raise RuntimeError(
+                    f"Sora2 视频任务失败: {_format_upstream_error(data)}"
+                )
 
             task_id = _extract_task_id(data)
             if not task_id:
@@ -527,7 +556,28 @@ class Sora2VideoService:
                         time.perf_counter() - t_start,
                         video_url[:80],
                     )
+                    video_parts = urlsplit(video_url)
+                    if (
+                        _origin_from_url(video_url) == self.base_origin
+                        and "/v1/videos/" in video_parts.path
+                        and video_parts.path.rstrip("/").endswith("/content")
+                    ):
+                        return VideoResult(
+                            video_url,
+                            {"Authorization": headers["Authorization"]},
+                        )
                     return video_url
+
+                if status in self._DONE:
+                    content_url = f"{status_url}/content"
+                    logger.info(
+                        "[Sora2Video] 任务完成，使用鉴权内容接口: task_id=%s",
+                        task_id,
+                    )
+                    return VideoResult(
+                        content_url,
+                        {"Authorization": headers["Authorization"]},
+                    )
 
                 if status in self._FAILED:
                     raise RuntimeError(
