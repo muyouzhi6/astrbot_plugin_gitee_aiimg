@@ -197,7 +197,10 @@ class VideoManager:
                     content_type = resp.headers.get("content-type") or ""
 
                 ranges = [
-                    (start, min(total_size - 1, start + self._video_range_chunk_bytes - 1))
+                    (
+                        start,
+                        min(total_size - 1, start + self._video_range_chunk_bytes - 1),
+                    )
                     for start in range(0, total_size, self._video_range_chunk_bytes)
                 ]
                 next_index = 0
@@ -478,15 +481,21 @@ class VideoManager:
                                     if resp.status_code in {301, 302, 303, 307, 308}:
                                         if redirects >= self._media_max_redirects:
                                             raise RuntimeError("Too many redirects")
-                                        loc = (resp.headers.get("location") or "").strip()
+                                        loc = (
+                                            resp.headers.get("location") or ""
+                                        ).strip()
                                         if not loc:
-                                            raise RuntimeError("Redirect without location")
+                                            raise RuntimeError(
+                                                "Redirect without location"
+                                            )
                                         current = str(httpx.URL(current).join(loc))
                                         redirects += 1
                                         continue
 
                                     resp.raise_for_status()
-                                    content_range = resp.headers.get("content-range", "")
+                                    content_range = resp.headers.get(
+                                        "content-range", ""
+                                    )
                                     range_match = re.match(
                                         r"bytes\s+(\d+)-(\d+)/(\d+|\*)",
                                         content_range,
@@ -508,7 +517,9 @@ class VideoManager:
 
                                     total = resume_from
                                     prefix = bytearray()
-                                    content_type = resp.headers.get("content-type") or ""
+                                    content_type = (
+                                        resp.headers.get("content-type") or ""
+                                    )
                                     content_length = _clamp_int(
                                         resp.headers.get("content-length"),
                                         default=0,

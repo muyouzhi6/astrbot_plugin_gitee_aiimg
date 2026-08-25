@@ -319,9 +319,7 @@ class VideoManagerAuthTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(requests), 2)
         self.assertEqual(requests[0][2]["Range"], "bytes=0-0")
-        self.assertEqual(
-            requests[1][2]["Range"], f"bytes=0-{len(video_bytes) - 1}"
-        )
+        self.assertEqual(requests[1][2]["Range"], f"bytes=0-{len(video_bytes) - 1}")
 
 
 if __name__ == "__main__":
