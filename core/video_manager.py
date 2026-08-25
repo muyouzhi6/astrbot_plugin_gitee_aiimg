@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -114,6 +115,21 @@ class VideoManager:
         self._trusted_origins: frozenset[str] = frozenset(
             collect_trusted_origins(config)
         )
+        self._video_range_download_enabled: bool = bool(
+            net.get("video_range_download", False)
+        )
+        self._video_range_chunk_bytes: int = _clamp_int(
+            net.get("video_range_chunk_bytes", 512 * 1024),
+            default=512 * 1024,
+            min_value=64 * 1024,
+            max_value=8 * 1024 * 1024,
+        )
+        self._video_range_concurrency: int = _clamp_int(
+            net.get("video_range_concurrency", 4),
+            default=4,
+            min_value=1,
+            max_value=8,
+        )
 
         self.max_cached_videos: int = _clamp_int(
             (storage.get("max_cached_videos") if isinstance(storage, dict) else None)
@@ -123,6 +139,161 @@ class VideoManager:
             max_value=500,
         )
         self.cleanup_batch_ratio = 0.5
+
+    async def _download_video_ranges(
+        self,
+        url: str,
+        *,
+        tmp_path: Path,
+        timeout: httpx.Timeout,
+        headers: dict[str, str],
+        policy: URLFetchPolicy,
+    ) -> bool:
+        """Download a same-origin authenticated video using parallel byte ranges.
+
+        A few OpenAI-compatible gateways advertise a valid MP4 but deliver a full
+        response so slowly that a single streaming request is not practical.  A
+        206 probe lets us split that response into bounded requests while keeping
+        the bearer token on the trusted origin.
+        """
+        if not headers:
+            return False
+
+        await ensure_url_allowed(url, policy=policy)
+        range_dir = tmp_path.with_name(f"{tmp_path.name}.ranges")
+        try:
+            await asyncio.to_thread(shutil.rmtree, range_dir, True)
+            if tmp_path.exists():
+                await asyncio.to_thread(tmp_path.unlink)
+            range_dir.mkdir(parents=True, exist_ok=True)
+
+            probe_headers = dict(headers)
+            probe_headers["Range"] = "bytes=0-0"
+            async with httpx.AsyncClient(
+                timeout=timeout, follow_redirects=False
+            ) as client:
+                async with client.stream("GET", url, headers=probe_headers) as resp:
+                    if resp.status_code in {301, 302, 303, 307, 308}:
+                        return False
+                    if resp.status_code == 200:
+                        return False
+                    resp.raise_for_status()
+                    if resp.status_code != 206:
+                        return False
+                    content_range = resp.headers.get("content-range", "")
+                    probe_match = re.fullmatch(
+                        r"bytes\s+0-0/(\d+)", content_range, re.IGNORECASE
+                    )
+                    if not probe_match:
+                        return False
+                    total_size = int(probe_match.group(1))
+                    if total_size <= 0 or total_size > self._media_max_video_bytes:
+                        raise RuntimeError("Video too large")
+                    probe_body = bytearray()
+                    async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
+                        probe_body.extend(chunk)
+                    if len(probe_body) != 1:
+                        return False
+                    content_type = resp.headers.get("content-type") or ""
+
+                ranges = [
+                    (start, min(total_size - 1, start + self._video_range_chunk_bytes - 1))
+                    for start in range(0, total_size, self._video_range_chunk_bytes)
+                ]
+                next_index = 0
+                next_lock = asyncio.Lock()
+
+                async def fetch_one(index: int, start: int, end: int) -> None:
+                    part_path = range_dir / f"{index:08d}.part"
+                    expected_size = end - start + 1
+                    request_headers = dict(headers)
+                    request_headers["Range"] = f"bytes={start}-{end}"
+                    last_error: Exception | None = None
+                    for attempt in range(3):
+                        try:
+                            body = bytearray()
+                            async with client.stream(
+                                "GET", url, headers=request_headers
+                            ) as part_resp:
+                                part_resp.raise_for_status()
+                                part_range = part_resp.headers.get("content-range", "")
+                                match = re.fullmatch(
+                                    r"bytes\s+(\d+)-(\d+)/(\d+)",
+                                    part_range,
+                                    re.IGNORECASE,
+                                )
+                                if (
+                                    part_resp.status_code != 206
+                                    or not match
+                                    or int(match.group(1)) != start
+                                    or int(match.group(2)) != end
+                                    or int(match.group(3)) != total_size
+                                ):
+                                    raise RuntimeError(
+                                        "Upstream returned an unexpected video byte range"
+                                    )
+                                async for chunk in part_resp.aiter_bytes(
+                                    chunk_size=64 * 1024
+                                ):
+                                    if chunk:
+                                        body.extend(chunk)
+                            if len(body) != expected_size:
+                                raise httpx.ReadError(
+                                    "Upstream closed the video range before completion"
+                                )
+                            await asyncio.to_thread(part_path.write_bytes, bytes(body))
+                            return
+                        except (
+                            httpx.ReadError,
+                            httpx.RemoteProtocolError,
+                            httpx.ConnectError,
+                            httpx.ReadTimeout,
+                        ) as exc:
+                            last_error = exc
+                            if attempt + 1 < 3:
+                                await asyncio.sleep(min(2**attempt, 8))
+                    raise last_error or RuntimeError("Video range download failed")
+
+                async def worker() -> None:
+                    nonlocal next_index
+                    while True:
+                        async with next_lock:
+                            if next_index >= len(ranges):
+                                return
+                            index = next_index
+                            next_index += 1
+                        start, end = ranges[index]
+                        await fetch_one(index, start, end)
+
+                workers = [
+                    asyncio.create_task(worker())
+                    for _ in range(min(self._video_range_concurrency, len(ranges)))
+                ]
+                try:
+                    await asyncio.gather(*workers)
+                finally:
+                    for task in workers:
+                        if not task.done():
+                            task.cancel()
+                    if workers:
+                        await asyncio.gather(*workers, return_exceptions=True)
+
+            prefix = bytearray()
+            async with aiofiles.open(tmp_path, "wb") as output:
+                for index, _ in enumerate(ranges):
+                    part_path = range_dir / f"{index:08d}.part"
+                    part_bytes = await asyncio.to_thread(part_path.read_bytes)
+                    if len(prefix) < 32:
+                        prefix.extend(part_bytes[: 32 - len(prefix)])
+                    await output.write(part_bytes)
+            _validate_video_payload(
+                content_type=content_type,
+                prefix=bytes(prefix),
+                total_bytes=total_size,
+            )
+            return True
+        finally:
+            await asyncio.to_thread(shutil.rmtree, range_dir, True)
 
     async def _resolve_video_url(
         self,
@@ -267,116 +438,131 @@ class VideoManager:
         redirects = 0
         max_download_attempts = 3
         try:
-            for attempt in range(max_download_attempts):
-                try:
-                    while True:
-                        await ensure_url_allowed(current, policy=policy)
-                        current_origin = _normalized_origin(current)
-                        request_headers = dict(
-                            auth_headers
-                            if auth_headers and current_origin == auth_origin
-                            else {}
-                        )
-                        resume_from = (
-                            tmp_path.stat().st_size if tmp_path.exists() else 0
-                        )
-                        if resume_from:
-                            request_headers["Range"] = f"bytes={resume_from}-"
+            segmented = False
+            if (
+                self._video_range_download_enabled
+                and auth_headers
+                and _normalized_origin(current) == auth_origin
+            ):
+                segmented = await self._download_video_ranges(
+                    current,
+                    tmp_path=tmp_path,
+                    timeout=timeout,
+                    headers=auth_headers,
+                    policy=policy,
+                )
 
-                        async with httpx.AsyncClient(
-                            timeout=timeout, follow_redirects=False
-                        ) as client:
-                            async with client.stream(
-                                "GET", current, headers=request_headers or None
-                            ) as resp:
-                                if resp.status_code in {301, 302, 303, 307, 308}:
-                                    if redirects >= self._media_max_redirects:
-                                        raise RuntimeError("Too many redirects")
-                                    loc = (resp.headers.get("location") or "").strip()
-                                    if not loc:
-                                        raise RuntimeError("Redirect without location")
-                                    current = str(httpx.URL(current).join(loc))
-                                    redirects += 1
-                                    continue
+            if not segmented:
+                for attempt in range(max_download_attempts):
+                    try:
+                        while True:
+                            await ensure_url_allowed(current, policy=policy)
+                            current_origin = _normalized_origin(current)
+                            request_headers = dict(
+                                auth_headers
+                                if auth_headers and current_origin == auth_origin
+                                else {}
+                            )
+                            resume_from = (
+                                tmp_path.stat().st_size if tmp_path.exists() else 0
+                            )
+                            if resume_from:
+                                request_headers["Range"] = f"bytes={resume_from}-"
 
-                                resp.raise_for_status()
-                                content_range = resp.headers.get("content-range", "")
-                                range_match = re.match(
-                                    r"bytes\s+(\d+)-(\d+)/(\d+|\*)",
-                                    content_range,
-                                    re.IGNORECASE,
-                                )
-                                if resume_from and resp.status_code == 206:
-                                    if (
-                                        not range_match
-                                        or int(range_match.group(1)) != resume_from
-                                    ):
-                                        raise RuntimeError(
-                                            "Upstream returned an unexpected video byte range"
+                            async with httpx.AsyncClient(
+                                timeout=timeout, follow_redirects=False
+                            ) as client:
+                                async with client.stream(
+                                    "GET", current, headers=request_headers or None
+                                ) as resp:
+                                    if resp.status_code in {301, 302, 303, 307, 308}:
+                                        if redirects >= self._media_max_redirects:
+                                            raise RuntimeError("Too many redirects")
+                                        loc = (resp.headers.get("location") or "").strip()
+                                        if not loc:
+                                            raise RuntimeError("Redirect without location")
+                                        current = str(httpx.URL(current).join(loc))
+                                        redirects += 1
+                                        continue
+
+                                    resp.raise_for_status()
+                                    content_range = resp.headers.get("content-range", "")
+                                    range_match = re.match(
+                                        r"bytes\s+(\d+)-(\d+)/(\d+|\*)",
+                                        content_range,
+                                        re.IGNORECASE,
+                                    )
+                                    if resume_from and resp.status_code == 206:
+                                        if (
+                                            not range_match
+                                            or int(range_match.group(1)) != resume_from
+                                        ):
+                                            raise RuntimeError(
+                                                "Upstream returned an unexpected video byte range"
+                                            )
+                                        write_mode = "ab"
+                                    else:
+                                        # A server that ignores Range must restart from byte 0.
+                                        resume_from = 0
+                                        write_mode = "wb"
+
+                                    total = resume_from
+                                    prefix = bytearray()
+                                    content_type = resp.headers.get("content-type") or ""
+                                    content_length = _clamp_int(
+                                        resp.headers.get("content-length"),
+                                        default=0,
+                                        min_value=0,
+                                        max_value=self._media_max_video_bytes,
+                                    )
+                                    expected_total = (
+                                        int(range_match.group(3))
+                                        if range_match and range_match.group(3) != "*"
+                                        else (
+                                            resume_from + content_length
+                                            if content_length
+                                            else 0
                                         )
-                                    write_mode = "ab"
-                                else:
-                                    # A server that ignores Range must restart from byte 0.
-                                    resume_from = 0
-                                    write_mode = "wb"
-
-                                total = resume_from
-                                prefix = bytearray()
-                                content_type = resp.headers.get("content-type") or ""
-                                content_length = _clamp_int(
-                                    resp.headers.get("content-length"),
-                                    default=0,
-                                    min_value=0,
-                                    max_value=self._media_max_video_bytes,
-                                )
-                                expected_total = (
-                                    int(range_match.group(3))
-                                    if range_match and range_match.group(3) != "*"
-                                    else (
-                                        resume_from + content_length
-                                        if content_length
-                                        else 0
                                     )
-                                )
-                                async with aiofiles.open(tmp_path, write_mode) as f:
-                                    async for chunk in resp.aiter_bytes(
-                                        chunk_size=1024 * 256
-                                    ):
-                                        if not chunk:
-                                            continue
-                                        total += len(chunk)
-                                        if len(prefix) < 32:
-                                            prefix.extend(chunk[: 32 - len(prefix)])
-                                        if total > self._media_max_video_bytes:
-                                            raise RuntimeError("Video too large")
-                                        await f.write(chunk)
-                                if expected_total and total < expected_total:
-                                    raise httpx.ReadError(
-                                        "Upstream closed the video response before completion"
+                                    async with aiofiles.open(tmp_path, write_mode) as f:
+                                        async for chunk in resp.aiter_bytes(
+                                            chunk_size=1024 * 256
+                                        ):
+                                            if not chunk:
+                                                continue
+                                            total += len(chunk)
+                                            if len(prefix) < 32:
+                                                prefix.extend(chunk[: 32 - len(prefix)])
+                                            if total > self._media_max_video_bytes:
+                                                raise RuntimeError("Video too large")
+                                            await f.write(chunk)
+                                    if expected_total and total < expected_total:
+                                        raise httpx.ReadError(
+                                            "Upstream closed the video response before completion"
+                                        )
+                                    _validate_video_payload(
+                                        content_type=content_type,
+                                        prefix=bytes(prefix),
+                                        total_bytes=total,
                                     )
-                                _validate_video_payload(
-                                    content_type=content_type,
-                                    prefix=bytes(prefix),
-                                    total_bytes=total,
-                                )
 
+                            break
                         break
-                    break
-                except (
-                    httpx.ReadError,
-                    httpx.RemoteProtocolError,
-                    httpx.ConnectError,
-                    httpx.ReadTimeout,
-                ) as exc:
-                    if attempt + 1 >= max_download_attempts:
-                        raise
-                    logger.warning(
-                        "[VideoManager] 视频下载中断，将从已下载字节续传: attempt=%s/%s error=%r",
-                        attempt + 1,
-                        max_download_attempts,
-                        exc,
-                    )
-                    await asyncio.sleep(min(2**attempt, 8))
+                    except (
+                        httpx.ReadError,
+                        httpx.RemoteProtocolError,
+                        httpx.ConnectError,
+                        httpx.ReadTimeout,
+                    ) as exc:
+                        if attempt + 1 >= max_download_attempts:
+                            raise
+                        logger.warning(
+                            "[VideoManager] 视频下载中断，将从已下载字节续传: attempt=%s/%s error=%r",
+                            attempt + 1,
+                            max_download_attempts,
+                            exc,
+                        )
+                        await asyncio.sleep(min(2**attempt, 8))
         except Exception:
             try:
                 if tmp_path.exists():

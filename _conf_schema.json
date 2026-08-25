@@ -629,6 +629,32 @@
           "step": 1
         },
         "default": 2
+      },
+      "video_range_download": {
+        "type": "bool",
+        "description": "启用鉴权视频分段下载",
+        "hint": "对支持 HTTP Range 但单条连接很慢的服务商有效；默认关闭，启用后会并发分块并校验 Content-Range",
+        "default": false
+      },
+      "video_range_chunk_bytes": {
+        "type": "int",
+        "description": "视频分段大小(字节)",
+        "slider": {
+          "min": 65536,
+          "max": 8388608,
+          "step": 65536
+        },
+        "default": 524288
+      },
+      "video_range_concurrency": {
+        "type": "int",
+        "description": "视频分段并发数",
+        "slider": {
+          "min": 1,
+          "max": 8,
+          "step": 1
+        },
+        "default": 4
       }
     }
   },

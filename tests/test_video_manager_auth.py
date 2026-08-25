@@ -260,6 +260,69 @@ class VideoManagerAuthTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(list((Path(temp_dir) / "videos").iterdir()), [])
 
+    async def test_authenticated_range_download_reassembles_video(self):
+        mod = _load_module()
+        video_bytes = b"\x00\x00\x00\x18ftypmp42demo"
+        requests = []
+        responses = [
+            _Response(
+                status_code=206,
+                headers={
+                    "content-type": "video/mp4",
+                    "content-range": f"bytes 0-0/{len(video_bytes)}",
+                },
+                chunks=[video_bytes[:1]],
+            ),
+            _Response(
+                status_code=206,
+                headers={
+                    "content-type": "video/mp4",
+                    "content-range": f"bytes 0-{len(video_bytes) - 1}/{len(video_bytes)}",
+                },
+                chunks=[video_bytes],
+            ),
+        ]
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                return None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def stream(self, method, url, *, headers=None):
+                requests.append((method, url, headers))
+                return responses.pop(0)
+
+        async def _allow_url(*args, **kwargs):
+            return None
+
+        mod.httpx.AsyncClient = _Client
+        mod.ensure_url_allowed = _allow_url
+
+        with TemporaryDirectory() as temp_dir:
+            manager = mod.VideoManager(
+                {
+                    "network": {"video_range_download": True},
+                    "storage": {"max_cached_videos": 20},
+                },
+                Path(temp_dir),
+            )
+            result = await manager.download_video(
+                "https://gateway.example/v1/videos/task/content",
+                headers={"Authorization": "Bearer test-key"},
+            )
+            self.assertEqual(result.read_bytes(), video_bytes)
+
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(requests[0][2]["Range"], "bytes=0-0")
+        self.assertEqual(
+            requests[1][2]["Range"], f"bytes=0-{len(video_bytes) - 1}"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
