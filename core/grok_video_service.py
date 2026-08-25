@@ -107,6 +107,13 @@ class VideoResult:
 
     url: str
     download_headers: dict[str, str] | None = None
+    single_request_download: bool = False
+
+
+class GrokAPIError(RuntimeError):
+    def __init__(self, message: str, status_code: int):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def _looks_like_proxy_video_url(url: str) -> bool:
@@ -363,6 +370,7 @@ class GrokVideoService:
 
     _DONE = {"done", "completed", "succeeded", "success"}
     _FAILED = {"failed", "expired", "error", "cancelled", "canceled", "rejected"}
+    _RETRYABLE_CREATE_STATUS = {408, 409, 425, 429}
 
     def __init__(self, *, settings: dict):
         self.settings = settings if isinstance(settings, dict) else {}
@@ -463,8 +471,24 @@ class GrokVideoService:
             and "/v1/videos/" in parts.path
             and parts.path.rstrip("/").endswith("/content")
         ):
-            return VideoResult(url, {"Authorization": headers["Authorization"]})
+            hostname = (parts.hostname or "").lower()
+            single_request_download = (
+                str(self.settings.get("__template_key") or "").strip() == "3365_video"
+                or hostname == "api.3365api.cn"
+            )
+            return VideoResult(
+                url,
+                {"Authorization": headers["Authorization"]},
+                single_request_download=single_request_download,
+            )
         return url
+
+    @classmethod
+    def _is_retryable_create_error(cls, exc: Exception) -> bool:
+        status_code = getattr(exc, "status_code", None)
+        return isinstance(status_code, int) and (
+            status_code in cls._RETRYABLE_CREATE_STATUS or status_code >= 500
+        )
 
     def _extract_async_video_url(self, data: Any) -> str:
         if not isinstance(data, dict):
@@ -518,8 +542,9 @@ class GrokVideoService:
         )
         if response.status_code >= 400:
             detail = response.text[:500]
-            raise RuntimeError(
-                f"Grok API 请求失败 HTTP {response.status_code}: {detail}"
+            raise GrokAPIError(
+                f"Grok API 请求失败 HTTP {response.status_code}: {detail}",
+                response.status_code,
             )
         try:
             return response.json()
@@ -585,7 +610,10 @@ class GrokVideoService:
                     break
                 except Exception as exc:
                     last_error = exc
-                    if attempt >= self.create_max_retries:
+                    if (
+                        attempt >= self.create_max_retries
+                        or not self._is_retryable_create_error(exc)
+                    ):
                         raise
                     delay = self.retry_delay * (2**attempt) + random.uniform(0, 0.5)
                     logger.warning(

@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import httpx
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_NAME = "grok_video_service_endpoint_test"
@@ -117,6 +119,7 @@ class GrokVideoServiceEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(result, mod.VideoResult)
         self.assertEqual(result.url, "https://gateway.example/v1/videos/req-1/content")
         self.assertEqual(result.download_headers, {"Authorization": "Bearer test-key"})
+        self.assertFalse(result.single_request_download)
         self.assertEqual(calls[0][0], "POST")
         self.assertEqual(calls[0][3]["model"], "grok-imagine-video-1.5")
         self.assertEqual(calls[0][3]["prompt"], "animate this")
@@ -185,6 +188,75 @@ class GrokVideoServiceEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["timeout"].connect, 120.0)
         self.assertEqual(captured["timeout"].read, 120.0)
         self.assertEqual(captured["timeout"].write, 120.0)
+
+    async def test_3365_content_uses_single_request_download(self):
+        mod = _load_module()
+
+        class Service(mod.GrokVideoService):
+            async def _request_json(
+                self, client, method, url, *, headers, payload=None
+            ):
+                return {
+                    "status": "done",
+                    "video": {"url": "/v1/videos/req-3365/content"},
+                }
+
+        service = Service(
+            settings={
+                "__template_key": "3365_video",
+                "server_url": "https://api.3365api.cn",
+                "api_key": "test-key",
+            }
+        )
+        result = await service.generate_video_url("a paper airplane")
+
+        self.assertIsInstance(result, mod.VideoResult)
+        self.assertTrue(result.single_request_download)
+
+    async def test_create_retries_explicit_transient_http_error(self):
+        mod = _load_module()
+        attempts = 0
+
+        class Service(mod.GrokVideoService):
+            async def _request_json(
+                self, client, method, url, *, headers, payload=None
+            ):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise mod.GrokAPIError("temporary upstream failure", 502)
+                return {"video_url": "https://cdn.example/video.mp4"}
+
+        service = Service(
+            settings={
+                "api_key": "test-key",
+                "create_max_retries": 2,
+                "retry_delay": 0,
+            }
+        )
+        with patch.object(mod.asyncio, "sleep", new=AsyncMock()):
+            result = await service.generate_video_url("a paper airplane")
+
+        self.assertEqual(result, "https://cdn.example/video.mp4")
+        self.assertEqual(attempts, 2)
+
+    async def test_create_does_not_retry_ambiguous_timeout(self):
+        mod = _load_module()
+        attempts = 0
+
+        class Service(mod.GrokVideoService):
+            async def _request_json(
+                self, client, method, url, *, headers, payload=None
+            ):
+                nonlocal attempts
+                attempts += 1
+                raise httpx.ReadTimeout("response lost after create")
+
+        service = Service(settings={"api_key": "test-key", "create_max_retries": 2})
+        with self.assertRaises(httpx.ReadTimeout):
+            await service.generate_video_url("a paper airplane")
+
+        self.assertEqual(attempts, 1)
 
 
 if __name__ == "__main__":

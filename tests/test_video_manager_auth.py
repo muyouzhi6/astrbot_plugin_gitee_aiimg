@@ -102,6 +102,58 @@ class _Response:
 
 
 class VideoManagerAuthTests(unittest.IsolatedAsyncioTestCase):
+    async def test_single_request_download_fetches_without_range_probe(self):
+        mod = _load_module()
+        video_bytes = b"\x00\x00\x00\x18ftypmp42single-request"
+        requests = []
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                return None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def stream(self, method, url, *, headers=None):
+                requests.append((method, url, headers))
+                return _Response(
+                    status_code=206,
+                    headers={
+                        "content-type": "video/mp4",
+                        "content-length": str(len(video_bytes)),
+                        "content-range": (
+                            f"bytes 0-{len(video_bytes) - 1}/{len(video_bytes)}"
+                        ),
+                    },
+                    chunks=[video_bytes],
+                )
+
+        async def _allow_url(*args, **kwargs):
+            return None
+
+        mod.httpx.AsyncClient = _Client
+        mod.ensure_url_allowed = _allow_url
+
+        with TemporaryDirectory() as temp_dir:
+            manager = mod.VideoManager(
+                {"network": {"video_range_download": True}},
+                Path(temp_dir),
+            )
+            result = await manager.download_video(
+                "https://api.3365api.cn/v1/videos/task/content",
+                headers={"Authorization": "Bearer test-key"},
+                single_request_download=True,
+            )
+
+            self.assertEqual(result.read_bytes(), video_bytes)
+
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0][2]["Authorization"], "Bearer test-key")
+        self.assertNotIn("Range", requests[0][2])
+
     async def test_download_timeout_allows_slow_connections(self):
         mod = _load_module()
         captured_timeouts = []

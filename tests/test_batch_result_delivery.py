@@ -556,6 +556,52 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_video_chain_forwards_single_request_download_hint(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={"features": {"video": {"chain": ["3365"]}}},
+        )
+        sent_kwargs = {}
+
+        class _Backend:
+            async def generate_video_url(self, *, prompt, image_bytes):
+                return types.SimpleNamespace(
+                    url="https://api.3365api.cn/v1/videos/task/content",
+                    download_headers={"Authorization": "Bearer test-key"},
+                    single_request_download=True,
+                )
+
+        plugin.registry = types.SimpleNamespace(
+            get_video_backend=lambda provider_id: _Backend()
+        )
+
+        async def _send_video_result(event, url, **kwargs):
+            sent_kwargs.update(kwargs)
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        plugin._send_video_result = _send_video_result
+        plugin._video_end = _noop
+        mod.mark_success = _noop
+        mod.mark_failed = _noop
+
+        await plugin._async_generate_video(
+            _DummyEvent(),
+            "a paper airplane",
+            "user-1",
+            image_snapshot=(False, None),
+        )
+
+        self.assertEqual(
+            sent_kwargs,
+            {
+                "download_headers": {"Authorization": "Bearer test-key"},
+                "single_request_download": True,
+            },
+        )
+
     async def test_auto_video_send_prefers_url_before_file_download(self):
         mod = _load_module()
         plugin = mod.GiteeAIImagePlugin(
@@ -710,6 +756,7 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
             event,
             "https://gateway.example/v1/videos/task/content",
             download_headers={"Authorization": "Bearer test-key"},
+            single_request_download=True,
         )
 
         self.assertEqual(
@@ -721,6 +768,7 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
                     {
                         "timeout_seconds": 300,
                         "headers": {"Authorization": "Bearer test-key"},
+                        "single_request_download": True,
                     },
                 ),
                 "file_component",

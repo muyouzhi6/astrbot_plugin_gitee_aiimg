@@ -5912,6 +5912,7 @@ class GiteeAIImagePlugin(Star):
         video_url: str,
         *,
         download_headers: dict[str, str] | None = None,
+        single_request_download: bool = False,
     ) -> None:
         vconf = self._get_feature("video")
         mode = str(vconf.get("send_mode", "auto")).strip().lower()
@@ -5932,6 +5933,7 @@ class GiteeAIImagePlugin(Star):
                     url,
                     timeout_seconds=download_timeout,
                     headers=download_headers,
+                    single_request_download=single_request_download,
                 )
                 await asyncio.wait_for(
                     event.send(
@@ -6036,6 +6038,9 @@ class GiteeAIImagePlugin(Star):
                         if isinstance(candidate_headers, dict)
                         else None
                     )
+                    single_request_download = bool(
+                        getattr(candidate_result, "single_request_download", False)
+                    )
                     # A provider is only considered successful after the media
                     # has actually been downloaded/sent. This lets the chain
                     # recover when task creation succeeds but content delivery
@@ -6044,6 +6049,7 @@ class GiteeAIImagePlugin(Star):
                         event,
                         candidate_url,
                         download_headers=download_headers,
+                        single_request_download=single_request_download,
                     )
                     used_pid = pid
                     break

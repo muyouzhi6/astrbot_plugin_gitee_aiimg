@@ -517,6 +517,8 @@ Q版化:Convert to chibi illustration style
 
 已验证的聚合渠道模板：3365 的 `grok-imagine-video` / `grok-imagine-video-1.5` 使用 `3365_video`；美年达的 `gemini-omni-flash` / `video-2.0-pro` 使用 `sora2_video`。模型出现在 `/v1/models` 只代表可见，是否能生成仍取决于渠道余额和上游 token pool。
 
+3365 的鉴权 `/content` 可能是限次媒体地址，插件会用不带 Range 的单个流式请求下载，不会再做探测后并发分块。创建任务遇到上游明确返回的瞬时 HTTP 错误时会有限重试；连接超时不会自动重提任务。
+
 ## LLM 工具
 
 插件提供两个核心 `LLM tool`：

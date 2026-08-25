@@ -140,6 +140,86 @@ class VideoManager:
         )
         self.cleanup_batch_ratio = 0.5
 
+    async def _download_video_single_request(
+        self,
+        url: str,
+        *,
+        tmp_path: Path,
+        timeout: httpx.Timeout,
+        headers: dict[str, str],
+        policy: URLFetchPolicy,
+    ) -> bool:
+        """Fetch an authenticated, limited-use media URL exactly once."""
+        if not headers:
+            return False
+
+        await ensure_url_allowed(url, policy=policy)
+        request_headers = dict(headers)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            async with client.stream("GET", url, headers=request_headers) as resp:
+                if resp.status_code in {301, 302, 303, 307, 308}:
+                    raise RuntimeError(
+                        "Single-use video endpoint returned an unsupported redirect"
+                    )
+                resp.raise_for_status()
+                if resp.status_code not in {200, 206}:
+                    raise RuntimeError(
+                        f"Unexpected single-use video status: {resp.status_code}"
+                    )
+
+                content_type = resp.headers.get("content-type") or ""
+                content_length = _clamp_int(
+                    resp.headers.get("content-length"),
+                    default=0,
+                    min_value=0,
+                    max_value=self._media_max_video_bytes,
+                )
+                expected_total = content_length
+                if resp.status_code == 206:
+                    content_range = resp.headers.get("content-range", "")
+                    match = re.fullmatch(
+                        r"bytes\s+(\d+)-(\d+)/(\d+)",
+                        content_range,
+                        re.IGNORECASE,
+                    )
+                    if not match or int(match.group(1)) != 0:
+                        raise RuntimeError(
+                            "Upstream returned an unexpected video byte range"
+                        )
+                    range_end = int(match.group(2))
+                    expected_total = int(match.group(3))
+                    if range_end + 1 != expected_total:
+                        raise RuntimeError(
+                            "Upstream did not return the complete video byte range"
+                        )
+
+                if expected_total > self._media_max_video_bytes:
+                    raise RuntimeError("Video too large")
+
+                total = 0
+                prefix = bytearray()
+                async with aiofiles.open(tmp_path, "wb") as output:
+                    async for chunk in resp.aiter_bytes(chunk_size=256 * 1024):
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if len(prefix) < 32:
+                            prefix.extend(chunk[: 32 - len(prefix)])
+                        if total > self._media_max_video_bytes:
+                            raise RuntimeError("Video too large")
+                        await output.write(chunk)
+
+                if expected_total and total != expected_total:
+                    raise httpx.ReadError(
+                        "Upstream closed the single-use video response before completion"
+                    )
+                _validate_video_payload(
+                    content_type=content_type,
+                    prefix=bytes(prefix),
+                    total_bytes=total,
+                )
+                return True
+
     async def _download_video_ranges(
         self,
         url: str,
@@ -437,6 +517,7 @@ class VideoManager:
         *,
         timeout_seconds: int = 300,
         headers: dict[str, str] | None = None,
+        single_request_download: bool = False,
     ) -> Path:
         if not url:
             raise ValueError("缺少视频 URL")
@@ -476,9 +557,24 @@ class VideoManager:
         redirects = 0
         max_download_attempts = 3
         try:
+            single_request = False
+            if (
+                single_request_download
+                and auth_headers
+                and _normalized_origin(current) == auth_origin
+            ):
+                single_request = await self._download_video_single_request(
+                    current,
+                    tmp_path=tmp_path,
+                    timeout=timeout,
+                    headers=auth_headers,
+                    policy=policy,
+                )
+
             segmented = False
             if (
-                self._video_range_download_enabled
+                not single_request
+                and self._video_range_download_enabled
                 and auth_headers
                 and _normalized_origin(current) == auth_origin
             ):
@@ -490,7 +586,7 @@ class VideoManager:
                     policy=policy,
                 )
 
-            if not segmented:
+            if not single_request and not segmented:
                 for attempt in range(max_download_attempts):
                     try:
                         while True:

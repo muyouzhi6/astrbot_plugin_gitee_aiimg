@@ -2386,7 +2386,8 @@
           "create_max_retries": {
             "type": "int",
             "description": "创建任务最大重试次数",
-            "default": 0
+            "hint": "仅重试明确返回的 408/409/425/429/5xx；连接超时等结果不明的故障不会重试，避免重复任务。",
+            "default": 2
           },
           "retry_delay": {
             "type": "int",
