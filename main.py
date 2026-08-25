@@ -5956,20 +5956,18 @@ class GiteeAIImagePlugin(Star):
         if mode == "file":
             if await _send_file(video_url):
                 return
-            await event.send(event.plain_result(video_url))
-            return
+            raise RuntimeError("视频文件发送失败")
 
         if mode == "url":
             if await _send_url(video_url):
                 return
-            await event.send(event.plain_result(video_url))
-            return
+            raise RuntimeError("视频 URL 发送失败")
 
         if await _send_url(video_url):
             return
         if await _send_file(video_url):
             return
-        await event.send(event.plain_result(video_url))
+        raise RuntimeError("视频 URL 和本地文件发送均失败")
 
     async def _async_generate_video(
         self,

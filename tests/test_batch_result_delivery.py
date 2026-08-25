@@ -649,6 +649,35 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
             [("chain", [("video_file", str(video_path))])],
         )
 
+    async def test_auto_video_send_raises_when_url_and_file_both_fail(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={"features": {"video": {"send_mode": "auto"}}},
+        )
+
+        class _Video:
+            @staticmethod
+            def fromURL(url: str):
+                return ("video_url", url)
+
+            @staticmethod
+            def fromFileSystem(path: str):
+                return ("video_file", path)
+
+        class _Event(_DummyEvent):
+            async def send(self, payload):
+                raise RuntimeError("QQ rejected video")
+
+        async def _download_video(*args, **kwargs):
+            raise RuntimeError("download failed")
+
+        mod.Video = _Video
+        plugin.videomgr = types.SimpleNamespace(download_video=_download_video)
+
+        with self.assertRaisesRegex(RuntimeError, "URL 和本地文件发送均失败"):
+            await plugin._send_video_result(_Event(), "https://cdn.example/video.mp4")
+
     async def test_authenticated_video_skips_url_send_and_downloads_with_headers(self):
         mod = _load_module()
         plugin = mod.GiteeAIImagePlugin(
