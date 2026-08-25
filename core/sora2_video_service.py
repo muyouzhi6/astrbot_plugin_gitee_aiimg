@@ -213,7 +213,16 @@ class Sora2VideoService:
         self.base_origin = _origin_from_url(self.api_url)
         self.api_keys = _as_key_list(self.settings)
         self.model = str(self.settings.get("model") or "sora-2").strip() or "sora-2"
-        self.seconds = str(self.settings.get("seconds") or "5").strip() or "5"
+        seconds = str(self.settings.get("seconds") or "5").strip() or "5"
+        # 美年达的 OpenAI Videos adapter only accepts these discrete durations.
+        if "meinianda.top" in urlsplit(self.base_url).netloc.lower() and seconds not in {
+            "4",
+            "6",
+            "8",
+            "10",
+        }:
+            seconds = "4"
+        self.seconds = seconds
         self.size = str(self.settings.get("size") or "720x1280").strip() or "720x1280"
         self.n = _clamp_int(
             self.settings.get("n", 1), default=1, min_value=1, max_value=4

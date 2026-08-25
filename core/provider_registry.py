@@ -56,7 +56,7 @@ _TEMPLATE_KEY_ALIASES: dict[str, str] = {
     "sora2": "sora2_video",
     "sora2_video": "sora2_video",
     "x666_sora2": "sora2_video",
-    "3365_video": "sd20_video",
+    "3365_video": "3365_video",
     "sd20_video": "sd20_video",
     "openai": "openai_images",
     "openai_compat": "openai_images",
@@ -176,8 +176,10 @@ class ProviderRegistry:
             return "grok_video"
         if pid in {"flow2api_video"}:
             return "flow2api_video"
-        if pid in {"sd20_video", "3365_video"}:
+        if pid in {"sd20_video"}:
             return "sd20_video"
+        if pid in {"3365_video"}:
+            return "3365_video"
         if pid in {"openai_video", "sora2_video", "x666_sora2"}:
             return "sora2_video"
         return ""
@@ -364,6 +366,11 @@ class ProviderRegistry:
                 if not str(item.get("apikey") or "").strip():
                     errors.append(f"provider '{provider_id}' missing apikey")
             if template_key in {"grok_video"}:
+                if not str(item.get("server_url") or "").strip():
+                    errors.append(f"provider '{provider_id}' missing server_url")
+                if not str(item.get("api_key") or "").strip():
+                    errors.append(f"provider '{provider_id}' missing api_key")
+            if template_key in {"3365_video"}:
                 if not str(item.get("server_url") or "").strip():
                     errors.append(f"provider '{provider_id}' missing server_url")
                 if not str(item.get("api_key") or "").strip():
@@ -702,6 +709,8 @@ class ProviderRegistry:
         template_key = str(p.get("__template_key") or "").strip()
         if template_key == "grok_video":
             backend: object = GrokVideoService(settings=p)
+        elif template_key == "3365_video":
+            backend = GrokVideoService(settings=p)
         elif template_key == "grok2api_video":
             from .grok2api_video_service import Grok2ApiVideoService
 

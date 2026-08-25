@@ -2308,6 +2308,81 @@
           }
         }
       },
+      "3365_video": {
+        "name": "3365 视频（xAI 兼容）",
+        "description": "适配 3365 New API 的异步 xAI 视频接口。",
+        "hint": "POST /v1/videos/generations；支持 grok-imagine-video、grok-imagine-video-1.5 等模型，轮询 /v1/videos/{request_id}。",
+        "items": {
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "3365_video"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": "3365 视频"
+          },
+          "server_url": {
+            "type": "string",
+            "description": "API 服务地址",
+            "hint": "例如：https://api.3365api.cn；内部补全 /v1/videos/generations。",
+            "default": "https://api.3365api.cn"
+          },
+          "api_key": {
+            "type": "string",
+            "description": "API Key",
+            "default": "",
+            "obvious_hint": true
+          },
+          "model": {
+            "type": "string",
+            "description": "模型 ID",
+            "hint": "例如：grok-imagine-video-1.5。先用 /v1/models 确认该 Key 有视频 channel。",
+            "default": "grok-imagine-video-1.5"
+          },
+          "duration": {
+            "type": "int",
+            "description": "视频时长（秒）",
+            "default": 5
+          },
+          "aspect_ratio": {
+            "type": "string",
+            "description": "视频宽高比",
+            "default": ""
+          },
+          "resolution": {
+            "type": "string",
+            "description": "视频分辨率",
+            "default": ""
+          },
+          "timeout_seconds": {
+            "type": "int",
+            "description": "任务总超时（秒）",
+            "default": 600
+          },
+          "poll_interval_seconds": {
+            "type": "int",
+            "description": "轮询间隔（秒）",
+            "default": 5
+          },
+          "max_retries": {
+            "type": "int",
+            "description": "轮询请求最大重试次数",
+            "default": 2
+          },
+          "create_max_retries": {
+            "type": "int",
+            "description": "创建任务最大重试次数",
+            "default": 0
+          },
+          "retry_delay": {
+            "type": "int",
+            "description": "重试基础间隔（秒）",
+            "default": 2
+          }
+        }
+      },
       "sora2_video": {
         "name": "OpenAI Videos（异步视频）",
         "description": "用于 OpenAI 兼容异步视频任务（POST /v1/videos 后轮询任务状态）。",

@@ -225,6 +225,19 @@ class Sora2VideoServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["n"], 1)
         self.assertEqual(payload["metadata"], {"ok": True})
 
+    def test_meinianda_replaces_unsupported_default_duration(self):
+        mod = _load_module()
+
+        service = mod.Sora2VideoService(
+            settings={
+                "base_url": "https://meinianda.top",
+                "api_keys": ["test-key"],
+                "model": "gemini-omni-flash",
+            }
+        )
+
+        self.assertEqual(service.seconds, "4")
+
     async def test_create_request_uses_zero_retries_by_default(self):
         mod = _load_module()
         create_retry_values = []

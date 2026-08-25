@@ -303,6 +303,52 @@ class ProviderRegistryRequestModeTests(unittest.TestCase):
             "https://gateway.example/v1",
         )
 
+    def test_registry_resolves_3365_video_provider(self):
+        mod = _load_module()
+        registry = mod.ProviderRegistry(
+            config={
+                "providers": [
+                    {
+                        "id": "3365_video",
+                        "__template_key": "3365_video",
+                        "server_url": "https://api.3365api.cn",
+                        "api_key": "test-key",
+                        "model": "grok-imagine-video-1.5",
+                    }
+                ]
+            },
+            imgr=object(),
+            data_dir=Path("/tmp"),
+        )
+
+        backend = registry.get_video_backend("3365_video")
+
+        self.assertEqual(backend.__class__.__name__, "_StubBackend")
+        self.assertEqual(
+            backend.kwargs["settings"]["server_url"], "https://api.3365api.cn"
+        )
+
+    def test_validate_requires_3365_video_credentials(self):
+        mod = _load_module()
+        registry = mod.ProviderRegistry(
+            config={
+                "providers": [
+                    {
+                        "id": "3365_video",
+                        "__template_key": "3365_video",
+                        "server_url": "https://api.3365api.cn",
+                        "model": "grok-imagine-video-1.5",
+                    }
+                ]
+            },
+            imgr=object(),
+            data_dir=Path("/tmp"),
+        )
+
+        self.assertEqual(
+            registry.validate(), ["provider '3365_video' missing api_key"]
+        )
+
     def test_validate_requires_sora2_api_key_source(self):
         mod = _load_module()
         registry = mod.ProviderRegistry(
