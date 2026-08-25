@@ -388,6 +388,12 @@ class GrokVideoService:
             min_value=30,
             max_value=3600,
         )
+        self.request_timeout_seconds = _clamp_int(
+            self.settings.get("request_timeout_seconds", 120),
+            default=120,
+            min_value=10,
+            max_value=600,
+        )
         self.poll_interval_seconds = max(
             1.0, min(float(self.settings.get("poll_interval_seconds", 5)), 120.0)
         )
@@ -553,9 +559,9 @@ class GrokVideoService:
         }
         timeout = httpx.Timeout(
             connect=10.0,
-            read=float(self.timeout_seconds),
-            write=10.0,
-            pool=float(self.timeout_seconds) + 10.0,
+            read=float(self.request_timeout_seconds),
+            write=float(self.request_timeout_seconds),
+            pool=float(self.request_timeout_seconds) + 10.0,
         )
         deadline = time.monotonic() + self.timeout_seconds
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:

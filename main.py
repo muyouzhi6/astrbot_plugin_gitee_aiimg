@@ -2716,19 +2716,29 @@ class GiteeAIImagePlugin(Star):
             try:
                 raw_image_segs = await get_raw_images_from_event(event)
             except Exception as exc:
-                logger.debug("[视频] raw OneBot 图片回源失败: %s", exc)
+                logger.warning("[视频] raw OneBot 图片回源失败: %s", exc)
 
         had_image = bool(image_segs or raw_image_segs)
         candidates = [*image_segs, *raw_image_segs]
+        logger.info(
+            "[视频] 图片快照候选: event=%s raw=%s total=%s",
+            len(image_segs),
+            len(raw_image_segs),
+            len(candidates),
+        )
         snapshot_errors: list[tuple[int, Exception]] = []
         for i, seg in enumerate(candidates):
             try:
                 b64 = await seg.convert_to_base64()
                 image_bytes = decode_base64_image_payload(b64)
-                logger.debug(
-                    "[视频] 图片快照完成: index=%s bytes=%s",
+                mime_type, _ = guess_image_mime_and_ext(image_bytes)
+                source = "event" if i < len(image_segs) else "raw"
+                logger.info(
+                    "[视频] 图片快照完成: source=%s index=%s bytes=%s mime=%s",
+                    source,
                     i + 1,
                     len(image_bytes),
+                    mime_type,
                 )
                 return had_image, image_bytes
             except Exception as exc:

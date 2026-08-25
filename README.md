@@ -1,6 +1,6 @@
 # AstrBot Gitee AI 图像生成插件
 
-[![Plugin Version](https://img.shields.io/badge/Version-v5.1.13-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
+[![Plugin Version](https://img.shields.io/badge/Version-v5.1.26-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16.0%2C%20%3C5-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![Platform](https://img.shields.io/badge/Primary-aiocqhttp-4caf50?style=for-the-badge)](#平台与限制)
 [![CI](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml/badge.svg)](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml)
@@ -8,7 +8,7 @@
 多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件。`v5` 的核心升级是 **LLM 生图不再阻塞对话**：Bot 接下单图或批量任务后可以继续聊天，期间始终知道任务状态和安全摘要，完整提示词按需查询，任务完成或失败后还会按当前人格主动回来回应。
 
 > [!IMPORTANT]
-> 这份文档对应 `v5.1.13` 配置结构。
+> 这份文档对应 `v5.1.26` 配置结构。
 >
 > - `v5` 延续 `v4` 配置结构；从 `v3 / v2` 升级时仍需重新检查 WebUI 配置。
 > - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了发送图片前优化。
@@ -122,7 +122,7 @@ chain 里可以填多个 provider，第一个是主用，后面的是自动兜�
 | Gitee AI 文生图 | `gitee_images` |
 | Gitee AI 异步改图 | `gitee_async` |
 | Grok / xAI | `grok_images` 或 `grok_chat` |
-| 视频生成 | `grok_video`（xAI `/v1/videos/generations`） / `flow2api_video` / `sora2_video`（通用 OpenAI Videos `/v1/videos`） |
+| 视频生成 | `grok_video`（xAI 官方） / `3365_video`（3365 xAI 兼容） / `flow2api_video` / `sora2_video`（通用 OpenAI Videos） |
 
 provider 模板中的通用 `timeout` 默认均为 `600` 秒。升级时会保留现有 provider 的 URL、Key、模型、超时和其它自定义值；旧配置缺少新字段时才使用新版运行时默认值。`gemini_native` 额外支持 `max_retries`，默认重试 `2` 次，设为 `0` 可关闭重试。
 
@@ -514,6 +514,8 @@ Q版化:Convert to chibi illustration style
 ```
 
 如果第一个 token 命中 `features.video.presets` 里的预设名，就会按“视频预设 + 额外提示词”处理。
+
+已验证的聚合渠道模板：3365 的 `grok-imagine-video` / `grok-imagine-video-1.5` 使用 `3365_video`；美年达的 `gemini-omni-flash` / `video-2.0-pro` 使用 `sora2_video`。模型出现在 `/v1/models` 只代表可见，是否能生成仍取决于渠道余额和上游 token pool。
 
 ## LLM 工具
 

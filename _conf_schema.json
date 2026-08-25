@@ -2097,6 +2097,12 @@
             },
             "default": 600
           },
+          "request_timeout_seconds": {
+            "type": "int",
+            "description": "单次 HTTP 请求超时(秒)",
+            "hint": "图生视频会在 JSON 中上传 base64 图片；网络较慢时建议至少 120 秒。",
+            "default": 120
+          },
           "max_retries": {
             "type": "int",
             "description": "轮询请求最大重试次数",
@@ -2360,6 +2366,12 @@
             "type": "int",
             "description": "任务总超时（秒）",
             "default": 600
+          },
+          "request_timeout_seconds": {
+            "type": "int",
+            "description": "单次 HTTP 请求超时（秒）",
+            "hint": "图生视频会在 JSON 中上传 base64 图片；网络较慢时建议至少 120 秒。",
+            "default": 120
           },
           "poll_interval_seconds": {
             "type": "int",

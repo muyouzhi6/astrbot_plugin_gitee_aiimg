@@ -147,6 +147,44 @@ class GrokVideoServiceEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "https://cdn.example/v.mp4")
         self.assertNotIn("image", service.payload)
 
+    async def test_request_timeout_applies_to_image_upload(self):
+        mod = _load_module()
+        captured = {}
+
+        class _Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+        def client_factory(*, timeout, follow_redirects):
+            captured["timeout"] = timeout
+            captured["follow_redirects"] = follow_redirects
+            return _Client()
+
+        class Service(mod.GrokVideoService):
+            async def _request_json(
+                self, client, method, url, *, headers, payload=None
+            ):
+                return {"video_url": "https://cdn.example/v.mp4"}
+
+        service = Service(
+            settings={
+                "api_key": "test-key",
+                "request_timeout_seconds": 120,
+            }
+        )
+        with patch.object(mod.httpx, "AsyncClient", side_effect=client_factory):
+            result = await service.generate_video_url(
+                "animate this", image_bytes=b"\x89PNG\r\n\x1a\n"
+            )
+
+        self.assertEqual(result, "https://cdn.example/v.mp4")
+        self.assertTrue(captured["follow_redirects"])
+        self.assertEqual(captured["timeout"].read, 120.0)
+        self.assertEqual(captured["timeout"].write, 120.0)
+
 
 if __name__ == "__main__":
     unittest.main()
