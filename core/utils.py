@@ -599,6 +599,35 @@ async def _build_images_from_refs(
     return images
 
 
+async def get_raw_images_from_event(event: AstrMessageEvent) -> list[Image]:
+    """Recover image references from the untouched platform payload.
+
+    Some plugins replace an incoming OneBot image component with a temporary
+    local path.  That path can be gone by the time a later plugin handles the
+    same event, while ``message_obj.raw_message`` still contains the original
+    URL or file id that OneBot can resolve.
+    """
+    raw_message = _safe_getattr(
+        _safe_getattr(event, "message_obj", None),
+        "raw_message",
+        None,
+    )
+    if raw_message is None:
+        raw_message = _safe_getattr(event, "raw_message", None)
+    if raw_message is None:
+        return []
+
+    image_segs: list[Image] = []
+    image_refs: list[str] = []
+    _extract_images_from_structure(raw_message, image_segs, image_refs)
+    if image_refs:
+        _append_unique_images(
+            image_segs,
+            await _build_images_from_refs(event, image_refs),
+        )
+    return image_segs
+
+
 async def _extract_reply_images(
     event: AstrMessageEvent,
     reply_seg: Reply,

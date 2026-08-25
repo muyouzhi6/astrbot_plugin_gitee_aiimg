@@ -352,6 +352,32 @@ class ReplyImageFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(images), 1)
         self.assertTrue(images[0].file.startswith("base64://"))
 
+    async def test_raw_image_fallback_resolves_original_file_id(self):
+        utils = _load_utils_module()
+
+        def handler(action, params):
+            if action == "get_image" and params.get("file") == "img_original":
+                return {"data": {"url": "https://example.com/original.png"}}
+            raise RuntimeError(f"unexpected action={action} params={params}")
+
+        api = _DummyAPI(handler)
+        event = _RawDummyEvent(
+            [_BaseImage.fromFileSystem("/AstrBot/data/temp/missing-compressed.jpg")],
+            {
+                "post_type": "message",
+                "message": [
+                    {"type": "image", "data": {"file": "img_original"}},
+                ],
+            },
+            api=api,
+        )
+
+        images = await utils.get_raw_images_from_event(event)
+
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0].url, "https://example.com/original.png")
+        self.assertTrue(any(call[0] == "get_image" for call in api.calls))
+
     async def test_collects_avatar_from_raw_cq_at_message(self):
         utils = _load_utils_module()
 

@@ -88,6 +88,11 @@ from .core.output_spec import (
 from .core.provider_registry import ProviderRegistry
 from .core.ref_store import ReferenceStore
 from .core.utils import close_session, collect_at_user_ids, get_images_from_event
+
+try:
+    from .core.utils import get_raw_images_from_event
+except ImportError:  # Older test/runtime stubs may not expose the optional fallback.
+    get_raw_images_from_event = None
 from .core.video_manager import VideoManager
 
 try:
@@ -2706,8 +2711,16 @@ class GiteeAIImagePlugin(Star):
             include_avatar=True,
             include_sender_avatar_fallback=False,
         )
-        had_image = bool(image_segs)
-        for i, seg in enumerate(image_segs):
+        raw_image_segs: list[Image] = []
+        if callable(get_raw_images_from_event):
+            try:
+                raw_image_segs = await get_raw_images_from_event(event)
+            except Exception as exc:
+                logger.debug("[视频] raw OneBot 图片回源失败: %s", exc)
+
+        had_image = bool(image_segs or raw_image_segs)
+        candidates = [*image_segs, *raw_image_segs]
+        for i, seg in enumerate(candidates):
             try:
                 b64 = await seg.convert_to_base64()
                 image_bytes = decode_base64_image_payload(b64)
