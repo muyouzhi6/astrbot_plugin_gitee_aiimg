@@ -2720,6 +2720,7 @@ class GiteeAIImagePlugin(Star):
 
         had_image = bool(image_segs or raw_image_segs)
         candidates = [*image_segs, *raw_image_segs]
+        snapshot_errors: list[tuple[int, Exception]] = []
         for i, seg in enumerate(candidates):
             try:
                 b64 = await seg.convert_to_base64()
@@ -2731,7 +2732,11 @@ class GiteeAIImagePlugin(Star):
                 )
                 return had_image, image_bytes
             except Exception as exc:
-                logger.warning("[视频] 图片 %s 快照失败，尝试下一张: %s", i + 1, exc)
+                snapshot_errors.append((i + 1, exc))
+                logger.debug("[视频] 图片 %s 快照失败，尝试下一张: %s", i + 1, exc)
+        if snapshot_errors:
+            for index, exc in snapshot_errors:
+                logger.warning("[视频] 图片 %s 快照失败: %s", index, exc)
         return had_image, None
 
     @filter.command("视频")
