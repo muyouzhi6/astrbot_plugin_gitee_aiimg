@@ -18,12 +18,12 @@ from .modelscope_async_backend import ModelScopeAsyncImageBackend
 from .openai_chat_image_backend import OpenAIChatImageBackend
 from .openai_compat_backend import OpenAICompatBackend
 from .openai_full_url_backend import OpenAIFullURLBackend
+from .sd20_video_service import SD20VideoService
 from .sora2_video_service import Sora2VideoService
 from .vertex_ai_anonymous_backend import (
     VertexAIAnonymousBackend,
     VertexAIAnonymousSettings,
 )
-
 
 DEFAULT_PROVIDER_TIMEOUT_SECONDS = 600
 
@@ -56,6 +56,8 @@ _TEMPLATE_KEY_ALIASES: dict[str, str] = {
     "sora2": "sora2_video",
     "sora2_video": "sora2_video",
     "x666_sora2": "sora2_video",
+    "3365_video": "sd20_video",
+    "sd20_video": "sd20_video",
     "openai": "openai_images",
     "openai_compat": "openai_images",
     "openai_full_url": "openai_full_url_images",
@@ -174,6 +176,8 @@ class ProviderRegistry:
             return "grok_video"
         if pid in {"flow2api_video"}:
             return "flow2api_video"
+        if pid in {"sd20_video", "3365_video"}:
+            return "sd20_video"
         if pid in {"openai_video", "sora2_video", "x666_sora2"}:
             return "sora2_video"
         return ""
@@ -375,6 +379,20 @@ class ProviderRegistry:
                 if not str(item.get("model") or "").strip():
                     errors.append(f"provider '{provider_id}' missing model")
             if template_key in {"sora2_video"}:
+                if not str(item.get("base_url") or "").strip():
+                    errors.append(f"provider '{provider_id}' missing base_url")
+                if not str(item.get("model") or "").strip():
+                    errors.append(f"provider '{provider_id}' missing model")
+                api_keys = _as_list(item.get("api_keys"))
+                api_key = str(item.get("api_key") or "").strip()
+                api_key_env = str(item.get("api_key_env") or "").strip()
+                if (
+                    not api_key
+                    and not api_key_env
+                    and not any(str(x or "").strip() for x in api_keys)
+                ):
+                    errors.append(f"provider '{provider_id}' missing api_keys")
+            if template_key in {"sd20_video"}:
                 if not str(item.get("base_url") or "").strip():
                     errors.append(f"provider '{provider_id}' missing base_url")
                 if not str(item.get("model") or "").strip():
@@ -701,6 +719,8 @@ class ProviderRegistry:
             backend = Flow2ApiVideoBackend(settings=settings)
         elif template_key == "sora2_video":
             backend = Sora2VideoService(settings=p)
+        elif template_key == "sd20_video":
+            backend = SD20VideoService(settings=p)
         else:
             raise RuntimeError(f"Provider '{pid}' is not a video provider")
         self._video_backends[pid] = backend
