@@ -285,7 +285,7 @@ class VideoManager:
                             httpx.ReadError,
                             httpx.RemoteProtocolError,
                             httpx.ConnectError,
-                            httpx.ReadTimeout,
+                            httpx.TimeoutException,
                         ) as exc:
                             last_error = exc
                             if attempt + 1 < 3:
@@ -447,7 +447,7 @@ class VideoManager:
         tmp_path = self.video_dir / f"{filename}.part"
 
         timeout = httpx.Timeout(
-            connect=10.0,
+            connect=min(float(timeout_seconds), 120.0),
             read=float(timeout_seconds),
             write=10.0,
             pool=float(timeout_seconds) + 10.0,
@@ -598,7 +598,7 @@ class VideoManager:
                         httpx.ReadError,
                         httpx.RemoteProtocolError,
                         httpx.ConnectError,
-                        httpx.ReadTimeout,
+                        httpx.TimeoutException,
                     ) as exc:
                         if attempt + 1 >= max_download_attempts:
                             raise

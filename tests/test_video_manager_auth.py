@@ -102,6 +102,44 @@ class _Response:
 
 
 class VideoManagerAuthTests(unittest.IsolatedAsyncioTestCase):
+    async def test_download_timeout_allows_slow_connections(self):
+        mod = _load_module()
+        captured_timeouts = []
+
+        class _Client:
+            def __init__(self, *args, timeout, **kwargs):
+                captured_timeouts.append(timeout)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def stream(self, method, url, *, headers=None):
+                return _Response(
+                    status_code=200,
+                    headers={"content-type": "video/mp4"},
+                    chunks=[b"video-bytes"],
+                )
+
+        async def _allow_url(*args, **kwargs):
+            return None
+
+        mod.httpx.AsyncClient = _Client
+        mod.ensure_url_allowed = _allow_url
+
+        with TemporaryDirectory() as temp_dir:
+            manager = mod.VideoManager({}, Path(temp_dir))
+            result = await manager.download_video(
+                "https://gateway.example/video.mp4",
+                timeout_seconds=300,
+            )
+            self.assertEqual(result.read_bytes(), b"video-bytes")
+
+        self.assertEqual(captured_timeouts[0].connect, 120.0)
+        self.assertEqual(captured_timeouts[0].read, 300.0)
+
     async def test_cross_origin_redirect_strips_authorization_header(self):
         mod = _load_module()
         requests = []
@@ -320,6 +358,78 @@ class VideoManagerAuthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(requests), 2)
         self.assertEqual(requests[0][2]["Range"], "bytes=0-0")
         self.assertEqual(requests[1][2]["Range"], f"bytes=0-{len(video_bytes) - 1}")
+
+    async def test_authenticated_range_download_retries_connect_timeout(self):
+        mod = _load_module()
+        video_bytes = b"\x00\x00\x00\x18ftypmp42retry"
+        requests = []
+        responses = [
+            _Response(
+                status_code=206,
+                headers={
+                    "content-type": "video/mp4",
+                    "content-range": f"bytes 0-0/{len(video_bytes)}",
+                },
+                chunks=[video_bytes[:1]],
+            ),
+            mod.httpx.ConnectTimeout("slow TLS handshake"),
+            _Response(
+                status_code=206,
+                headers={
+                    "content-type": "video/mp4",
+                    "content-range": f"bytes 0-{len(video_bytes) - 1}/{len(video_bytes)}",
+                },
+                chunks=[video_bytes],
+            ),
+        ]
+
+        class _FailingStream:
+            def __init__(self, exc):
+                self._exc = exc
+
+            async def __aenter__(self):
+                raise self._exc
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                return None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def stream(self, method, url, *, headers=None):
+                requests.append((method, url, headers))
+                response = responses.pop(0)
+                if isinstance(response, Exception):
+                    return _FailingStream(response)
+                return response
+
+        async def _allow_url(*args, **kwargs):
+            return None
+
+        mod.httpx.AsyncClient = _Client
+        mod.ensure_url_allowed = _allow_url
+
+        with TemporaryDirectory() as temp_dir:
+            manager = mod.VideoManager(
+                {"network": {"video_range_download": True}},
+                Path(temp_dir),
+            )
+            with patch.object(mod.asyncio, "sleep", new=AsyncMock()):
+                result = await manager.download_video(
+                    "https://gateway.example/v1/videos/task/content",
+                    headers={"Authorization": "Bearer test-key"},
+                )
+            self.assertEqual(result.read_bytes(), video_bytes)
+
+        self.assertEqual(len(requests), 3)
+        self.assertEqual(requests[1][2], requests[2][2])
 
     async def test_range_probe_recovers_when_zero_byte_probe_returns_200(self):
         mod = _load_module()
