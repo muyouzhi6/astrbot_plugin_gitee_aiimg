@@ -167,34 +167,73 @@ class VideoManager:
                 await asyncio.to_thread(tmp_path.unlink)
             range_dir.mkdir(parents=True, exist_ok=True)
 
-            probe_headers = dict(headers)
-            probe_headers["Range"] = "bytes=0-0"
             async with httpx.AsyncClient(
                 timeout=timeout, follow_redirects=False
             ) as client:
-                async with client.stream("GET", url, headers=probe_headers) as resp:
-                    if resp.status_code in {301, 302, 303, 307, 308}:
-                        return False
-                    if resp.status_code == 200:
-                        return False
-                    resp.raise_for_status()
-                    if resp.status_code != 206:
-                        return False
-                    content_range = resp.headers.get("content-range", "")
-                    probe_match = re.fullmatch(
-                        r"bytes\s+0-0/(\d+)", content_range, re.IGNORECASE
+                # Some gateways ignore the one-byte probe and return a 200 full
+                # response, while still honoring a normal-sized range request.
+                # Try both forms before falling back to the regular downloader.
+                probe_specs = [
+                    (0, 0),
+                    (0, self._video_range_chunk_bytes - 1),
+                ]
+                probe_result: tuple[int, str] | None = None
+                for probe_start, requested_probe_end in probe_specs:
+                    probe_headers = dict(headers)
+                    probe_headers["Range"] = (
+                        f"bytes={probe_start}-{requested_probe_end}"
                     )
-                    if not probe_match:
-                        return False
-                    total_size = int(probe_match.group(1))
-                    if total_size <= 0 or total_size > self._media_max_video_bytes:
-                        raise RuntimeError("Video too large")
-                    probe_body = bytearray()
-                    async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
-                        probe_body.extend(chunk)
-                    if len(probe_body) != 1:
-                        return False
-                    content_type = resp.headers.get("content-type") or ""
+                    async with client.stream(
+                        "GET", url, headers=probe_headers
+                    ) as resp:
+                        if resp.status_code in {301, 302, 303, 307, 308}:
+                            return False
+                        if resp.status_code == 200:
+                            # A 200 for 0-0 is the known 3365 behavior. Give the
+                            # larger probe a chance; a 200 there means ranges
+                            # are genuinely unsupported.
+                            if probe_start == 0 and requested_probe_end == 0:
+                                continue
+                            return False
+                        if resp.status_code != 206:
+                            resp.raise_for_status()
+                            return False
+
+                        content_range = resp.headers.get("content-range", "")
+                        probe_match = re.fullmatch(
+                            r"bytes\s+(\d+)-(\d+)/(\d+)",
+                            content_range,
+                            re.IGNORECASE,
+                        )
+                        if not probe_match:
+                            continue
+                        probe_start_actual = int(probe_match.group(1))
+                        probe_end_actual = int(probe_match.group(2))
+                        total_size = int(probe_match.group(3))
+                        expected_probe_size = (
+                            probe_end_actual - probe_start_actual + 1
+                        )
+                        if (
+                            probe_start_actual != probe_start
+                            or probe_end_actual < probe_start_actual
+                            or expected_probe_size <= 0
+                            or total_size <= 0
+                            or total_size > self._media_max_video_bytes
+                        ):
+                            continue
+
+                        probe_body = bytearray()
+                        async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
+                            probe_body.extend(chunk)
+                        if len(probe_body) != expected_probe_size:
+                            continue
+                        content_type = resp.headers.get("content-type") or ""
+                        probe_result = (total_size, content_type)
+                        break
+
+                if probe_result is None:
+                    return False
+                total_size, content_type = probe_result
 
                 ranges = [
                     (
