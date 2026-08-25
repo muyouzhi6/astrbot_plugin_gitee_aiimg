@@ -418,16 +418,16 @@ class ReplyImageFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(images), 1)
         self.assertEqual(images[0].url, "https://example.com/json.png")
 
-    async def test_raw_image_fallback_fetches_current_message_when_temp_segment_is_only_source(self):
+    async def test_raw_image_fallback_fetches_current_message_when_temp_segment_is_only_source(
+        self,
+    ):
         utils = _load_utils_module()
 
         def handler(action, params):
             if action == "get_msg" and params.get("message_id") == "100":
                 return {
                     "data": {
-                        "message": [
-                            {"type": "image", "data": {"file": "img_current"}}
-                        ]
+                        "message": [{"type": "image", "data": {"file": "img_current"}}]
                     }
                 }
             if action == "get_image" and params.get("file") == "img_current":
@@ -436,7 +436,11 @@ class ReplyImageFallbackTests(unittest.IsolatedAsyncioTestCase):
 
         api = _DummyAPI(handler)
         event = _RawDummyEvent(
-            [_BaseImage.fromFileSystem("/AstrBot/data/temp/context-aware-compressed.jpg")],
+            [
+                _BaseImage.fromFileSystem(
+                    "/AstrBot/data/temp/context-aware-compressed.jpg"
+                )
+            ],
             None,
             api=api,
         )

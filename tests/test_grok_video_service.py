@@ -182,6 +182,7 @@ class GrokVideoServiceEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, "https://cdn.example/v.mp4")
         self.assertTrue(captured["follow_redirects"])
+        self.assertEqual(captured["timeout"].connect, 120.0)
         self.assertEqual(captured["timeout"].read, 120.0)
         self.assertEqual(captured["timeout"].write, 120.0)
 

@@ -305,9 +305,7 @@ class Sora2VideoServiceTests(unittest.IsolatedAsyncioTestCase):
                     },
                 }
 
-        service = Service(
-            settings={"api_keys": ["test-key"], "create_max_retries": 3}
-        )
+        service = Service(settings={"api_keys": ["test-key"], "create_max_retries": 3})
 
         with self.assertRaisesRegex(RuntimeError, "No available channel"):
             await service.generate_video_url("prompt")

@@ -5941,9 +5941,7 @@ class GiteeAIImagePlugin(Star):
                 )
                 return True
             except Exception as e:
-                logger.warning(
-                    f"[视频] 本地文件发送失败: {type(e).__name__}: {e!r}"
-                )
+                logger.warning(f"[视频] 本地文件发送失败: {type(e).__name__}: {e!r}")
                 return False
 
         async def _send_url(url: str) -> bool:

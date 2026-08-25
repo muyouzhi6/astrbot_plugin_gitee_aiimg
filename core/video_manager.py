@@ -183,9 +183,7 @@ class VideoManager:
                     probe_headers["Range"] = (
                         f"bytes={probe_start}-{requested_probe_end}"
                     )
-                    async with client.stream(
-                        "GET", url, headers=probe_headers
-                    ) as resp:
+                    async with client.stream("GET", url, headers=probe_headers) as resp:
                         if resp.status_code in {301, 302, 303, 307, 308}:
                             return False
                         if resp.status_code == 200:
@@ -210,9 +208,7 @@ class VideoManager:
                         probe_start_actual = int(probe_match.group(1))
                         probe_end_actual = int(probe_match.group(2))
                         total_size = int(probe_match.group(3))
-                        expected_probe_size = (
-                            probe_end_actual - probe_start_actual + 1
-                        )
+                        expected_probe_size = probe_end_actual - probe_start_actual + 1
                         if (
                             probe_start_actual != probe_start
                             or probe_end_actual < probe_start_actual

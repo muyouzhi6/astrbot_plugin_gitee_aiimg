@@ -345,9 +345,7 @@ class ProviderRegistryRequestModeTests(unittest.TestCase):
             data_dir=Path("/tmp"),
         )
 
-        self.assertEqual(
-            registry.validate(), ["provider '3365_video' missing api_key"]
-        )
+        self.assertEqual(registry.validate(), ["provider '3365_video' missing api_key"])
 
     def test_validate_requires_sora2_api_key_source(self):
         mod = _load_module()

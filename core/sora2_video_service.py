@@ -231,7 +231,9 @@ class Sora2VideoService:
         self.model = str(self.settings.get("model") or "sora-2").strip() or "sora-2"
         seconds = str(self.settings.get("seconds") or "5").strip() or "5"
         # 美年达的 OpenAI Videos adapter only accepts these discrete durations.
-        if "meinianda.top" in urlsplit(self.base_url).netloc.lower() and seconds not in {
+        if "meinianda.top" in urlsplit(
+            self.base_url
+        ).netloc.lower() and seconds not in {
             "4",
             "6",
             "8",
@@ -632,9 +634,9 @@ class Sora2VideoService:
                         and _create_attempt < self.create_max_retries
                         and time.monotonic() < deadline
                     ):
-                        delay = self.retry_delay * (2**_create_attempt) + random.uniform(
-                            0, 0.5
-                        )
+                        delay = self.retry_delay * (
+                            2**_create_attempt
+                        ) + random.uniform(0, 0.5)
                         logger.warning(
                             "[Sora2Video] 上游 token pool 暂无可用 token，%.1fs 后重建任务 (%s/%s)",
                             delay,
@@ -648,9 +650,7 @@ class Sora2VideoService:
                             preset=preset,
                             _create_attempt=_create_attempt + 1,
                         )
-                    raise RuntimeError(
-                        f"Sora2 视频任务失败: {task_id}, {detail}"
-                    )
+                    raise RuntimeError(f"Sora2 视频任务失败: {task_id}, {detail}")
 
                 logger.info(
                     "[Sora2Video] 等待任务: task_id=%s, status=%s, progress=%s",

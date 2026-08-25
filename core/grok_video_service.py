@@ -558,7 +558,7 @@ class GrokVideoService:
             "Authorization": f"Bearer {self.api_key}",
         }
         timeout = httpx.Timeout(
-            connect=10.0,
+            connect=float(self.request_timeout_seconds),
             read=float(self.request_timeout_seconds),
             write=float(self.request_timeout_seconds),
             pool=float(self.request_timeout_seconds) + 10.0,
