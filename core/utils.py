@@ -638,17 +638,60 @@ async def get_raw_images_from_event(event: AstrMessageEvent) -> list[Image]:
     )
     if raw_message is None:
         raw_message = _safe_getattr(event, "raw_message", None)
-    if raw_message is None:
-        return []
-
     image_segs: list[Image] = []
     image_refs: list[str] = []
-    _extract_images_from_structure(raw_message, image_segs, image_refs)
+    if raw_message is not None:
+        _extract_images_from_structure(raw_message, image_segs, image_refs)
     if image_refs:
         _append_unique_images(
             image_segs,
             await _build_images_from_refs(event, image_refs),
         )
+
+    # Context-aware may replace the current segment with a temporary path and
+    # leave no raw CQ payload on the event.  Fetching the current OneBot message
+    # gives us the original file id/URL before the temp file is cleaned up.
+    def _segment_has_usable_image(seg: Image) -> bool:
+        ref = _normalize_image_ref(
+            getattr(seg, "url", None)
+            or getattr(seg, "file", None)
+            or getattr(seg, "path", None)
+        )
+        if not ref:
+            return False
+        if ref.startswith("file:///"):
+            return os.path.exists(ref[8:])
+        return True
+
+    has_usable_image = any(_segment_has_usable_image(seg) for seg in image_segs)
+    if not has_usable_image:
+        message_ids: list[str] = []
+        message_obj = _safe_getattr(event, "message_obj", None)
+        for owner in (message_obj, event):
+            getter = _safe_getattr(owner, "get_message_id", None)
+            if callable(getter):
+                try:
+                    _append_unique_string(message_ids, getter())
+                except Exception:
+                    pass
+            for attr in ("message_id", "messageId", "id"):
+                _append_unique_string(message_ids, _safe_getattr(owner, attr, None))
+
+        for message_id in message_ids:
+            params_list = _build_reply_lookup_params(message_id)
+            if not params_list:
+                continue
+            payload = await _call_action_compat(event, "get_msg", params_list)
+            data = _unwrap_action_data(payload)
+            fetched_refs: list[str] = []
+            _extract_images_from_structure(data, image_segs, fetched_refs)
+            if fetched_refs:
+                _append_unique_images(
+                    image_segs,
+                    await _build_images_from_refs(event, fetched_refs),
+                )
+            if fetched_refs or image_segs:
+                break
     return image_segs
 
 

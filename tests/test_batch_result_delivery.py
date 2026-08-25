@@ -501,6 +501,61 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(calls, [raw_image])
 
+    async def test_video_chain_falls_back_after_download_or_send_failure(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={"features": {"video": {"chain": ["first", "second"]}}},
+        )
+        calls: list[str] = []
+
+        class _Backend:
+            def __init__(self, provider_id):
+                self.provider_id = provider_id
+
+            async def generate_video_url(self, *, prompt, image_bytes):
+                calls.append(f"generate:{self.provider_id}")
+                return f"https://cdn.example/{self.provider_id}.mp4"
+
+        plugin.registry = types.SimpleNamespace(
+            get_video_backend=lambda provider_id: _Backend(provider_id)
+        )
+
+        async def _send_video_result(event, url, **kwargs):
+            calls.append(f"send:{url.rsplit('/', 1)[-1]}")
+            if url.endswith("first.mp4"):
+                raise RuntimeError("first content download failed")
+
+        plugin._send_video_result = _send_video_result
+
+        async def _video_end(*args, **kwargs):
+            return None
+
+        plugin._video_end = _video_end
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        mod.mark_success = _noop
+        mod.mark_failed = _noop
+
+        await plugin._async_generate_video(
+            _DummyEvent(),
+            "animate the reference",
+            "user-1",
+            image_snapshot=(False, None),
+        )
+
+        self.assertEqual(
+            calls,
+            [
+                "generate:first",
+                "send:first.mp4",
+                "generate:second",
+                "send:second.mp4",
+            ],
+        )
+
     async def test_auto_video_send_prefers_url_before_file_download(self):
         mod = _load_module()
         plugin = mod.GiteeAIImagePlugin(

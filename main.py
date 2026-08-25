@@ -6010,8 +6010,6 @@ class GiteeAIImagePlugin(Star):
                 )
 
             last_error: Exception | None = None
-            video_url: str | None = None
-            download_headers: dict[str, str] | None = None
             used_pid: str | None = None
             for pid in candidates:
                 try:
@@ -6032,21 +6030,33 @@ class GiteeAIImagePlugin(Star):
                         if isinstance(candidate_headers, dict)
                         else None
                     )
-                    video_url = candidate_url
+                    # A provider is only considered successful after the media
+                    # has actually been downloaded/sent. This lets the chain
+                    # recover when task creation succeeds but content delivery
+                    # fails (the original 3365 failure mode).
+                    await self._send_video_result(
+                        event,
+                        candidate_url,
+                        download_headers=download_headers,
+                    )
                     used_pid = pid
                     break
                 except Exception as e:
                     last_error = e
-                    logger.warning("[视频] Provider=%s 失败: %s", pid, e)
+                    detail = str(e).strip() or repr(e)
+                    logger.warning(
+                        "[视频] Provider=%s 失败: %s (%s)",
+                        pid,
+                        detail,
+                        type(e).__name__,
+                    )
 
-            if not video_url:
-                raise RuntimeError(f"视频生成失败: {last_error}") from last_error
+            if not used_pid:
+                if last_error is not None:
+                    detail = str(last_error).strip() or repr(last_error)
+                    raise RuntimeError(f"视频生成失败: {detail}") from last_error
+                raise RuntimeError("视频生成失败: 没有可用的视频 provider")
 
-            await self._send_video_result(
-                event,
-                video_url,
-                download_headers=download_headers,
-            )
             await mark_success(event)
             if llm_tool_failure:
                 await self._append_plugin_conversation_note(
