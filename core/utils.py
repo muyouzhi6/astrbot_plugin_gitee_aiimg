@@ -5,9 +5,11 @@ Utility helpers for image extraction and downloads.
 import asyncio
 import base64
 import io
+import json
 import os
 import re
 from typing import Any, Awaitable, Callable
+from urllib.parse import unquote
 
 import aiohttp
 
@@ -373,6 +375,28 @@ def _extract_images_from_structure(
         if marker in seen:
             return
         seen.add(marker)
+
+    if isinstance(value, str):
+        # OneBot may expose raw_message as CQ text or a JSON-encoded segment list.
+        text = value.strip()
+        if text.startswith(("[", "{")):
+            try:
+                decoded = json.loads(text)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                decoded = None
+            if decoded is not None and decoded is not value:
+                _extract_images_from_structure(
+                    decoded, image_segs, image_refs, seen=seen
+                )
+                return
+        for match in re.finditer(r"\[CQ:image,([^\]]+)\]", text, re.IGNORECASE):
+            params: dict[str, str] = {}
+            for part in match.group(1).split(","):
+                key, separator, raw_value = part.partition("=")
+                if separator and key.strip():
+                    params[key.strip().lower()] = unquote(raw_value.strip())
+            _collect_image_refs_from_mapping(params, image_refs)
+        return
 
     if isinstance(value, Image):
         image_segs.append(value)

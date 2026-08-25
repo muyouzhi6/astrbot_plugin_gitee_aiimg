@@ -18,6 +18,14 @@ from astrbot.api import logger
 from .image_format import guess_image_mime_and_ext
 
 
+def _format_exception(exc: Exception) -> str:
+    """Keep transport failures diagnosable when their string is empty."""
+    detail = str(exc).strip()
+    if detail:
+        return detail
+    return type(exc).__name__
+
+
 @dataclass(frozen=True)
 class VideoResult:
     """Video URL plus optional headers required to download it."""
@@ -411,7 +419,7 @@ class Sora2VideoService:
                 logger.warning(
                     "[Sora2Video] %s 失败: %s，%.1fs 后重试...",
                     label,
-                    e,
+                    _format_exception(e),
                     delay,
                 )
                 await asyncio.sleep(delay)

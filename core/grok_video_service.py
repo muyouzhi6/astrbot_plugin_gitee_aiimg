@@ -93,6 +93,14 @@ def _origin_from_url(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}"
 
 
+def _format_exception(exc: Exception) -> str:
+    """Keep transport failures diagnosable when their string is empty."""
+    detail = str(exc).strip()
+    if detail:
+        return detail
+    return type(exc).__name__
+
+
 @dataclass(frozen=True)
 class VideoResult:
     """Video URL plus optional headers required to download it."""
@@ -574,7 +582,11 @@ class GrokVideoService:
                     if attempt >= self.create_max_retries:
                         raise
                     delay = self.retry_delay * (2**attempt) + random.uniform(0, 0.5)
-                    logger.warning("[GrokVideo] 创建失败: %s，%.1fs 后重试", exc, delay)
+                    logger.warning(
+                        "[GrokVideo] 创建失败: %s，%.1fs 后重试",
+                        _format_exception(exc),
+                        delay,
+                    )
                     await asyncio.sleep(delay)
 
             if data is None:
@@ -618,7 +630,7 @@ class GrokVideoService:
                         )
                         logger.warning(
                             "[GrokVideo] 轮询失败: %s，%.1fs 后重试",
-                            exc,
+                            _format_exception(exc),
                             delay,
                         )
                         await asyncio.sleep(delay)

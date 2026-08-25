@@ -378,6 +378,46 @@ class ReplyImageFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(images[0].url, "https://example.com/original.png")
         self.assertTrue(any(call[0] == "get_image" for call in api.calls))
 
+    async def test_raw_image_fallback_parses_cq_image_string(self):
+        utils = _load_utils_module()
+
+        def handler(action, params):
+            if action == "get_image" and params.get("file") == "img_cq":
+                return {"data": {"url": "https://example.com/cq.png"}}
+            raise RuntimeError(f"unexpected action={action} params={params}")
+
+        api = _DummyAPI(handler)
+        event = _RawDummyEvent(
+            [_BaseImage.fromFileSystem("/AstrBot/data/temp/missing-cq.jpg")],
+            "[CQ:image,file=img_cq]",
+            api=api,
+        )
+
+        images = await utils.get_raw_images_from_event(event)
+
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0].url, "https://example.com/cq.png")
+
+    async def test_raw_image_fallback_parses_json_string(self):
+        utils = _load_utils_module()
+
+        def handler(action, params):
+            if action == "get_image" and params.get("file") == "img_json":
+                return {"data": {"url": "https://example.com/json.png"}}
+            raise RuntimeError(f"unexpected action={action} params={params}")
+
+        api = _DummyAPI(handler)
+        event = _RawDummyEvent(
+            [],
+            '[{"type":"image","data":{"file":"img_json"}}]',
+            api=api,
+        )
+
+        images = await utils.get_raw_images_from_event(event)
+
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0].url, "https://example.com/json.png")
+
     async def test_collects_avatar_from_raw_cq_at_message(self):
         utils = _load_utils_module()
 
