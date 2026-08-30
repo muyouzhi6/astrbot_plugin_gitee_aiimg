@@ -409,6 +409,40 @@ def _load_module():
 
 
 class MainInitializeRequestModeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_edit_image_default_preserves_raw_provider_prompt_and_stops(self):
+        mod, _ = _load_module()
+        plugin = object.__new__(mod.GiteeAIImagePlugin)
+        calls = []
+
+        async def fake_do_edit(event, prompt, backend=None):
+            calls.append((event, prompt, backend))
+
+        plugin._do_edit = fake_do_edit
+
+        class DummyEvent:
+            message_str = "/aiedit @provider_id 把背景换成夜景街道 4K"
+
+            def __init__(self):
+                self.call_llm = False
+                self.stopped = False
+
+            def should_call_llm(self, value):
+                self.call_llm = value
+
+            def stop_event(self):
+                self.stopped = True
+
+        event = DummyEvent()
+
+        await plugin.edit_image_default(event, "@provider_id")
+
+        self.assertEqual(
+            calls,
+            [(event, "@provider_id 把背景换成夜景街道 4K", None)],
+        )
+        self.assertTrue(event.call_llm)
+        self.assertTrue(event.stopped)
+
     async def test_batch_concurrency_is_clamped_to_supported_range(self):
         mod, _ = _load_module()
         plugin = mod.GiteeAIImagePlugin(

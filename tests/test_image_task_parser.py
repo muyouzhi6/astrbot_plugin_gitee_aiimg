@@ -84,6 +84,20 @@ def test_parse_draw_command_with_provider_override():
     assert parsed.spec.effective_prompt.endswith("一张柜台前的展示图")
 
 
+def test_parse_edit_command_with_provider_and_resolution_suffix():
+    mod = _load_module()
+
+    parsed = mod.parse_image_request(
+        "/aiedit @provider_id 把背景换成夜景街道 4K",
+        known_provider_ids={"provider_id"},
+    )
+
+    assert parsed is not None
+    assert parsed.spec.provider_id == "provider_id"
+    assert parsed.spec.user_prompt == "把背景换成夜景街道"
+    assert parsed.spec.output == "4K"
+
+
 def test_parse_batch_draw_output_suffix_without_touching_prompt_body():
     mod = _load_module()
 

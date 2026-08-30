@@ -2484,7 +2484,17 @@ class GiteeAIImagePlugin(Star):
         需要同时发送或引用图片
         """
         event.should_call_llm(True)
-        await self._do_edit(event, prompt, backend=None)
+        # CommandFilter binds a plain ``str`` parameter to one whitespace token.
+        # Re-read the raw command so provider overrides do not consume the prompt.
+        raw_message = str(getattr(event, "message_str", "") or "").strip()
+        raw_parts = raw_message.split(maxsplit=1)
+        command_prompt = raw_parts[1].strip() if len(raw_parts) == 2 else ""
+        if not command_prompt:
+            command_prompt = prompt
+        try:
+            await self._do_edit(event, command_prompt, backend=None)
+        finally:
+            event.stop_event()
 
     @filter.command("重发图片")
     async def resend_last_image(self, event: AstrMessageEvent):
