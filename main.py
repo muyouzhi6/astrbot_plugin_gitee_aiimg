@@ -3074,12 +3074,13 @@ class GiteeAIImagePlugin(Star):
     async def aiimg_generate(
         self,
         event: AstrMessageEvent,
-        prompt: str,
+        prompt: str = "",
         mode: str = "auto",
         backend: str = "auto",
         output: str = "",
         aspect_ratio: str = "auto",
         resolution: str = "auto",
+        reason: str = "",
     ):
         """统一图片生成/改图/生活照（参考照）工具。
 
@@ -3107,6 +3108,15 @@ class GiteeAIImagePlugin(Star):
             resolution(string): 图片分辨率。默认 auto；用户明确要求时传 1K、2K 或 4K
         """
         prompt = (prompt or "").strip()
+        compatibility_reason = (reason or "").strip()
+        if not prompt and compatibility_reason:
+            # AstrBot v4.27.x permission-guarded tools can forward raw tool
+            # arguments without the legacy handler-side parameter filtering.
+            # Some providers put the natural-language request in ``reason``.
+            prompt = compatibility_reason
+            logger.info(
+                "[aiimg_generate] recovered prompt from compatibility reason argument"
+            )
         m = (mode or "auto").strip().lower()
 
         # === TTL 去重检查（防止 ToolLoop 重复调用）===
