@@ -1,6 +1,6 @@
 # AstrBot Gitee AI 图像生成插件
 
-[![Plugin Version](https://img.shields.io/badge/Version-v5.1.28-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
+[![Plugin Version](https://img.shields.io/badge/Version-v5.2.0-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16.0%2C%20%3C5-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![Platform](https://img.shields.io/badge/Primary-aiocqhttp-4caf50?style=for-the-badge)](#平台与限制)
 [![CI](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml/badge.svg)](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml)
@@ -8,12 +8,34 @@
 多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件。`v5` 的核心升级是 **LLM 生图不再阻塞对话**：Bot 接下单图或批量任务后可以继续聊天，期间始终知道任务状态和安全摘要，完整提示词按需查询，任务完成或失败后还会按当前人格主动回来回应。
 
 > [!IMPORTANT]
-> 这份文档对应 `v5.1.28` 配置结构。
+> 这份文档对应 `v5.2.0`，沿用现有配置结构。
 >
 > - `v5` 延续 `v4` 配置结构；从 `v3 / v2` 升级时仍需重新检查 WebUI 配置。
 > - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了发送图片前优化。
 > - 批量结果的“合并转发”当前只有 `aiocqhttp` 原生支持；其他平台会在开启回退时自动改为普通消息逐条发送。
 > - 历史更新内容见 [CHANGELOG.md](./CHANGELOG.md)。
+
+## v5.2：群聊历史图片与混合参考自拍
+
+配合 **ContextAware >=3.6.0 / AstrBot >=4.26.8**，`aiimg_generate` 可使用当前会话图片目录中的历史图片，而不要求用户重新发送或引用。
+
+| 用户意图 | 工具模式及参考 |
+|---|---|
+| “把刚才 Alice 的猫图改成水彩” | `mode=edit`，猫图 `subject` |
+| “抱着上图的猫自拍” | `mode=selfie_ref`，猫图 `object`；固定人物参考自动保留在前 |
+| “穿这件衣服，抱着刚才的猫自拍” | `selfie_ref`，衣服 `clothing`、猫图 `object` |
+| “把你刚给我生成的背景换掉，其他不动” | `edit`，选对应生成结果 ID 为 `subject` |
+| “再拍一张新自拍” | `selfie_ref`，需要保留的额外参考应重新明确选择 |
+
+工具增加两个可选参数：`reference_image_ids` 和同长度的 `reference_roles`。角色支持 `subject/style/clothing/object/pose/background`。没有历史引用时原有调用方式保持不变；指定了引用但图片不可用、角色缺失或模式不兼容时，任务明确失败，不会省略图片或降级纯文生图。传参由聊天模型完成，用户无需输入 ID；自然语言选择仍需在具体模型上验证。
+
+输入按“固定自拍身份 → 明确选择的参考 → 当前/引用附件”排列，附件按内容去重；显式选择历史图时不会自动混入 @头像。固定身份与显式不同角色保持各自位置，不会替换永久自拍参考。合计最多 8 张、单张 20 MiB、合计 64 MiB，包含身份图与当前附件。输入来自 ContextAware 保留的数据，可能已经过 Core 规范化或压缩，不承诺是原始上传像素；4K 输出参数保持原有规则。
+
+多张带角色的输入只路由到已声明保留有序多参考的后端（Gemini native、Gitee edit、OpenAI chat image、Vertex anonymous）。会静默只取首图、拼图或能力未知的后端不会用于这类任务；自动链路可继续尝试兼容后端，全部不支持时明确失败，不会少传一张图凑合生成。声明代表本地适配器完整传递图片；上游模型的数量限制和生成一致性仍由实际服务决定。
+
+后台任务在接单时保存输入和哈希，后续不读取旧消息。**成功发送的单图结果**会登记回 ContextAware，关联请求者、conversation、任务和父参考，供后续明确编辑。结果 ID 是短期索引；reset/new、插件重载或缓存过期后可能不可用。后台输入副本不受聊天缓存淘汰影响；进程重启/旧凭据失效后，不会恢复旧图片索引，任务元数据记录 `result_registration` 状态。
+
+本版联动覆盖 `aiimg_generate` 单图的同步和后台路径。`aiimg_batch_generate` 尚不支持历史引用 ID，传入时明确拒绝；不要把用户要求的批量偷偷拆成单图或丢掉参考。普通命令和已有批量仍按原消息附件规则工作。仅安装 Gitee、未安装兼容 ContextAware 时，原有功能仍可使用，历史引用不可用。
 
 ## v5.0 核心升级：Bot 可以边聊天边拍照
 

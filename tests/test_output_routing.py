@@ -254,3 +254,47 @@ def test_edit_can_disable_source_aspect_inference_for_selfie(modules):
     )
 
     assert backend.calls == [("selfie", 1, None, None)]
+
+
+def test_ordered_reference_guard_skips_unknown_backend_and_preserves_all_inputs(
+    modules,
+):
+    _, _, edit_router = modules
+    first, second = _AdaptiveEditBackend(), _AdaptiveEditBackend()
+    second.supports_ordered_references = True
+    router = edit_router.EditRouter(
+        {"features": {"edit": {"chain": ["first", "second"]}}},
+        imgr=object(),
+        data_dir=Path("/tmp"),
+        registry=_Registry({"first": first, "second": second}),
+    )
+    images = [_png_bytes((30, 20)), _png_bytes((20, 30))]
+    asyncio.run(
+        router.edit("identity plus cat", images, require_ordered_references=True)
+    )
+    assert not first.calls
+    assert second.calls[0][1] == 2
+
+
+def test_ordered_reference_guard_never_falls_back_to_collage_after_failure(modules):
+    _, _, edit_router = modules
+    first, second = _AdaptiveEditBackend(), _AdaptiveEditBackend()
+    first.supports_ordered_references = True
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("provider failed")
+
+    first.edit = fail
+    router = edit_router.EditRouter(
+        {"features": {"edit": {"chain": ["first", "second"]}}},
+        imgr=object(),
+        data_dir=Path("/tmp"),
+        registry=_Registry({"first": first, "second": second}),
+    )
+    with pytest.raises(
+        RuntimeError, match="cannot preserve separate ordered references"
+    ):
+        asyncio.run(
+            router.edit("cat", [b"one", b"two"], require_ordered_references=True)
+        )
+    assert not second.calls

@@ -58,6 +58,8 @@ class VertexAIAnonymousSettings:
 
 
 class VertexAIAnonymousBackend:
+    supports_ordered_references = True
+
     """Vertex AI Anonymous backend (recaptcha + GraphQL batchGraphql)."""
 
     def __init__(self, *, imgr, settings: VertexAIAnonymousSettings):

@@ -24,6 +24,8 @@ EDIT_TASK_TYPES = {"id", "style", "subject", "background", "element"}
 
 
 class GiteeEditBackend:
+    supports_ordered_references = True
+
     """Gitee AI 千问改图后端"""
 
     name = "Gitee"

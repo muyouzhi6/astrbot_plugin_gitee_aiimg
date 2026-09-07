@@ -20,6 +20,7 @@ import json
 import math
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,14 @@ from .core.gitee_sizes import (
 )
 from .core.image_format import decode_base64_image_payload, guess_image_mime_and_ext
 from .core.image_manager import ImageManager
+from .core.image_reference_bridge import (
+    RECEIPT_KEY,
+    REFERENCE_KEY,
+    ReferenceSelection,
+    compose_inputs,
+    resolve_selection,
+    single_event_image_call,
+)
 from .core.image_task_parser import (
     ImageTaskSpec,
     ParsedImageRequest,
@@ -345,6 +354,11 @@ class GiteeAIImagePlugin(Star):
             return None
         normalized = {
             "mode": mode,
+            "result_image_id": str(meta.get("result_image_id") or ""),
+            "result_registration": str(meta.get("result_registration") or ""),
+            "reference_sources": meta.get("reference_sources", [])
+            if isinstance(meta.get("reference_sources", []), list)
+            else [],
             "user_prompt": str(meta.get("user_prompt") or "").strip(),
             "effective_user_prompt": str(
                 meta.get("effective_user_prompt") or ""
@@ -527,6 +541,8 @@ class GiteeAIImagePlugin(Star):
         summary = {
             "status": "completed",
             "mode": mode,
+            "result_image_id": str(task_meta.get("result_image_id") or ""),
+            "reference_sources": task_meta.get("reference_sources", []),
             "continue_with": str(task_meta.get("continue_with") or mode).strip()
             or mode,
             "user_prompt": self._truncate_text(task_meta.get("user_prompt"), limit=180),
@@ -542,7 +558,7 @@ class GiteeAIImagePlugin(Star):
             summary["backend"] = str(task_meta.get("backend"))
 
         hint = (
-            "If the user asks to redo or adjust this selfie, continue with selfie_ref and reuse the same reference images unless the user explicitly changes them."
+            "For edits to this exact delivered image, use edit with result_image_id as subject. For a new selfie, use selfie_ref and explicitly reselect required extra references from the current catalog."
             if summary["continue_with"] == "selfie_ref"
             else "If the user asks for changes, continue from this completed image task instead of guessing a brand-new request."
         )
@@ -3070,7 +3086,98 @@ class GiteeAIImagePlugin(Star):
             event, prompt=prompt, mode="edit", backend=backend
         )
 
+    def _context_reference_peer(self):
+        try:
+            metadata = self.context.get_registered_star("astrbot_plugin_context_aware")
+            peer = getattr(metadata, "star_cls", None)
+            return (
+                peer if getattr(peer, "image_reference_api_version", 0) == 1 else None
+            )
+        except Exception:
+            return None
+
+    @staticmethod
+    def _context_selection(event):
+        getter = getattr(event, "get_extra", None)
+        value = getter(REFERENCE_KEY) if callable(getter) else None
+        return value if isinstance(value, ReferenceSelection) else None
+
+    async def _prepare_context_reference_request(self, event, image_ids, roles):
+        peer = self._context_reference_peer()
+        selection = await resolve_selection(peer, event, image_ids, roles)
+        setter = getattr(event, "set_extra", None)
+        if selection is not None:
+            if not callable(setter):
+                raise ValueError(
+                    "This event cannot retain a scoped reference selection"
+                )
+            setter(REFERENCE_KEY, selection)
+        elif callable(setter):
+            setter(REFERENCE_KEY, None)
+        if peer is not None and callable(setter):
+            try:
+                conversation_id = self._get_event_conversation_id(event)
+                if not conversation_id:
+                    conversation = await self._resolve_plugin_conversation(event)
+                    conversation_id = str(getattr(conversation, "cid", "") or "")
+                receipt = peer.capture_image_request(
+                    event, conversation_id=conversation_id
+                )
+                if selection and receipt is None:
+                    raise ValueError("Image context was cleared before task acceptance")
+                setter(RECEIPT_KEY, (peer, receipt) if receipt else None)
+            except Exception:
+                if selection:
+                    raise
+                setter(RECEIPT_KEY, None)
+        return selection
+
+    async def _publish_context_result(
+        self, event, image_path, task_meta, *, receipt=None, task_id=""
+    ):
+        getter = getattr(event, "get_extra", None)
+        captured = receipt or (getter(RECEIPT_KEY) if callable(getter) else None)
+        if not captured:
+            task_meta["result_registration"] = "unavailable_receipt"
+            return
+        peer, token = captured
+        # A reloaded peer must never accept an earlier instance's receipt.
+        if self._context_reference_peer() is not peer:
+            task_meta["result_registration"] = "peer_reloaded"
+            return
+        try:
+            path = Path(image_path)
+
+            def read_result():
+                with path.open("rb") as handle:
+                    return handle.read(20 * 1024 * 1024 + 1)
+
+            data = await asyncio.to_thread(read_result)
+            sources = task_meta.get("reference_sources", [])
+            result_id = await peer.register_generated_image(
+                token,
+                task_id=task_id or ("sync_" + uuid.uuid4().hex),
+                data=data,
+                parent_ids=[r["id"] for r in sources],
+            )
+            task_meta["result_registration"] = (
+                "registered" if result_id else "context_unavailable"
+            )
+            if result_id:
+                task_meta["result_image_id"] = result_id
+                logger.info(
+                    "[image-reference] Delivered result registered: %s", result_id
+                )
+        except Exception as exc:
+            task_meta["result_registration"] = "registration_failed"
+            # Delivery already succeeded. A recall cache failure must not turn
+            # it into a failed generation or trigger another paid request.
+            logger.warning(
+                "[image-reference] Result registration skipped: %s", type(exc).__name__
+            )
+
     @filter.llm_tool(name="aiimg_generate")
+    @single_event_image_call
     async def aiimg_generate(
         self,
         event: AstrMessageEvent,
@@ -3081,6 +3188,8 @@ class GiteeAIImagePlugin(Star):
         aspect_ratio: str = "auto",
         resolution: str = "auto",
         reason: str = "",
+        reference_image_ids: list[str] | None = None,
+        reference_roles: list[str] | None = None,
     ):
         """统一图片生成/改图/生活照（参考照）工具。
 
@@ -3106,6 +3215,8 @@ class GiteeAIImagePlugin(Star):
             output(string): 兼容输出参数。只有用户明确指定时才传；不得自行填入 1:1 或正方形默认值
             aspect_ratio(string): 图片比例。用户明确要求时照办；未指定时根据构图主动选择 16:9、9:16、4:3、3:4 等
             resolution(string): 图片分辨率。默认 auto；用户明确要求时传 1K、2K 或 4K
+            reference_image_ids(array[string]): 可选，本轮 ContextAware 目录中明确选中的图片 ID；最多8张，不接受路径。修改成图请用该结果ID并选择edit。
+            reference_roles(array[string]): 与图片ID一一对应：subject主体、style画风、clothing服装、object动物或物体、pose姿势、background背景。selfie_ref仍保留固定人物身份，猫图用object。
         """
         prompt = (prompt or "").strip()
         compatibility_reason = (reason or "").strip()
@@ -3138,6 +3249,44 @@ class GiteeAIImagePlugin(Star):
             await mark_success(event)
             return self._llm_tool_text_result(
                 "This image request is already being handled or was just handled. Do not submit it again unless the user explicitly asks for a new image."
+            )
+
+        try:
+            selection = await self._prepare_context_reference_request(
+                event, reference_image_ids, reference_roles
+            )
+            if selection:
+                if m not in {
+                    "auto",
+                    "edit",
+                    "img2img",
+                    "aiedit",
+                    "selfie_ref",
+                    "selfie",
+                    "ref",
+                    "text",
+                    "draw",
+                    "txt2img",
+                }:
+                    raise ValueError(
+                        "Explicit references require edit or selfie_ref mode"
+                    )
+                if m in {"text", "draw", "txt2img"}:
+                    raise ValueError(
+                        "Explicit reference images cannot be used in text-only mode"
+                    )
+                if m == "auto":
+                    m = (
+                        "selfie_ref"
+                        if await self._should_auto_selfie_ref(event, prompt)
+                        else "edit"
+                    )
+        except Exception as exc:
+            await self._signal_llm_tool_failure(event)
+            return self._llm_tool_text_result(
+                "Reference selection failed; no generation started. "
+                + BackgroundImageTaskManager.sanitize_error(exc)
+                + " Do not omit references or fall back to text generation."
             )
 
         if self._background_manager_for_event(event) is not None:
@@ -3227,6 +3376,8 @@ class GiteeAIImagePlugin(Star):
                     target_backend,
                     output_intent=output_intent,
                 )
+                if selection:
+                    task_meta["reference_sources"] = list(selection.sources)
                 return await self._finalize_llm_tool_image(
                     event, image_path, task_meta=task_meta
                 )
@@ -3299,7 +3450,7 @@ class GiteeAIImagePlugin(Star):
             if m == "auto" and not has_msg_images:
                 prefetched_edit_image_segs = await get_images_from_event(
                     event,
-                    include_avatar=True,
+                    include_avatar=not bool(self._context_selection(event)),
                     include_sender_avatar_fallback=False,
                 )
                 has_at_avatar_refs = bool(prefetched_edit_image_segs)
@@ -3323,29 +3474,40 @@ class GiteeAIImagePlugin(Star):
                 if image_segs is None:
                     image_segs = await get_images_from_event(
                         event,
-                        include_avatar=True,
+                        include_avatar=not bool(self._context_selection(event)),
                         include_sender_avatar_fallback=False,
                     )
                 bytes_images = await self._image_segs_to_bytes(image_segs)
+                reference_note = ""
+                if selection:
+                    bytes_images, reference_note = compose_inputs(
+                        selection, bytes_images
+                    )
                 if not bytes_images:
                     await self._signal_llm_tool_failure(event)
                     return self._llm_tool_text_result(
                         "Image editing could not continue because no usable input image was found in the current message. This request has ended."
                     )
 
+                effective_edit_prompt = prompt + (
+                    "\n\n" + reference_note if reference_note else ""
+                )
                 image_path = await self.edit.edit(
-                    prompt=prompt,
+                    prompt=effective_edit_prompt,
                     images=bytes_images,
+                    **({"require_ordered_references": True} if selection else {}),
                     backend=target_backend,
                     output_intent=output_intent,
                 )
                 task_meta = self._build_image_task_meta(
                     mode="edit",
                     user_prompt=prompt,
-                    effective_prompt=prompt,
+                    effective_prompt=effective_edit_prompt,
                     continue_with="edit",
                     backend=target_backend,
                 )
+                if selection:
+                    task_meta["reference_sources"] = list(selection.sources)
                 return await self._finalize_llm_tool_image(
                     event, image_path, task_meta=task_meta
                 )
@@ -3407,16 +3569,21 @@ class GiteeAIImagePlugin(Star):
         output: str = "",
         aspect_ratio: str = "auto",
         resolution: str = "auto",
+        reference_image_ids: list[str] | None = None,
+        reference_roles: list[str] | None = None,
     ):
         """规划并批量生成一组图片。
 
         使用建议（给 LLM 的决策规则）：
+        - 本工具尚不支持 ContextAware 历史图片ID，不可将历史参考请求转成无参考的批量生图。
         - 当用户明确想要一组不重复但同主题的图片时，优先调用这个工具。
         - 先规划多条不同 prompt，再批量执行，不要自己重复调用单图工具。
         - 用户明确指定数量时，count 必须原样传入，不得自行减少、拆分或拒绝。
         - 用户未指定比例时保持 aspect_ratio=auto，内部 planner 会为每张图按构图选择不同的合适比例。
 
         Args:
+            reference_image_ids(array[string]): 当前不支持历史引用；非空会明确拒绝，不会丢掉参考继续生成。
+            reference_roles(array[string]): 当前批量工具不支持历史引用角色。
             prompt(string): 用户的总要求。应包含整组图片共同要满足的条件。
             count(number): 目标数量，允许 1-32。用户明确指定时必须原样传入；未指定时默认 4。
             mode(string): auto=自动判断, text=文生图, edit=改图, selfie_ref=参考照自拍
@@ -3425,6 +3592,11 @@ class GiteeAIImagePlugin(Star):
             aspect_ratio(string): 整组固定比例。默认 auto，由内部 planner 逐图选择；用户明确要求时传 16:9、9:16、4:3 等
             resolution(string): 整组图片分辨率。默认 auto；用户明确要求时传 1K、2K 或 4K
         """
+        if reference_image_ids or reference_roles or self._context_selection(event):
+            await self._signal_llm_tool_failure(event)
+            return self._llm_tool_text_result(
+                "Batch generation does not yet support ContextAware reference IDs. No task was started; do not omit the references or silently reduce the requested count."
+            )
         prompt = str(prompt or "").strip()
         if not prompt:
             await self._signal_llm_tool_failure(event)
@@ -3973,6 +4145,14 @@ class GiteeAIImagePlugin(Star):
             )
         extra_segs = await get_images_from_event(event, include_avatar=False)
         extra_bytes = await self._image_segs_to_bytes(extra_segs)
+        selection = self._context_selection(event)
+        reference_note = ""
+        combined_images = [*ref_images, *extra_bytes]
+        if selection:
+            combined_images, reference_note = compose_inputs(
+                selection, extra_bytes, identity_images=ref_images
+            )
+            extra_bytes = combined_images[len(ref_images) :]
         effective_user_prompt = self._build_selfie_follow_up_prompt(
             prompt, follow_up_meta
         )
@@ -3983,6 +4163,11 @@ class GiteeAIImagePlugin(Star):
             life_context=life_context,
         )
 
+        if reference_note:
+            effective_prompt += (
+                "\n\n本次参考图用途（按此分配，覆盖通用额外参考说明）：\n"
+                + reference_note
+            )
         chain_override: list[dict] | None = None
         raw_chain = conf.get("chain", [])
         if isinstance(raw_chain, list):
@@ -4034,7 +4219,7 @@ class GiteeAIImagePlugin(Star):
             follow_up=follow_up_meta is not None,
             backend=backend,
         )
-        return [*ref_images, *extra_bytes], effective_prompt, options, task_meta
+        return combined_images, effective_prompt, options, task_meta
 
     async def _accept_background_single(
         self,
@@ -4157,7 +4342,7 @@ class GiteeAIImagePlugin(Star):
                     if resolved_mode == "auto" and not has_message_images:
                         image_segs = await get_images_from_event(
                             event,
-                            include_avatar=True,
+                            include_avatar=not bool(self._context_selection(event)),
                             include_sender_avatar_fallback=False,
                         )
                     use_edit = resolved_mode in {"edit", "img2img", "aiedit"} or (
@@ -4175,20 +4360,28 @@ class GiteeAIImagePlugin(Star):
                         if image_segs is None:
                             image_segs = await get_images_from_event(
                                 event,
-                                include_avatar=True,
+                                include_avatar=not bool(self._context_selection(event)),
                                 include_sender_avatar_fallback=False,
                             )
                         input_bytes = await self._image_segs_to_bytes(image_segs)
+                        selection = self._context_selection(event)
+                        reference_note = ""
+                        if selection:
+                            input_bytes, reference_note = compose_inputs(
+                                selection, input_bytes
+                            )
                         if not input_bytes:
                             raise RuntimeError(
                                 "No usable input image was found in the current message."
                             )
                         resolved_mode = "edit"
-                        effective_prompt = prompt
+                        effective_prompt = prompt + (
+                            "\n\n" + reference_note if reference_note else ""
+                        )
                         task_meta = self._build_image_task_meta(
                             mode="edit",
                             user_prompt=prompt,
-                            effective_prompt=prompt,
+                            effective_prompt=effective_prompt,
                             continue_with="edit",
                             backend=target_backend,
                         )
@@ -4210,6 +4403,11 @@ class GiteeAIImagePlugin(Star):
                             backend=target_backend,
                         )
 
+            selection = self._context_selection(event)
+            if selection:
+                task_meta["reference_sources"] = list(selection.sources)
+            getter = getattr(event, "get_extra", None)
+            reference_receipt = getter(RECEIPT_KEY) if callable(getter) else None
             input_paths, manifest = await manager.spool_inputs(task_id, input_bytes)
             spooled = bool(input_paths)
             scope = manager.scope_hash(
@@ -4223,6 +4421,7 @@ class GiteeAIImagePlugin(Star):
                 "mode": resolved_mode,
                 "backend": target_backend or "auto",
                 "output": self._output_intent_dict(output_intent),
+                "reference_sources": list(selection.sources) if selection else [],
             }
             fingerprint = manager.request_fingerprint(
                 scope,
@@ -4253,6 +4452,7 @@ class GiteeAIImagePlugin(Star):
                 ],
                 "current_attempt": 1,
                 "input_manifest": manifest,
+                "reference_sources": list(selection.sources) if selection else [],
                 "reference_source": options.get("reference_source", ""),
                 "reference_count": options.get("reference_count", 0),
                 "extra_reference_count": options.get("extra_reference_count", 0),
@@ -4284,6 +4484,7 @@ class GiteeAIImagePlugin(Star):
                         task_id,
                         job,
                         target,
+                        reference_receipt=reference_receipt,
                     ),
                 )
 
@@ -4342,6 +4543,11 @@ class GiteeAIImagePlugin(Star):
             image_path = await self.edit.edit(
                 prompt=job.effective_prompt,
                 images=images,
+                **(
+                    {"require_ordered_references": True}
+                    if job.task_meta.get("reference_sources")
+                    else {}
+                ),
                 backend=job.backend,
                 output_intent=intent,
             )
@@ -4350,6 +4556,11 @@ class GiteeAIImagePlugin(Star):
             image_path = await self.edit.edit(
                 prompt=job.effective_prompt,
                 images=images,
+                **(
+                    {"require_ordered_references": True}
+                    if job.task_meta.get("reference_sources")
+                    else {}
+                ),
                 backend=job.backend,
                 task_types=job.options.get("task_types"),
                 output_intent=intent,
@@ -4483,6 +4694,8 @@ class GiteeAIImagePlugin(Star):
         task_id: str,
         job: PreparedImageJob,
         target: TaskDeliveryTarget,
+        *,
+        reference_receipt=None,
     ) -> None:
         """Run one durable image task to generation, delivery, and notification.
 
@@ -4584,6 +4797,13 @@ class GiteeAIImagePlugin(Star):
                 response_digest=hashlib.sha256(str(image_path).encode()).hexdigest(),
             )
             self._remember_last_image(delivery_event, image_path)
+            await self._publish_context_result(
+                delivery_event,
+                image_path,
+                task_meta,
+                receipt=reference_receipt,
+                task_id=task_id,
+            )
             await self._save_last_image_task_meta(delivery_event, task_meta)
             record = await manager.transition(
                 task_id,
@@ -6392,6 +6612,7 @@ class GiteeAIImagePlugin(Star):
                 "Image generation finished, but sending the image to the user failed. This request has ended. Do not retry automatically unless the user explicitly asks."
             )
 
+        await self._publish_context_result(event, image_path, task_meta)
         await mark_success(event)
         await self._save_last_image_task_meta(event, task_meta)
         return self._build_image_task_completion_result(task_meta)
@@ -6673,6 +6894,13 @@ class GiteeAIImagePlugin(Star):
 
         # 3) 拼接输入图：参考照在前
         images = [*ref_images, *extra_bytes]
+        selection = self._context_selection(event)
+        reference_note = ""
+        if selection:
+            images, reference_note = compose_inputs(
+                selection, extra_bytes, identity_images=ref_images
+            )
+            extra_bytes = images[len(ref_images) :]
 
         effective_user_prompt = self._build_selfie_follow_up_prompt(
             prompt, follow_up_meta
@@ -6683,6 +6911,12 @@ class GiteeAIImagePlugin(Star):
             extra_refs=len(extra_bytes),
             life_context=life_context,
         )
+
+        if reference_note:
+            final_prompt += (
+                "\n\n本次参考图用途（按此分配，覆盖通用额外参考说明）：\n"
+                + reference_note
+            )
 
         chain_override: list[dict] | None = None
         use_edit_chain = bool(conf.get("use_edit_chain_when_empty", True))
@@ -6730,6 +6964,7 @@ class GiteeAIImagePlugin(Star):
         image_path = await self.edit.edit(
             prompt=final_prompt,
             images=images,
+            **({"require_ordered_references": True} if selection else {}),
             backend=backend,
             task_types=gitee_task_types,
             size=size,
@@ -6751,6 +6986,8 @@ class GiteeAIImagePlugin(Star):
             follow_up=follow_up_meta is not None,
             backend=backend,
         )
+        if selection:
+            task_meta["reference_sources"] = list(selection.sources)
         return image_path, task_meta
 
     async def _generate_selfie_image(

@@ -118,6 +118,7 @@ class EditRouter:
         default_output: str | None = None,
         chain_override: list | None = None,
         infer_source_aspect: bool = True,
+        require_ordered_references: bool = False,
     ) -> Path:
         feature = self._feature_conf()
         if not bool(feature.get("enabled", True)):
@@ -176,6 +177,17 @@ class EditRouter:
             except Exception as e:
                 last_error = e
                 logger.warning("[edit] Provider build failed: %s: %s", pid, e)
+                continue
+
+            if (
+                require_ordered_references
+                and len(images) > 1
+                and not getattr(backend_obj, "supports_ordered_references", False)
+            ):
+                last_error = RuntimeError(
+                    f"Provider {pid} cannot preserve separate ordered references; no images were dropped or collaged"
+                )
+                logger.warning("[edit] %s", last_error)
                 continue
 
             for attempt in range(max_attempts):

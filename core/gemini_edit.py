@@ -32,6 +32,8 @@ if TYPE_CHECKING:
 
 
 class GeminiEditBackend:
+    supports_ordered_references = True
+
     """Gemini 原生 API 图像后端（文生图 + 改图）。"""
 
     name = "Gemini"

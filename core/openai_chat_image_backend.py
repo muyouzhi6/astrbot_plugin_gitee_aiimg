@@ -617,6 +617,8 @@ def _extract_media_refs_from_sse_text(text: str) -> tuple[list[str], list[str]]:
 
 
 class OpenAIChatImageBackend:
+    supports_ordered_references = True
+
     """Image generation/edit via chat.completions (gateway-style).
 
     Many third-party gateways do NOT implement /v1/images/* at all, but will return images via chat content,
