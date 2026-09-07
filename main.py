@@ -21,7 +21,7 @@ import math
 import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +53,7 @@ from .core.background_tasks import (
     TaskDeliveryTarget,
 )
 from .core.batch_executor import BatchRunResult, run_batch
+from .core.reference_subject import describe_reference_objects
 from .core.debouncer import Debouncer
 from .core.draw_service import ImageDrawService
 from .core.edit_router import EditRouter
@@ -3194,6 +3195,7 @@ class GiteeAIImagePlugin(Star):
         """统一图片生成/改图/生活照（参考照）工具。
 
         使用建议（给 LLM 的决策规则）：
+        - 用户要求“几张/多张/一组”或数量大于1时，调用 aiimg_batch_generate 并保留同样的 reference_image_ids/reference_roles，不可缩成单张。
         - 用户发送/引用了图片，并要求"改图/换背景/换风格/修图/换衣服"等：用 mode=edit（或 mode=auto）
         - 用户要求"看看你/来一张你自己的生活照"，且已设置自拍参考照：用 mode=selfie_ref（或 mode=auto）
         - 纯文生图（用户没有给图片）：用 mode=text（或 mode=auto）
@@ -3229,7 +3231,6 @@ class GiteeAIImagePlugin(Star):
                 "[aiimg_generate] recovered prompt from compatibility reason argument"
             )
         m = (mode or "auto").strip().lower()
-
         # === TTL 去重检查（防止 ToolLoop 重复调用）===
         message_id = (
             getattr(getattr(event, "message_obj", None), "message_id", "") or ""
@@ -3559,6 +3560,7 @@ class GiteeAIImagePlugin(Star):
             await self._end_user_job(user_id, kind="image")
 
     @filter.llm_tool(name="aiimg_batch_generate")
+    @single_event_image_call
     async def aiimg_batch_generate(
         self,
         event: AstrMessageEvent,
@@ -3575,15 +3577,16 @@ class GiteeAIImagePlugin(Star):
         """规划并批量生成一组图片。
 
         使用建议（给 LLM 的决策规则）：
-        - 本工具尚不支持 ContextAware 历史图片ID，不可将历史参考请求转成无参考的批量生图。
+        - 支持 ContextAware 历史图片ID：整组共享明确选定的参考图及用途。抱着上图动物拍几张用selfie_ref和object；批量改原图用edit和subject。
+        - 不得遗漏历史参考或把多张请求缩成单张；几张未指定数量时默认4张。
         - 当用户明确想要一组不重复但同主题的图片时，优先调用这个工具。
         - 先规划多条不同 prompt，再批量执行，不要自己重复调用单图工具。
         - 用户明确指定数量时，count 必须原样传入，不得自行减少、拆分或拒绝。
         - 用户未指定比例时保持 aspect_ratio=auto，内部 planner 会为每张图按构图选择不同的合适比例。
 
         Args:
-            reference_image_ids(array[string]): 当前不支持历史引用；非空会明确拒绝，不会丢掉参考继续生成。
-            reference_roles(array[string]): 当前批量工具不支持历史引用角色。
+            reference_image_ids(array[string]): 整组共享的ContextAware图片ID，最多8张；历史引用需要后台任务模式。
+            reference_roles(array[string]): 与ID一一对应：subject、style、clothing、object、pose、background。
             prompt(string): 用户的总要求。应包含整组图片共同要满足的条件。
             count(number): 目标数量，允许 1-32。用户明确指定时必须原样传入；未指定时默认 4。
             mode(string): auto=自动判断, text=文生图, edit=改图, selfie_ref=参考照自拍
@@ -3592,11 +3595,6 @@ class GiteeAIImagePlugin(Star):
             aspect_ratio(string): 整组固定比例。默认 auto，由内部 planner 逐图选择；用户明确要求时传 16:9、9:16、4:3 等
             resolution(string): 整组图片分辨率。默认 auto；用户明确要求时传 1K、2K 或 4K
         """
-        if reference_image_ids or reference_roles or self._context_selection(event):
-            await self._signal_llm_tool_failure(event)
-            return self._llm_tool_text_result(
-                "Batch generation does not yet support ContextAware reference IDs. No task was started; do not omit the references or silently reduce the requested count."
-            )
         prompt = str(prompt or "").strip()
         if not prompt:
             await self._signal_llm_tool_failure(event)
@@ -3621,7 +3619,24 @@ class GiteeAIImagePlugin(Star):
                 requested_count,
                 target_count,
             )
-        resolved_mode = await self._resolve_llm_batch_mode(event, mode, prompt)
+        try:
+            selection = await self._prepare_context_reference_request(
+                event, reference_image_ids, reference_roles
+            )
+            resolved_mode = await self._resolve_llm_batch_mode(event, mode, prompt)
+            if selection and resolved_mode not in {"edit", "selfie_ref"}:
+                raise ValueError("Explicit references require edit or selfie_ref mode")
+            if selection and self._background_manager_for_event(event) is None:
+                raise ValueError(
+                    "Historical reference batches require background task mode"
+                )
+        except Exception as exc:
+            await self._signal_llm_tool_failure(event)
+            return self._llm_tool_text_result(
+                "Reference selection failed; no batch started. "
+                + BackgroundImageTaskManager.sanitize_error(exc)
+                + " Do not omit references or reduce the requested count."
+            )
         target_backend = self._resolve_target_backend(backend)
 
         output = (output or "").strip()
@@ -4161,13 +4176,9 @@ class GiteeAIImagePlugin(Star):
             effective_user_prompt,
             extra_refs=len(extra_bytes),
             life_context=life_context,
+            reference_note=reference_note,
         )
 
-        if reference_note:
-            effective_prompt += (
-                "\n\n本次参考图用途（按此分配，覆盖通用额外参考说明）：\n"
-                + reference_note
-            )
         chain_override: list[dict] | None = None
         raw_chain = conf.get("chain", [])
         if isinstance(raw_chain, list):
@@ -4206,6 +4217,7 @@ class GiteeAIImagePlugin(Star):
             "reference_count": len(ref_images),
             "extra_reference_count": len(extra_bytes),
             "life_context": life_context,
+            "reference_note": reference_note,
         }
         task_meta = self._build_image_task_meta(
             mode="selfie_ref",
@@ -4688,6 +4700,23 @@ class GiteeAIImagePlugin(Star):
                 return
             await asyncio.sleep(0.25)
 
+    async def _describe_spooled_objects(self, manager, job, umo):
+        sources = (
+            job.task_meta if isinstance(job, PreparedImageJob) else job.options
+        ).get("reference_sources", [])
+        if not any(source.get("role") == "object" for source in sources):
+            return "", "not_needed"
+        try:
+            provider = self.context.get_using_provider(umo=umo)
+        except Exception:
+            return "", "vision_unavailable"
+        images = await manager.read_spooled_inputs(
+            job.input_paths, job.options.get("input_manifest")
+        )
+        return await describe_reference_objects(
+            provider, images, sources, int(job.options.get("reference_count") or 0)
+        )
+
     async def _run_background_single(
         self,
         manager: BackgroundImageTaskManager,
@@ -4709,10 +4738,23 @@ class GiteeAIImagePlugin(Star):
         try:
 
             async def provider_call() -> tuple[Path, dict[str, Any]]:
+                nonlocal job
+                note, state = await self._describe_spooled_objects(
+                    manager, job, target.umo
+                )
+                prompt = job.effective_prompt + ("\n\n" + note if note else "")
+                meta = {
+                    **job.task_meta,
+                    "reference_vision": state,
+                    "effective_prompt": prompt,
+                }
+                job = replace(job, effective_prompt=prompt, task_meta=meta)
                 await manager.transition(
                     task_id,
                     "running",
                     {
+                        "effective_prompt": job.effective_prompt,
+                        "task_meta": job.task_meta,
                         "attempts": [
                             {
                                 "attempt": 1,
@@ -4721,7 +4763,7 @@ class GiteeAIImagePlugin(Star):
                                 "state": "running",
                                 "error_code": "",
                             }
-                        ]
+                        ],
                     },
                 )
                 return await self._execute_prepared_image_job(manager, job)
@@ -5243,6 +5285,11 @@ class GiteeAIImagePlugin(Star):
                 aspect_ratio=aspect_ratio,
                 resolution=resolution,
             )
+            selection = self._context_selection(event)
+            getter = getattr(event, "get_extra", None)
+            reference_receipt = getter(RECEIPT_KEY) if callable(getter) else None
+            if selection and resolved_mode not in {"edit", "selfie_ref"}:
+                raise ValueError("Explicit references require edit or selfie_ref mode")
             input_bytes: list[bytes] = []
             options: dict[str, Any] = {}
             if resolved_mode == "draw":
@@ -5261,7 +5308,14 @@ class GiteeAIImagePlugin(Star):
                     raise RuntimeError(
                         "The requested batch image editing tool is disabled."
                     )
-                input_bytes = await self._prepare_edit_image_bytes(event)
+                if selection:
+                    native = await get_images_from_event(event, include_avatar=False)
+                    input_bytes, reference_note = compose_inputs(
+                        selection, await self._image_segs_to_bytes(native)
+                    )
+                    options["reference_note"] = reference_note
+                else:
+                    input_bytes = await self._prepare_edit_image_bytes(event)
             elif resolved_mode == "selfie_ref":
                 if not self._is_selfie_enabled() or not self._is_selfie_llm_enabled():
                     raise RuntimeError("The requested batch selfie tool is disabled.")
@@ -5270,6 +5324,9 @@ class GiteeAIImagePlugin(Star):
                     prompt,
                     target_backend,
                 )
+
+            if selection:
+                options["reference_sources"] = list(selection.sources)
 
             input_paths, manifest = await manager.spool_inputs(task_id, input_bytes)
             spooled = bool(input_paths)
@@ -5285,6 +5342,7 @@ class GiteeAIImagePlugin(Star):
                 "mode": resolved_mode,
                 "backend": target_backend or "auto",
                 "output": self._output_intent_dict(output_intent),
+                "reference_sources": options.get("reference_sources", []),
             }
             fingerprint = manager.request_fingerprint(
                 scope,
@@ -5312,6 +5370,7 @@ class GiteeAIImagePlugin(Star):
                 "cancelled_count": 0,
                 "unknown_count": 0,
                 "input_manifest": manifest,
+                "reference_sources": options.get("reference_sources", []),
                 "reference_source": options.get("reference_source", ""),
                 "reference_count": options.get("reference_count", 0),
                 "extra_reference_count": options.get("extra_reference_count", 0),
@@ -5350,6 +5409,7 @@ class GiteeAIImagePlugin(Star):
                         task_id,
                         job,
                         target,
+                        reference_receipt=reference_receipt,
                     ),
                 )
 
@@ -5444,6 +5504,8 @@ class GiteeAIImagePlugin(Star):
         task_id: str,
         job: PreparedBatchJob,
         target: TaskDeliveryTarget,
+        *,
+        reference_receipt=None,
     ) -> None:
         """Plan, fairly generate, and sequentially deliver one image batch.
 
@@ -5456,6 +5518,15 @@ class GiteeAIImagePlugin(Star):
 
         child_tasks: list[asyncio.Task[Any]] = []
         try:
+            note, state = await manager.run_planner(
+                lambda: self._describe_spooled_objects(manager, job, target.umo)
+            )
+            options = {**job.options, "reference_vision": state}
+            if note:
+                options["reference_note"] = (
+                    str(options.get("reference_note") or "") + "\n" + note
+                )
+            job = replace(job, options=options)
             planned_items = await asyncio.wait_for(
                 manager.run_planner(
                     lambda: self._plan_batch_prompt_items(
@@ -5484,6 +5555,11 @@ class GiteeAIImagePlugin(Star):
                         planned.prompt,
                         extra_refs=int(job.options.get("extra_reference_count") or 0),
                         life_context=job.options.get("life_context"),
+                        reference_note=str(job.options.get("reference_note") or ""),
+                    )
+                elif job.options.get("reference_note"):
+                    effective_prompt += "\n\n参考图用途：\n" + str(
+                        job.options["reference_note"]
                     )
                 item_intent = merge_output_intents(
                     common_intent,
@@ -5527,6 +5603,14 @@ class GiteeAIImagePlugin(Star):
                         continue_with="text" if job.mode == "draw" else "edit",
                         backend=job.backend,
                     )
+                if job.options.get("reference_sources"):
+                    task_meta["reference_sources"] = list(
+                        job.options["reference_sources"]
+                    )
+                task_meta["reference_vision"] = job.options.get(
+                    "reference_vision", "not_needed"
+                )
+                item["task_meta"] = task_meta
                 items.append(item)
                 child_jobs.append(
                     PreparedImageJob(
@@ -5644,12 +5728,20 @@ class GiteeAIImagePlugin(Star):
                         str(image_path).encode()
                     ).hexdigest(),
                 )
+                await self._publish_context_result(
+                    delivery_event,
+                    image_path,
+                    task_meta,
+                    receipt=reference_receipt,
+                    task_id=item_id,
+                )
                 self._remember_last_image(delivery_event, image_path)
                 await self._save_last_image_task_meta(delivery_event, task_meta)
                 await manager.update_item(
                     task_id,
                     item_id,
                     {
+                        "task_meta": task_meta,
                         "state": "completed",
                         "image_generated": True,
                         "image_sent": True,
@@ -6125,6 +6217,9 @@ class GiteeAIImagePlugin(Star):
             and await self._should_auto_selfie_ref(event, prompt)
         ):
             return "selfie_ref"
+
+        if self._context_selection(event):
+            return "edit"
 
         has_msg_images = await self._has_message_images(event)
         if has_msg_images:
@@ -6797,9 +6892,16 @@ class GiteeAIImagePlugin(Star):
         prompt: str,
         extra_refs: int,
         life_context: dict[str, Any] | None = None,
+        reference_note: str = "",
     ) -> str:
         conf = self._get_selfie_conf()
         prefix = str(conf.get("prompt_prefix", "") or "").strip()
+        if reference_note and not prefix:
+            prefix = (
+                "根据用户要求制作人物与参考主体的合影。第1张图仅提供人物身份；"
+                "其余图片严格按各自用途保留具体主体，照片质感仅默认作用于人物和环境。"
+                "主体形象的夸张比例、原有材质和画风均是身份特征，不要纠正为普通写实形象。"
+            )
         if not prefix:
             prefix = (
                 "请根据参考图创作一张符合用户要求的人像图片：\n"
@@ -6808,6 +6910,19 @@ class GiteeAIImagePlugin(Star):
                 "3) 用户指定的图像类型、拍摄视角、构图、动作、光线、色调和风格具有最高优先级，不得擅自改成其它拍摄方式或摄影风格。\n"
                 "4) 未指定风格时使用自然真实的照片质感，保留自然光影和真实皮肤纹理，细节清楚但不过度锐化、磨皮或美化。\n"
                 "5) 不要拼图，不要水印，避免明显失真或不合理细节。"
+            )
+
+        if reference_note:
+            # The legacy default treats all extra images as scene/style refs.
+            # Replace that exact clause rather than appending contradictory
+            # animal/object identity requirements below it.
+            prefix = prefix.replace(
+                "2) 如果还有其它参考图，请将它们仅作为服装/姿势/构图/场景的参考。",
+                "2) 每张参考图按下方用途分别约束人物、动物、物体或场景，不得把具体主体降为泛泛的风格参考。",
+            )
+            prefix += (
+                "\n\n本次参考图用途（优先于通用照片风格和额外参考默认说明，用户明确修改要求仍优先）：\n"
+                + reference_note
             )
 
         user_prompt = (prompt or "").strip() or "自然真实的人像照片"
@@ -6832,6 +6947,11 @@ class GiteeAIImagePlugin(Star):
             "也不要无故添加拍摄设备或拍摄界面。人物手势和手持日常物品遵循用户要求。"
             "以上规则只用于保持拍摄逻辑一致，不得覆盖或改写用户明确要求。"
         )
+        if reference_note:
+            capture_policy = (
+                "拍摄设备只在用户明确要求时入镜；不要把参考图里的物品误作额外拍摄设备。"
+                "保持用户要求的视角、动作和持物。无水印、不拼图。"
+            )
         extra_ref_note = f"\n（额外参考图数量：{extra_refs}）" if extra_refs > 0 else ""
         return (
             f"{prefix}{extra_ref_note}{life_context_note}\n\n"
@@ -6906,17 +7026,24 @@ class GiteeAIImagePlugin(Star):
             prompt, follow_up_meta
         )
         life_context = await self._get_life_context_without_llm()
+        vision_state = "not_needed"
+        if selection:
+            try:
+                provider = self.context.get_using_provider(umo=event.unified_msg_origin)
+            except Exception:
+                provider = None
+            note, vision_state = await describe_reference_objects(
+                provider, images, selection.sources, len(ref_images)
+            )
+            if note:
+                reference_note += "\n" + note
+
         final_prompt = self._build_selfie_prompt(
             effective_user_prompt,
             extra_refs=len(extra_bytes),
             life_context=life_context,
+            reference_note=reference_note,
         )
-
-        if reference_note:
-            final_prompt += (
-                "\n\n本次参考图用途（按此分配，覆盖通用额外参考说明）：\n"
-                + reference_note
-            )
 
         chain_override: list[dict] | None = None
         use_edit_chain = bool(conf.get("use_edit_chain_when_empty", True))
@@ -6988,6 +7115,7 @@ class GiteeAIImagePlugin(Star):
         )
         if selection:
             task_meta["reference_sources"] = list(selection.sources)
+            task_meta["reference_vision"] = vision_state
         return image_path, task_meta
 
     async def _generate_selfie_image(

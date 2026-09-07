@@ -188,6 +188,14 @@ def _build_collage(images: list[bytes]) -> bytes:
 class OpenAICompatBackend:
     """OpenAI-compatible Images API backend (generate/edit)."""
 
+    @staticmethod
+    def _supports_multiple_images(model: str) -> bool:
+        return model.startswith("gpt-image-") or model == "chatgpt-image-latest"
+
+    @property
+    def supports_ordered_references(self) -> bool:
+        return self.supports_edit and self._supports_multiple_images(self.default_model)
+
     def __init__(
         self,
         *,
@@ -522,7 +530,11 @@ class OpenAICompatBackend:
                 )
                 client = await self._recreate_client(key)
                 resp = await client.images.generate(**kwargs)
-            elif final_size == "4096x4096" and self._is_invalid_size_error(e):
+            elif (
+                final_size == "4096x4096"
+                and not self._supports_multiple_images(final_model)
+                and self._is_invalid_size_error(e)
+            ):
                 logger.warning(
                     f"[OpenAICompat][generate] 4096x4096 可能不受该后端支持，尝试降级到 2048x2048: {e}"
                 )
@@ -585,10 +597,18 @@ class OpenAICompatBackend:
                 final_size,
             )
 
-        # Some providers only accept a single input image for edits.
-        packed = _build_collage(images) if len(images) > 1 else images[0]
-        mime, ext = guess_image_mime_and_ext(packed)
-        upload = _bytes_to_upload_file(packed, f"input.{ext}")
+        if self._supports_multiple_images(final_model) and len(images) > 1:
+            upload = []
+            for index, image_bytes in enumerate(images, start=1):
+                _, ext = guess_image_mime_and_ext(image_bytes)
+                upload.append(
+                    _bytes_to_upload_file(image_bytes, f"reference_{index}.{ext}")
+                )
+        else:
+            # Legacy Images-compatible models may accept only one image.
+            packed = _build_collage(images) if len(images) > 1 else images[0]
+            _, ext = guess_image_mime_and_ext(packed)
+            upload = _bytes_to_upload_file(packed, f"input.{ext}")
 
         kwargs: dict = {
             "model": final_model,
@@ -616,7 +636,11 @@ class OpenAICompatBackend:
                 )
                 client = await self._recreate_client(key)
                 resp = await client.images.edit(**kwargs)
-            elif final_size == "4096x4096" and self._is_invalid_size_error(e):
+            elif (
+                final_size == "4096x4096"
+                and not self._supports_multiple_images(final_model)
+                and self._is_invalid_size_error(e)
+            ):
                 logger.warning(
                     f"[OpenAICompat][edit] 4096x4096 可能不受该后端支持，尝试降级到 2048x2048: {e}"
                 )

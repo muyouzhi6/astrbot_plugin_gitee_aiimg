@@ -1054,8 +1054,8 @@ tests/test_background_pipeline_event.py
 禁止修改：
 
 ```text
-/Users/lifeilong/Projects/astrbot-dev/AstrBot/**
-/Users/lifeilong/Projects/astrbot_plugin_context_aware/**
+AstrBot Core 仓库/**
+astrbot_plugin_context_aware 仓库/**
 京东云 AstrBot Core 文件和容器镜像
 ```
 

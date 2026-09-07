@@ -283,7 +283,7 @@ async def test_same_event_concurrent_call_cannot_replace_selection():
 
 
 @pytest.mark.asyncio
-async def test_batch_explicit_history_references_fail_before_dispatch():
+async def test_batch_history_references_require_background_before_dispatch():
     mod, plugin, peer = setup_plugin()
     plugin._accept_background_batch = AsyncMock()
     result = await plugin.aiimg_batch_generate(
@@ -293,7 +293,7 @@ async def test_batch_explicit_history_references_fail_before_dispatch():
         reference_image_ids=["ca_cat"],
         reference_roles=["subject"],
     )
-    assert "does not yet support" in result.content[0].text
+    assert "require background task mode" in result.content[0].text
     plugin._accept_background_batch.assert_not_awaited()
 
 
@@ -319,3 +319,172 @@ async def test_identical_explicit_bytes_keep_distinct_roles_and_indices():
     assert "参考图 2" in prompt and "参考图 3" in prompt
     with pytest.raises(ValueError):
         mod.compose_inputs(selection, [], identity_images=[b"face"] * 7)
+
+
+def test_selfie_object_reference_preserves_specific_stylized_subject_without_conflicting_defaults():
+    mod, plugin, peer = setup_plugin()
+    plugin._get_selfie_conf = lambda: {}
+    # Production role text: don't substitute a cat-shaped generic concept.
+    from importlib import import_module
+
+    bridge = import_module(mod.__package__ + ".core.image_reference_bridge")
+    note = bridge.ROLE_TEXT["object"]
+    prompt = plugin._build_selfie_prompt(
+        "抱着图里的猫", extra_refs=1, reference_note=note
+    )
+    assert "仅作为服装/姿势/构图/场景" not in prompt
+    assert "不自动替换成普通写实动物" in prompt
+    assert "用户明确要求改变主体造型或风格时" in prompt
+    assert prompt.index("本次参考图用途") < prompt.index("用户要求（最高优先级）")
+    ordinary = plugin._build_selfie_prompt("自拍", extra_refs=1)
+    assert "仅作为服装/姿势/构图/场景" in ordinary
+
+
+@pytest.mark.asyncio
+async def test_batch_auto_references_dispatches_edit_and_retains_count():
+    mod, plugin, peer = setup_plugin()
+    plugin._background_manager_for_event = lambda e: object()
+    plugin._accept_background_batch = AsyncMock(return_value="accepted")
+    result = await plugin.aiimg_batch_generate(
+        _Event(),
+        prompt="four edits",
+        count=4,
+        reference_image_ids=["ca_cat"],
+        reference_roles=["subject"],
+    )
+    assert result == "accepted"
+    assert plugin._accept_background_batch.call_args.kwargs["count"] == 4
+    assert plugin._accept_background_batch.call_args.kwargs["mode"] == "edit"
+
+
+@pytest.mark.asyncio
+async def test_batch_text_mode_cannot_discard_explicit_reference():
+    mod, plugin, peer = setup_plugin()
+    plugin._accept_background_batch = AsyncMock()
+    result = await plugin.aiimg_batch_generate(
+        _Event(),
+        prompt="four images",
+        mode="text",
+        reference_image_ids=["ca_cat"],
+        reference_roles=["object"],
+    )
+    assert "no batch started" in result.content[0].text
+    plugin._accept_background_batch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,role", [("selfie_ref", "object"), ("edit", "subject")])
+async def test_batch_reference_lifecycle_spools_roles_and_registers_only_delivered_children(
+    tmp_path, mode, role
+):
+    mod, plugin, peer = setup_plugin()
+    manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
+    await manager.start()
+    captured = []
+    try:
+        plugin._background_manager_for_event = lambda e: manager
+        plugin._build_background_delivery_target = AsyncMock(return_value=_target(mod))
+        plugin._get_selfie_conf = lambda: {}
+        plugin._is_selfie_enabled = lambda: True
+        plugin._is_selfie_llm_enabled = lambda: True
+        plugin._get_selfie_reference_paths = AsyncMock(
+            return_value=([Path("identity")], "webui")
+        )
+        plugin._read_paths_bytes = AsyncMock(return_value=[b"identity-photo"])
+        mod.get_images_from_event = AsyncMock(return_value=[])
+        plugin._image_segs_to_bytes = AsyncMock(return_value=[])
+        plugin._get_life_context_without_llm = AsyncMock(return_value={})
+        plugin._get_selfie_default_output = lambda: ""
+        manager.start_worker = lambda task_id, factory: captured.append(factory)
+        event = _Event()
+        result = await plugin.aiimg_batch_generate(
+            event,
+            prompt="three variants",
+            count=3,
+            mode=mode,
+            reference_image_ids=["ca_cat"],
+            reference_roles=[role],
+        )
+        task_id = json.loads(result.content[0].text)["task_id"]
+        record = await manager.get_task(task_id)
+        assert record["reference_sources"][0]["id"] == "ca_cat"
+        assert len(record["input_manifest"]) == (2 if mode == "selfie_ref" else 1)
+        # Original platform event and recall cache are gone before planner/provider.
+        event._extras.clear()
+        peer.rows.clear()
+        plugin._plan_batch_prompt_items = AsyncMock(
+            return_value=[
+                mod.PlannedPromptItem(
+                    title=str(i),
+                    prompt=f"variant-{i}",
+                    variation_focus=["pose"],
+                    aspect_ratio="3:4",
+                )
+                for i in range(3)
+            ]
+        )
+        plugin._describe_spooled_objects = AsyncMock(
+            return_value=("参考图可见特征：大黑眼睛", "described")
+        )
+        seen = []
+
+        async def edit_call(prompt, images, **kwargs):
+            assert images == (
+                [b"identity-photo", b"cat-reference"]
+                if mode == "selfie_ref"
+                else [b"cat-reference"]
+            )
+            assert kwargs["require_ordered_references"] is True
+            assert "参考图" in prompt
+            assert "大黑眼睛" in prompt
+            if mode == "selfie_ref":
+                assert "仅作为服装/姿势/构图/场景" not in prompt
+                assert "主体抠图合成" in prompt
+            seen.append(prompt)
+            path = tmp_path / (f"result-{len(seen)}.png")
+            path.write_bytes(b"result-bytes")
+            return path
+
+        plugin.edit = SimpleNamespace(edit=edit_call)
+        send_count = 0
+
+        async def send_once(target, path):
+            nonlocal send_count
+            send_count += 1
+            if send_count == 2:
+                raise RuntimeError("controlled delivery failure")
+            return _Event()
+
+        plugin._send_background_image_once = send_once
+        plugin._wait_for_background_ack = AsyncMock()
+        plugin._wait_background_send_gate = AsyncMock()
+        plugin._dispatch_background_completion = AsyncMock()
+        plugin._save_last_image_task_meta = AsyncMock()
+        await captured[0]()
+        record = await manager.get_task(task_id)
+        plugin._describe_spooled_objects.assert_awaited_once()
+        assert len(seen) == 3
+        assert record["sent_count"] == 2
+        assert record["state"] == "partial"
+        assert len(peer.registered) == 2
+        assert [r[1]["task_id"] for r in peer.registered] == [
+            task_id + "_01",
+            task_id + "_03",
+        ]
+        assert all(r[1]["parent_ids"] == ["ca_cat"] for r in peer.registered)
+        assert record["items"][0]["task_meta"]["result_image_id"] == "ca_new_result"
+        assert "result_image_id" not in record["items"][1]["task_meta"]
+    finally:
+        await manager.close()
+
+
+def test_bound_selfie_preserves_custom_prefix_and_explicit_user_transform():
+    mod, plugin, peer = setup_plugin()
+    plugin._get_selfie_conf = lambda: {"prompt_prefix": "自定义人物风格规则"}
+    prompt = plugin._build_selfie_prompt(
+        "把猫改成水彩画风", 1, reference_note="object role"
+    )
+    assert "自定义人物风格规则" in prompt
+    assert "用户明确修改要求仍优先" in prompt
+    assert "用户要求（最高优先级）：把猫改成水彩画风" in prompt
+    assert "object role" in prompt

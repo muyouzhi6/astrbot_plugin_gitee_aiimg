@@ -664,13 +664,14 @@ class GeminiEditBackend:
         )
 
         final_prompt = (
-            f"Re-imagine the attached image based on this instruction: {prompt}. "
+            f"Follow the requested edit or composition using the attached reference images in their numbered order: {prompt}. "
             f"Generate a high quality {final_resolution} resolution image. "
             f"Output the transformed image directly."
         )
 
         parts: list[dict] = [{"text": final_prompt}]
-        for img_bytes in images:
+        for index, img_bytes in enumerate(images, start=1):
+            parts.append({"text": f"Reference image {index} (参考图 {index}):"})
             mime, _ = guess_image_mime_and_ext(img_bytes)
             parts.append(
                 {

@@ -342,6 +342,37 @@ class GeminiEditAuthHeaderTests(unittest.IsolatedAsyncioTestCase):
             {"imageSize": "4K", "aspectRatio": "16:9"},
         )
 
+    async def test_edit_preserves_numbered_image_order_and_neutral_instruction(self):
+        import base64
+
+        mod = _load_module()
+        manager = types.SimpleNamespace(
+            save_image=AsyncMock(return_value=Path("out.png"))
+        )
+        backend = mod.GeminiEditBackend(
+            imgr=manager,
+            settings={"api_keys": ["test"], "api_url": "https://example.com"},
+        )
+        backend._request = AsyncMock(return_value={})
+        backend._extract_images_with_fallback = AsyncMock(return_value=[b"output"])
+        await backend.edit(
+            "keep the exact cat",
+            [b"identity", b"cat"],
+            resolution="4K",
+            aspect_ratio="3:4",
+        )
+        parts = backend._request.call_args.args[0]
+        self.assertNotIn("Re-imagine", parts[0]["text"])
+        self.assertIn("keep the exact cat", parts[0]["text"])
+        self.assertIn("参考图 1", parts[1]["text"])
+        self.assertEqual(base64.b64decode(parts[2]["inlineData"]["data"]), b"identity")
+        self.assertIn("参考图 2", parts[3]["text"])
+        self.assertEqual(base64.b64decode(parts[4]["inlineData"]["data"]), b"cat")
+        self.assertEqual(
+            backend._request.call_args.kwargs,
+            {"resolution": "4K", "aspect_ratio": "3:4"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

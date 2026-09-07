@@ -720,5 +720,60 @@ class OpenAICompatOutputFormatTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class OpenAIOrderedReferenceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_gpt_images_uploads_separate_ordered_files_without_collage(self):
+        from unittest.mock import AsyncMock, patch
+
+        _load_module()
+        mod = sys.modules[OPENAI_COMPAT_MODULE_NAME]
+        backend = mod.OpenAICompatBackend(
+            imgr=_DummyImageManager(),
+            base_url="https://api.example.com/v1",
+            api_keys=["test"],
+            default_model="gpt-image-2",
+        )
+        client = types.SimpleNamespace(
+            images=types.SimpleNamespace(edit=AsyncMock(return_value={}))
+        )
+        backend._get_client = lambda key: client
+        backend._save_images_response = AsyncMock(return_value=Path("/tmp/out.webp"))
+        self.assertTrue(backend.supports_ordered_references)
+        with patch.object(
+            mod, "_build_collage", side_effect=AssertionError("collage forbidden")
+        ):
+            await backend.edit(
+                "keep references", [b"identity", b"object"], size="3072x4096"
+            )
+        kwargs = client.images.edit.call_args.kwargs
+        self.assertEqual(
+            [f.getvalue() for f in kwargs["image"]], [b"identity", b"object"]
+        )
+        self.assertEqual(kwargs["size"], "3072x4096")
+        backend.default_model = "dall-e-2"
+        self.assertFalse(backend.supports_ordered_references)
+
+    async def test_gpt_images_size_error_does_not_retry_at_lower_resolution(self):
+        from unittest.mock import AsyncMock
+
+        _load_module()
+        mod = sys.modules[OPENAI_COMPAT_MODULE_NAME]
+        backend = mod.OpenAICompatBackend(
+            imgr=_DummyImageManager(),
+            base_url="https://api.example.com/v1",
+            api_keys=["test"],
+            default_model="gpt-image-2",
+        )
+        client = types.SimpleNamespace(
+            images=types.SimpleNamespace(
+                edit=AsyncMock(side_effect=RuntimeError("invalid size"))
+            )
+        )
+        backend._get_client = lambda key: client
+        with self.assertRaises(RuntimeError):
+            await backend.edit("edit", [b"image"], size="4096x4096")
+        client.images.edit.assert_awaited_once()
+        self.assertEqual(client.images.edit.call_args.kwargs["size"], "4096x4096")
+
+
 if __name__ == "__main__":
     unittest.main()
