@@ -37,10 +37,16 @@ def character(store, name, color, kind="person"):
 
 
 @pytest.fixture
-def runtime(tmp_path):
+def runtime(tmp_path, monkeypatch):
     main, _ = _load_module()
     module = importlib.import_module(main.__package__ + ".core.studio")
     characters = importlib.import_module(main.__package__ + ".core.studio_characters")
+    workflow_module = importlib.import_module(
+        main.__package__ + ".core.studio_workflows"
+    )
+    real_planner = importlib.import_module("core.llm_batch_planner")
+    for name in ("parse_planned_prompt_items", "validate_planned_prompt_items"):
+        monkeypatch.setattr(workflow_module, name, getattr(real_planner, name))
 
     class Config(dict):
         def save_config(self):
@@ -65,6 +71,9 @@ def runtime(tmp_path):
     plugin.data_dir = tmp_path
     plugin.config = conf
     plugin.imgr = SimpleNamespace()
+    plugin.draw = SimpleNamespace(generate=AsyncMock())
+    plugin.edit = SimpleNamespace(edit=AsyncMock())
+    plugin.context.get_all_providers = lambda: []
     plugin.registry = module.ProviderRegistry(conf, imgr=plugin.imgr, data_dir=tmp_path)
     studio = module.Studio(plugin)
     plugin.studio = studio
@@ -313,6 +322,264 @@ async def test_studio_job_is_deduplicated_and_survives_reopen(runtime):
         assert calls == ["a green image"]
     finally:
         await studio.close()
+
+
+@pytest.mark.asyncio
+async def test_studio_batch_partial_retry_preserves_inputs_and_completed_images(
+    runtime,
+):
+    _, module, _, plugin, studio = runtime
+    manager = module.BackgroundImageTaskManager(
+        studio.store.root / "batch", max_running=2, max_queued=4
+    )
+    await manager.start()
+    studio.own_manager = manager
+    ref = studio.store.add_image(picture("blue"))
+    calls, running, peak = [], 0, 0
+    release = asyncio.Event()
+    cap = importlib.import_module(module.__package__ + ".studio_capture")
+
+    async def edit(prompt, images, **kwargs):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        calls.append((prompt, images))
+        attempt = len(calls)
+        if attempt == 2:
+            release.set()
+        await release.wait()
+        await asyncio.sleep(0)
+        running -= 1
+        if attempt == 2:
+            raise ValueError("fixture failure")
+        a = studio.store.add_image(
+            picture("green"), kind="history", metadata={"prompt": prompt}
+        )
+        cap.capture_context.get()["asset_id"] = a["id"]
+        return studio.store.asset_path(a["id"])
+
+    plugin.edit = SimpleNamespace(edit=edit)
+    body = {
+        "request_id": "batch-request-01",
+        "prompt": "keep cup",
+        "assets": [ref["id"]],
+        "count": 3,
+    }
+    try:
+        result = await studio.submit(body)
+        assert await studio.submit(body) == result
+        await asyncio.gather(*studio.tasks)
+        row = await manager.get_task(result["task_id"])
+        assert peak == 2
+        assert row["state"] == "partial"
+        assert len(row["gallery_asset_ids"]) == 2
+        originals = list(row["gallery_asset_ids"])
+        assert len(calls) == 3
+        retry_body = {"request_id": "retry-request-01", "task_id": result["task_id"]}
+        retry = await studio.retry(retry_body)
+        assert await studio.retry(retry_body) == retry
+        await asyncio.gather(*studio.tasks)
+        assert len(calls) == 4
+        assert calls[-1] == calls[1]
+        assert (await manager.get_task(retry["task_id"]))["state"] == "completed"
+        assert (await manager.get_task(result["task_id"]))[
+            "gallery_asset_ids"
+        ] == originals
+        assert (await manager.health_snapshot())["reservation_remaining"] == 0
+    finally:
+        await studio.close()
+
+
+@pytest.mark.asyncio
+async def test_visual_plan_review_excludes_target_face_and_freezes_wardrobe(runtime):
+    import json
+
+    _, module, _, plugin, studio = runtime
+    manager = module.BackgroundImageTaskManager(
+        studio.store.root / "planned", max_running=1, max_queued=4
+    )
+    await manager.start()
+    studio.own_manager = manager
+    person = character(studio.store, "User", "blue")
+    target = studio.store.add_image(picture("red"))
+    planner = SimpleNamespace(
+        meta=lambda: SimpleNamespace(id="vision"),
+        get_model=lambda: "vision-model",
+        text_chat=AsyncMock(
+            return_value=SimpleNamespace(
+                completion_text=json.dumps(
+                    [
+                        {
+                            "title": "portrait",
+                            "prompt": "black suit, studio, frontal",
+                            "variation_focus": ["pose"],
+                            "aspect_ratio": "3:4",
+                        },
+                        {
+                            "title": "side",
+                            "prompt": "black suit, studio, side view",
+                            "variation_focus": ["angle"],
+                            "aspect_ratio": "3:4",
+                        },
+                    ]
+                )
+            )
+        ),
+    )
+    plugin.context.get_all_providers = lambda: [planner]
+    plugin.context.get_provider_by_id = lambda key: planner if key == "vision" else None
+    plugin._get_life_context_without_llm = AsyncMock(
+        return_value={"outfit": "white dress"}
+    )
+    captured = []
+    cap = importlib.import_module(module.__package__ + ".studio_capture")
+
+    async def edit(prompt, images, **kwargs):
+        captured.append((prompt, images))
+        a = studio.store.add_image(picture("green"), kind="history")
+        cap.capture_context.get()["asset_id"] = a["id"]
+        return studio.store.asset_path(a["id"])
+
+    plugin.edit = SimpleNamespace(edit=edit)
+    body = {
+        "request_id": "plan-request-01",
+        "workflow": "recreate",
+        "source_asset": target["id"],
+        "characters": [person["id"]],
+        "target_character": "",
+        "planner": "vision",
+        "count": 2,
+        "prompt": "",
+        "output": "3:4 4K",
+    }
+    try:
+        initial = await studio.workflows.start(body)
+        assert (await studio.workflows.start(body))["id"] == initial["id"]
+        await asyncio.gather(*studio.workflows.tasks.values())
+        plan = studio.store.document("plan", initial["id"])
+        assert plan["state"] == "ready"
+        assert planner.text_chat.await_count == 1
+        assert not captured
+        assert planner.text_chat.call_args.kwargs["image_urls"] == [
+            str(studio.store.asset_path(target["id"], thumbnail="preview"))
+        ]
+        request = {
+            **body,
+            "request_id": "planned-shoot-01",
+            "plan_id": plan["id"],
+            "shots": plan["shots"],
+            "outfits": [""],
+        }
+        with pytest.raises(ValueError, match="变化"):
+            await studio.submit(
+                {**request, "source_asset": person["looks"][0]["assets"][0]}
+            )
+        await studio.submit(request)
+        await asyncio.gather(*studio.tasks)
+        assert len(captured) == 2
+        assert all(images == [picture("blue")] for _, images in captured)
+        assert all("目标人物: " + person["id"] in prompt for prompt, _ in captured)
+        assert all("white dress" not in prompt for prompt, _ in captured)
+    finally:
+        await studio.close()
+
+
+@pytest.mark.asyncio
+async def test_planning_failure_does_not_generate_and_is_recoverable(runtime):
+    _, module, _, plugin, studio = runtime
+    manager = module.BackgroundImageTaskManager(studio.store.root / "plan-failure")
+    await manager.start()
+    studio.own_manager = manager
+    planner = SimpleNamespace(
+        meta=lambda: SimpleNamespace(id="vision"),
+        get_model=lambda: "vision",
+        text_chat=AsyncMock(return_value=SimpleNamespace(completion_text="bad json")),
+    )
+    plugin.context.get_all_providers = lambda: [planner]
+    plugin.context.get_provider_by_id = lambda key: planner
+    source = studio.store.add_image(picture("red"))
+    try:
+        body = {
+            "request_id": "failed-plan-01",
+            "workflow": "variants",
+            "source_asset": source["id"],
+            "planner": "vision",
+            "count": 4,
+        }
+        plan = await studio.workflows.start(body)
+        await asyncio.gather(*studio.workflows.tasks.values())
+        assert studio.store.document("plan", plan["id"])["state"] == "failed"
+        assert studio.store.documents("job") == []
+        studio.store.save_document(
+            "plan", {"id": "interrupted-plan", "state": "planning"}
+        )
+        studio.workflows.recover()
+        assert (
+            studio.store.document("plan", "interrupted-plan")["state"] == "interrupted"
+        )
+    finally:
+        await studio.close()
+
+
+@pytest.mark.asyncio
+async def test_batch_capacity_is_reserved_atomically(runtime):
+    _, module, _, plugin, studio = runtime
+    manager = module.BackgroundImageTaskManager(
+        studio.store.root / "capacity", max_queued=2
+    )
+    await manager.start()
+    studio.own_manager = manager
+    try:
+        with pytest.raises(RuntimeError, match="queue"):
+            await studio.submit(
+                {"request_id": "capacity-test-01", "prompt": "cup", "count": 3}
+            )
+        assert studio.store.documents("job") == []
+        assert (await manager.health_snapshot())["reservation_remaining"] == 0
+        plugin.draw.generate.assert_not_awaited()
+    finally:
+        await studio.close()
+
+
+@pytest.mark.asyncio
+async def test_studio_batch_cancel_and_restart_keep_completed_items(runtime):
+    _, module, _, _, studio = runtime
+    folder = studio.store.root / "batch-recovery"
+    first = module.BackgroundImageTaskManager(folder)
+    await first.start()
+    for task_id in ("cancel-group", "restart-group"):
+        await first.create_task_record(
+            {
+                "task_id": task_id,
+                "task_kind": "studio",
+                "scope_hash": "studio",
+                "request_fingerprint": task_id,
+                "items": [
+                    {
+                        "item_id": "one",
+                        "state": "completed",
+                        "asset_id": "saved-image",
+                        "image_generated": True,
+                    },
+                    {"item_id": "two", "state": "running"},
+                ],
+            },
+            reservation=1,
+        )
+    await first.cancel_task("cancel-group", "cancel")
+    await first.close()
+    second = module.BackgroundImageTaskManager(folder)
+    try:
+        await second.start()
+        cancelled = await second.get_task("cancel-group")
+        restarted = await second.get_task("restart-group")
+        assert cancelled["items"][0]["asset_id"] == "saved-image"
+        assert cancelled["items"][1]["state"] == "cancelled"
+        assert restarted["items"][0]["asset_id"] == "saved-image"
+        assert restarted["items"][1]["state"] == "interrupted"
+        assert (await second.health_snapshot())["reservation_remaining"] == 0
+    finally:
+        await second.close()
 
 
 @pytest.mark.asyncio

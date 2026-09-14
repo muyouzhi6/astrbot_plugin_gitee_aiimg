@@ -468,7 +468,17 @@ class BackgroundImageTaskManager:
                     "The image task was interrupted by a plugin or AstrBot restart."
                 )
                 items = record.get("items")
-                if record.get("task_kind") == "batch" and isinstance(items, list):
+                if record.get("task_kind") == "studio" and isinstance(items, list):
+                    for item in items:
+                        if item.get("state") not in {
+                            "completed",
+                            "failed",
+                            "cancelled",
+                        }:
+                            item.update(
+                                state="interrupted", error="重载中断, 未自动重新生成"
+                            )
+                elif record.get("task_kind") == "batch" and isinstance(items, list):
                     for item in items:
                         item_state = str(item.get("state") or "queued")
                         if item_state in {
@@ -978,8 +988,16 @@ class BackgroundImageTaskManager:
 
         if state == "completed":
             if record.get("task_kind") == "studio":
-                valid = bool(
-                    record.get("image_generated") and record.get("gallery_asset_id")
+                items = record.get("items")
+                valid = (
+                    all(
+                        i.get("state") == "completed" and i.get("asset_id")
+                        for i in items
+                    )
+                    if items
+                    else bool(
+                        record.get("image_generated") and record.get("gallery_asset_id")
+                    )
                 )
             elif record.get("task_kind") == "batch":
                 requested = int(record.get("requested_count") or 0)
@@ -1003,6 +1021,15 @@ class BackgroundImageTaskManager:
             if not (0 < sent < requested and unknown == 0):
                 raise BackgroundTaskStateError(
                     "Partial batches require known confirmed and unsent child results"
+                )
+        if state == "partial" and record.get("task_kind") == "studio":
+            items = record.get("items", [])
+            completed = sum(
+                bool(i.get("asset_id")) and i.get("state") == "completed" for i in items
+            )
+            if not 0 < completed < len(items):
+                raise BackgroundTaskStateError(
+                    "Partial studio tasks require both completed and incomplete images"
                 )
 
     async def update_item(
@@ -1287,7 +1314,11 @@ class BackgroundImageTaskManager:
                 ).fetchall()
             }
             items = record.get("items")
-            if record.get("task_kind") == "batch" and isinstance(items, list):
+            if record.get("task_kind") == "studio" and isinstance(items, list):
+                for item in items:
+                    if item.get("state") not in {"completed", "failed", "cancelled"}:
+                        item.update(state="cancelled", error=reason)
+            elif record.get("task_kind") == "batch" and isinstance(items, list):
                 for item in items:
                     item_state = str(item.get("state") or "queued")
                     if item_state in {

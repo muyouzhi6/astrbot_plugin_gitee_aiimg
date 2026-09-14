@@ -26,6 +26,7 @@ from .studio_characters import (
     targeted_reference_note,
 )
 from .studio_store import StudioConflict, StudioStore
+from .studio_workflows import StudioWorkflows, request_key
 
 MASK = "******** (已保存)"
 SECRET = re.compile(r"api.?key|token|password|secret|cookie|authorization", re.I)
@@ -72,8 +73,10 @@ class Studio:
         self.own_manager = None
         self.retired = []
         self.tasks = set()
+        self.workflows = StudioWorkflows(self)
 
     async def start(self):
+        self.workflows.recover()
         self.plugin.imgr.studio_store = self.store
         await asyncio.to_thread(
             self.store.import_existing,
@@ -102,6 +105,8 @@ class Studio:
             "cancel",
             "download",
             "crop",
+            "plan",
+            "retry",
         ):
 
             async def handler(action=action):
@@ -119,6 +124,7 @@ class Studio:
         return self.plugin.background_tasks or self.own_manager
 
     async def close(self):
+        await self.workflows.close()
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
@@ -300,18 +306,14 @@ class Studio:
         return {"models": result, "source": "live"}
 
     async def submit(self, body):
-        request_id = str(body.get("request_id", ""))
-        if not re.fullmatch(r"[\w-]{8,100}", request_id):
-            raise ValueError("请求标识无效, 请刷新页面")
-        prompt = str(body.get("prompt") or "").strip()
-        if not prompt or len(prompt) > 18000:
-            raise ValueError("请填写 1 至 18000 字的提示词")
+        request_id = request_key(body.get("request_id"))
         manager = self.manager
         if not manager or not manager.accepting:
             raise ValueError("任务系统尚未就绪, 请稍后重试")
         prior = self.store.document("job", request_id)
         if prior:
             return {"task_id": prior["task_id"]}
+        body, shots = self.workflows.generation(body)
         images, portrait_note, cast = [], "", []
         ids = body.get("characters", [])
         if ids:
@@ -372,7 +374,71 @@ class Studio:
         backend = str(body.get("provider") or "") or None
         if backend and backend not in self.plugin.registry.provider_ids():
             raise ValueError("所选服务商已不存在")
-        effective = prompt + ("\n\n" + portrait_note if portrait_note else "")
+        specs = [
+            {
+                "item_id": f"image-{i + 1}",
+                "title": s["title"],
+                "prompt": s["prompt"],
+                "effective_prompt": s["prompt"]
+                + ("\n\n" + portrait_note if portrait_note else "")
+                + ("\n" + body["workflow_note"] if body.get("workflow_note") else ""),
+                "state": "queued",
+            }
+            for i, s in enumerate(shots)
+        ]
+        output = parse_output_intent(str(body.get("output") or ""))
+        return await self.enqueue(
+            body, request_id, images, cast, asset_ids, specs, backend, mode, output
+        )
+
+    async def retry(self, body):
+        key = request_key(body.get("request_id"))
+        existing = self.store.document("job", key)
+        if existing:
+            return {"task_id": existing["task_id"]}
+        job = next(
+            (
+                j
+                for j in self.store.documents("job")
+                if j["task_id"] == body.get("task_id")
+            ),
+            None,
+        )
+        if not job:
+            raise ValueError("任务不存在")
+        record = await self.manager.get_task(job["task_id"])
+        if not record or record["state"] not in {"failed", "partial"}:
+            raise ValueError("只能重试已结束任务中的失败镜头")
+        snapshot = record.get("studio_snapshot")
+        failed = [s for s in record.get("items", []) if s["state"] == "failed"]
+        if not snapshot or not failed:
+            raise ValueError("原始输入已不可用, 请重新选择图片")
+        images = await self.manager.read_spooled_inputs(
+            tuple(snapshot["paths"]), snapshot["manifest"]
+        )
+        specs = [
+            {k: s[k] for k in ("item_id", "title", "prompt", "effective_prompt")}
+            | {"state": "queued"}
+            for s in failed
+        ]
+        original = snapshot["body"]
+        return await self.enqueue(
+            original,
+            key,
+            images,
+            snapshot["cast"],
+            snapshot["asset_ids"],
+            specs,
+            snapshot["backend"],
+            record["mode"],
+            parse_output_intent(original.get("output") or ""),
+        )
+
+    async def enqueue(
+        self, body, request_id, images, cast, asset_ids, specs, backend, mode, output
+    ):
+        manager = self.manager
+        prompt = body["prompt"]
         task_id = manager.new_task_id("studio")
         # The manager owns reservations, cancellation, restart recovery and scheduling.
         record, created = await manager.create_task_record(
@@ -385,12 +451,14 @@ class Studio:
                 "scope_hash": "studio",
                 "request_fingerprint": "studio:" + request_id,
                 "user_prompt": prompt,
-                "effective_prompt": effective,
+                "effective_prompt": specs[0]["effective_prompt"],
+                "requested_count": len(specs),
+                "items": specs,
                 "mode": mode,
                 "notification_state": "not_required",
                 "ack_state": "confirmed",
             },
-            reservation=1,
+            reservation=len(specs),
         )
         task_id = record["task_id"]
         try:
@@ -402,12 +470,55 @@ class Studio:
                     "prompt": prompt,
                     "created": time.time(),
                     "workspace_id": body.get("workspace_id", ""),
+                    "workflow": body.get("workflow", "generate"),
+                    "count": len(specs),
+                    "source_asset": body.get("source_asset", ""),
+                    "request": {
+                        k: body.get(k)
+                        for k in (
+                            "workflow",
+                            "prompt",
+                            "assets",
+                            "characters",
+                            "outfits",
+                            "asset_roles",
+                            "asset_targets",
+                            "provider",
+                            "output",
+                            "workspace_id",
+                            "source_asset",
+                            "plan_id",
+                        )
+                    },
                 },
             )
             paths, manifest = (
                 await manager.spool_inputs(task_id, images) if created else ((), [])
             )
-            output = parse_output_intent(str(body.get("output") or ""))
+            if created:
+                await manager.transition(
+                    task_id,
+                    "queued",
+                    {
+                        "studio_snapshot": {
+                            "paths": list(paths),
+                            "manifest": manifest,
+                            "cast": cast,
+                            "asset_ids": asset_ids,
+                            "backend": backend,
+                            "body": {
+                                k: body.get(k)
+                                for k in (
+                                    "prompt",
+                                    "output",
+                                    "workflow",
+                                    "source_asset",
+                                    "workspace_id",
+                                )
+                            },
+                        }
+                    },
+                )
         except BaseException:
             if created:
                 await manager.transition(
@@ -418,49 +529,101 @@ class Studio:
             draw, edit = self.plugin.draw, self.plugin.edit
 
             async def run():
-                token = capture_context.set(
-                    {
-                        "job_id": task_id,
-                        "user_prompt": prompt,
-                        "characters": cast,
-                        "parent_assets": asset_ids,
-                        "workspace_id": body.get("workspace_id", ""),
-                    }
-                )
                 try:
 
-                    async def call():
-                        await manager.transition(task_id, "running")
-                        inputs = await manager.read_spooled_inputs(paths, manifest)
-                        if mode == "edit":
-                            return await edit.edit(
-                                effective,
-                                inputs,
-                                backend=backend,
-                                output_intent=output,
-                                require_ordered_references=len(inputs) > 1,
-                            )
-                        return await draw.generate(
-                            effective, provider_id=backend, output_intent=output
+                    async def one(spec):
+                        token = capture_context.set(
+                            {
+                                "job_id": task_id,
+                                "item_id": spec["item_id"],
+                                "title": spec["title"],
+                                "user_prompt": prompt,
+                                "characters": cast,
+                                "parent_assets": asset_ids,
+                                "workflow": body.get("workflow", "generate"),
+                                "source_asset": body.get("source_asset", ""),
+                                "workspace_id": body.get("workspace_id", ""),
+                            }
                         )
+                        try:
 
-                    path = await asyncio.wait_for(
-                        manager.run_provider(task_id, call), 7200
-                    )
-                    if manager.is_cancelled(task_id):
-                        raise asyncio.CancelledError
-                    asset_id = capture_context.get().get("asset_id")
-                    if not asset_id:
-                        raise ValueError(
-                            "图片已生成但归档失败, 请检查存储空间; 不要自动重新生成"
-                        )
+                            async def call():
+                                await manager.transition(task_id, "running")
+                                await manager.update_item(
+                                    task_id, spec["item_id"], {"state": "running"}
+                                )
+                                inputs = await manager.read_spooled_inputs(
+                                    paths, manifest
+                                )
+                                if mode == "edit":
+                                    return await edit.edit(
+                                        spec["effective_prompt"],
+                                        inputs,
+                                        backend=backend,
+                                        output_intent=output,
+                                        require_ordered_references=len(inputs) > 1,
+                                    )
+                                return await draw.generate(
+                                    spec["effective_prompt"],
+                                    provider_id=backend,
+                                    output_intent=output,
+                                )
+
+                            path = await asyncio.wait_for(
+                                manager.run_provider(task_id, call), 7200
+                            )
+                            if manager.is_cancelled(task_id):
+                                raise asyncio.CancelledError
+                            asset_id = capture_context.get().get("asset_id")
+                            if not asset_id:
+                                raise ValueError(
+                                    "图片已生成但归档失败, 请检查存储空间; 不要自动重新生成"
+                                )
+                            await manager.update_item(
+                                task_id,
+                                spec["item_id"],
+                                {
+                                    "state": "completed",
+                                    "image_generated": True,
+                                    "asset_id": asset_id,
+                                    "result_name": Path(path).name,
+                                },
+                                release_if_terminal=True,
+                            )
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            if not manager.is_cancelled(task_id):
+                                await manager.update_item(
+                                    task_id,
+                                    spec["item_id"],
+                                    {
+                                        "state": "failed",
+                                        "error": BackgroundImageTaskManager.sanitize_error(
+                                            exc
+                                        ),
+                                    },
+                                    release_if_terminal=True,
+                                )
+                        finally:
+                            capture_context.reset(token)
+
+                    await asyncio.gather(*(one(spec) for spec in specs))
+                    result = await manager.get_task(task_id)
+                    assets = [
+                        s["asset_id"] for s in result["items"] if s.get("asset_id")
+                    ]
                     await manager.transition(
                         task_id,
-                        "completed",
+                        "completed"
+                        if len(assets) == len(specs)
+                        else "partial"
+                        if assets
+                        else "failed",
                         {
-                            "image_generated": True,
-                            "gallery_asset_id": asset_id,
-                            "result_name": Path(path).name,
+                            "image_generated": bool(assets),
+                            "gallery_asset_id": assets[0] if assets else "",
+                            "gallery_asset_ids": assets,
                         },
                     )
                 except asyncio.CancelledError:
@@ -475,8 +638,6 @@ class Studio:
                         "failed",
                         {"error": BackgroundImageTaskManager.sanitize_error(exc)},
                     )
-                finally:
-                    capture_context.reset(token)
 
             task = manager.start_worker(task_id, run)
             if task:
@@ -503,6 +664,7 @@ class Studio:
                 "cancel",
                 "models",
                 "crop",
+                "retry",
             }
             if action in writes and request.method != "POST":
                 return json_response({"error": "请使用 POST 请求"}, status_code=405)
@@ -512,6 +674,8 @@ class Studio:
                     "characters": self.store.documents("character"),
                     "workspaces": self.store.documents("workspace"),
                     "config": self.config_view(),
+                    "planners": self.workflows.providers(),
+                    "plans": self.store.documents("plan")[-30:],
                 }
             elif action == "config":
                 result = (
@@ -620,6 +784,15 @@ class Studio:
             elif action == "generate":
                 async with self.lock:
                     result = await self.submit(body)
+            elif action == "plan":
+                if request.method == "POST":
+                    async with self.lock:
+                        result = await self.workflows.start(body)
+                else:
+                    result = self.store.document("plan", body["id"])
+            elif action == "retry":
+                async with self.lock:
+                    result = await self.retry(body)
             elif action == "jobs":
                 result = []
                 for j in sorted(
@@ -636,6 +809,21 @@ class Studio:
                             else "expired",
                             "asset_id": row.get("gallery_asset_id", "") if row else "",
                             "error": row.get("error", "") if row else "",
+                            "items": [
+                                {
+                                    k: s[k]
+                                    for k in (
+                                        "item_id",
+                                        "title",
+                                        "prompt",
+                                        "state",
+                                        "asset_id",
+                                        "error",
+                                    )
+                                    if k in s
+                                }
+                                for s in (row.get("items", []) if row else [])
+                            ],
                         }
                     )
             elif action == "cancel":

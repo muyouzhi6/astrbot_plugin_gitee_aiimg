@@ -22,6 +22,7 @@ import {
   time,
 } from "./ui.js";
 import { Canvas } from "./canvas.js";
+import { createWorkspace } from "./workspace.js";
 
 const root = document.querySelector("#app");
 const state = {
@@ -46,6 +47,8 @@ const state = {
   prompt: "",
   output: "3:4 4K",
   generating: false,
+  planners: [],
+  plans: [],
 };
 let canvas,
   saveTimer,
@@ -61,6 +64,16 @@ Object.defineProperty(state, "dirty", {
 });
 let canvasSaves = Promise.resolve();
 let cropRect, cropAsset;
+const shoot = createWorkspace({
+  state,
+  getCanvas: () => canvas,
+  render: renderPage,
+  shell,
+  saveCanvas,
+  picker,
+  viewAsset,
+  changed: onCanvasChange,
+});
 const pages = [
   ["workspace", "工作区", "canvas"],
   ["gallery", "画廊", "gallery"],
@@ -106,6 +119,8 @@ async function refresh() {
   state.config = data.config;
   state.characters = data.characters;
   state.workspaces = data.workspaces;
+  state.planners = data.planners || [];
+  state.plans = data.plans || [];
   if (!canvas) {
     let doc = state.workspaces[0];
     if (!doc) {
@@ -126,6 +141,7 @@ async function refresh() {
 function setCanvas(doc) {
   canvas = new Canvas(doc, onCanvasChange);
   state.prompt = doc.prompt || "";
+  shoot.restore(doc);
 }
 function onCanvasChange(doc) {
   state.canvasDirty = true;
@@ -139,6 +155,7 @@ function saveCanvas() {
   const current = canvas,
     draft = structuredClone(current.doc);
   draft.prompt = state.prompt;
+  draft.shoot = structuredClone(shoot.capture());
   canvasSaves = canvasSaves
     .catch(() => {})
     .then(async () => {
@@ -155,6 +172,7 @@ function saveCanvas() {
         if (
           current === canvas &&
           JSON.stringify(current.doc.layers) === JSON.stringify(draft.layers) &&
+          JSON.stringify(shoot.capture()) === JSON.stringify(draft.shoot) &&
           state.prompt === draft.prompt
         )
           state.canvasDirty = false;
@@ -167,47 +185,7 @@ function saveCanvas() {
   return canvasSaves;
 }
 function renderWorkspace(el) {
-  el.className = "workspace-page";
-  el.innerHTML = `<div class="workspace-stage"><div id="canvas" aria-label="创作画布" tabindex="0"></div>${canvas.toolbar()}<div class="workspace-corner"><span class="status-dot"></span><span id="workspace-status">自动保存</span></div></div><section class="composer"><div class="composer-top"><span>创作指令</span><button data-action="pick-cast">${icon("people")}<span>${state.cast.length ? state.cast.map((id) => state.characters.find((c) => c.id === id)?.name).join("、") : "选择人物"}</span></button></div><div class="references">${state.picked.map((id) => `<button data-action="unpick" data-id="${id}" aria-label="移除参考图"><img data-asset="${id}" alt="参考图">${icon("close")}</button>`).join("")}${button("添加参考", "pick-reference", "plus")}</div><textarea id="prompt" rows="3" placeholder="想创作怎样的画面?">${esc(state.prompt)}</textarea>${state.cast
-    .map((id) => {
-      const c = state.characters.find((c) => c.id === id);
-      return field(
-        c?.name || "人物",
-        input(
-          "outfit-" + id,
-          state.outfits[id] || "",
-          "text",
-          `data-outfit="${id}" placeholder="${c?.kind === "bot" ? "默认使用今日日程穿搭" : "独立描述此人的穿搭"}"`,
-        ),
-      );
-    })
-    .join(
-      "",
-    )}<div class="composer-bottom"><div><select id="generation-provider" aria-label="生成服务商">${providerOptions(state.generationProvider)}</select><select id="output" aria-label="图片规格">${["3:4 4K", "1:1 4K", "16:9 4K", "9:16 4K", "4:3 4K", "3:4 2K", "1:1 2K", "16:9 2K", "1024x1024"].map((v) => option(v, v, state.output)).join("")}</select></div>${button(state.generating ? "正在提交" : "生成", "generate", "arrow", `class="primary" ${state.generating ? "disabled" : ""}`)}</div><div class="workspace-notice">${state.picked.length ? "使用所选参考图改图" : "选中画布图层可直接用作参考"}${button("使用选中图层", "use-selected", "plus", 'id="use-layer"')}</div><div id="active-job"></div></section>`;
-  canvas.mount(el.querySelector("#canvas"));
-  if (state.cast.length && state.picked.length) {
-    el.querySelector(".references").insertAdjacentHTML(
-      "afterend",
-      `<div class="reference-roles">${state.picked
-        .map(
-          (id, i) =>
-            `<div><span>参考 ${i + 1}</span><select data-role="${id}" aria-label="参考 ${i + 1} 用途">${[
-              ["background", "背景"],
-              ["clothing", "服装"],
-              ["pose", "姿态"],
-              ["style", "画风"],
-              ["subject", "构图"],
-            ]
-              .map(([v, label]) =>
-                option(v, label, state.assetRoles[id] || "background"),
-              )
-              .join(
-                "",
-              )}</select><select data-target="${id}" aria-label="参考 ${i + 1} 所属人物"><option value="">所属人物</option>${state.cast.map((cid) => option(cid, state.characters.find((c) => c.id === cid)?.name || cid, state.assetTargets[id])).join("")}</select></div>`,
-        )
-        .join("")}</div>`,
-    );
-  }
+  shoot.renderWorkspace(el);
 }
 function renderGallery(el) {
   el.className = "standard-page";
@@ -252,7 +230,7 @@ async function viewAsset(id) {
   dialog(
     "图片",
     `<div class="asset-detail"><div class="large-image"><img id="large-image" alt="原图"></div><div><p class="muted">${esc(a.model || a.name || "图片")} · ${a.width} × ${a.height}</p><h3>生成提示词</h3><pre class="prompt-view">${esc(a.prompt || "旧缓存未保存提示词")}</pre><div class="metadata"><span>${esc(a.provider || "")}</span><span>${time(a.created)}</span></div>${cast}</div></div>`,
-    `${button("下载原图", "download", "download", `data-id="${id}"`)}${button("继续创作", "reuse", "canvas", `data-id="${id}" class="primary"`)}`,
+    `${button("下载原图", "download", "download", `data-id="${id}"`)}${button("做变体", "shoot-from", "copy", `data-mode="variants" data-id="${id}"`)}${button("仿拍", "shoot-from", "canvas", `data-mode="recreate" data-id="${id}"`)}${button("继续创作", "reuse", "canvas", `data-id="${id}" class="primary"`)}`,
   );
   const img = document.querySelector("#large-image");
   try {
@@ -492,6 +470,7 @@ const jobState = {
   queued: "排队中",
   running: "正在生成",
   completed: "已完成",
+  partial: "部分完成",
   failed: "失败",
   cancelled: "已取消",
   interrupted: "已中断",
@@ -518,22 +497,22 @@ async function pollJobs() {
           : "";
     }
     for (const j of state.jobs) {
-      if (
-        j.state === "completed" &&
-        j.asset_id &&
-        !pollJobs.seen.has(j.task_id)
-      ) {
-        pollJobs.seen.add(j.task_id);
-        if (pollJobs.initialized) {
-          toast("图片已完成, 已保存到画廊");
-          if (state.page === "workspace" && j.workspace_id === canvas.doc.id) {
-            const a = (await query("asset", { id: j.asset_id, thumbnail: "1" }))
-              .asset;
-            await canvas.add(a);
-          }
+      const assets = j.items?.length
+        ? j.items.filter((i) => i.asset_id).map((i) => i.asset_id)
+        : j.asset_id
+          ? [j.asset_id]
+          : [];
+      for (const id of assets) {
+        if (
+          j.workspace_id === canvas.doc.id &&
+          !canvas.doc.layers.some((l) => l.asset_id === id)
+        ) {
+          const a = (await query("asset", { id, thumbnail: "1" })).asset;
+          await canvas.add(a);
         }
       }
     }
+    await shoot.poll();
     pollJobs.initialized = true;
   } catch {
     /* Retry polling without submitting another generation. */
@@ -542,6 +521,8 @@ async function pollJobs() {
 pollJobs.seen = new Set();
 
 async function act(action, el) {
+  if (action === "shoot-run") action = "generate";
+  if (await shoot.action(action, el)) return;
   if (action === "page") {
     if (state.page === "providers") readProvider();
     if (state.page === "workspace") await saveCanvas();
@@ -598,8 +579,8 @@ async function act(action, el) {
     state.picked = [a.id];
     state.prompt = a.user_prompt || a.prompt || "";
     await canvas.add(a);
+    await shoot.selectMode("edit", a.id);
     shell();
-    canvas.fit();
   }
   if (action === "pick-reference")
     await picker(async (a) => {
@@ -765,16 +746,19 @@ async function act(action, el) {
     );
     if (state.cast.length > 4) throw Error("最多选择 4 位人物");
     close();
+    onCanvasChange(canvas.doc);
     renderPage();
   }
   if (action === "generate") {
     if (state.generating) return;
-    if (!state.prompt.trim()) throw Error("请先填写创作指令");
+    if (["generate", "edit"].includes(shoot.mode) && !state.prompt.trim())
+      throw Error("请先填写创作指令");
     state.generating = true;
     el.disabled = true;
     try {
       await saveCanvas();
       const payload = {
+        ...shoot.payload(),
         prompt: state.prompt,
         assets: state.picked,
         asset_roles: state.picked.map(
@@ -787,25 +771,14 @@ async function act(action, el) {
         output: state.output,
         workspace_id: canvas.doc.id,
       };
-      const fingerprint = JSON.stringify(payload);
-      let pending;
-      try {
-        pending = JSON.parse(
-          sessionStorage.getItem("studio-pending") || "null",
-        );
-      } catch {
-        pending = null;
-      }
-      if (!pending || pending.fingerprint !== fingerprint)
-        pending = { fingerprint, id: crypto.randomUUID() };
-      sessionStorage.setItem("studio-pending", JSON.stringify(pending));
-      await api("generate", { ...payload, request_id: pending.id });
-      sessionStorage.removeItem("studio-pending");
+      const result = await shoot.request("generate", payload);
+      shoot.submitted(result.task_id);
       toast("已加入任务, 可以继续创作");
       await pollJobs();
     } finally {
       state.generating = false;
       el.disabled = false;
+      if (state.page === "workspace") renderPage();
     }
   }
   if (action === "go-jobs" || action === "go-workspace") {
@@ -1053,6 +1026,7 @@ document.addEventListener("click", (e) => {
     act(el.dataset.action, el).catch((error) => toast(error.message));
 });
 document.addEventListener("input", (e) => {
+  shoot.onInput(e);
   if (e.target.id === "prompt") {
     state.prompt = e.target.value;
     canvas.doc.prompt = state.prompt;
@@ -1064,6 +1038,7 @@ document.addEventListener("input", (e) => {
 });
 document.addEventListener("change", async (e) => {
   try {
+    if (state.page === "workspace") shoot.change(e);
     if (e.target.dataset.role)
       state.assetRoles[e.target.dataset.role] = e.target.value;
     if (e.target.dataset.target)
@@ -1072,6 +1047,10 @@ document.addEventListener("change", async (e) => {
     if (e.target.id === "generation-provider")
       state.generationProvider = e.target.value;
     if (e.target.id === "workspace-select") {
+      if (shoot.submitting) {
+        e.target.value = canvas.doc.id;
+        throw Error("请求正在提交, 请稍候切换工作区");
+      }
       await saveCanvas();
       setCanvas(state.workspaces.find((w) => w.id === e.target.value));
       shell();

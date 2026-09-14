@@ -184,6 +184,7 @@ export class Canvas {
     this.update();
   }
   fit() {
+    if (!this.host?.isConnected) return;
     const ls = this.doc.layers;
     if (!ls.length) {
       this.pan = { x: 60, y: 60 };
