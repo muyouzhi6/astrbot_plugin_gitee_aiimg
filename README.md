@@ -140,6 +140,14 @@ providers（定义后端）          features.*.chain（选用哪个后端）
 
 chain 里可以填多个 provider，第一个是主用，后面的是自动兜底，主用失败时无需手动干预。
 
+### 额外参数与生成质量
+
+所有服务商模板均提供 **额外请求体(高级)** 的键值编辑入口, 支持字符串, 数字, 布尔值和嵌套 JSON.
+OpenAI Images 模型支持自定义质量时, 添加 `quality` 并填写 `high`, `medium`, `low` 或 `auto` 等上游支持的值; 留空字典则沿用服务商默认行为.
+Chat 出图使用网关定义的字段和嵌套位置, 不应假定支持 OpenAI Images 的所有参数.
+Gemini 原生可填写 `{"generationConfig":{"temperature":0.6}}`, 嵌套合并会保留默认的比例, 分辨率和响应类型; Gemini 原生没有 OpenAI 的通用 `quality` 字段.
+额外参数覆盖同名默认项. Gitee 异步改图转换为表单字段 (图片与 task_types 由插件管理), 即梦 GET 接口转换为查询参数, Vertex 写入生成请求的 variables.
+
 ## 快速上手
 
 ### 第一步：选模板，配置 provider

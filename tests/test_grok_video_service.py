@@ -9,7 +9,7 @@ import httpx
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE_NAME = "grok_video_service_endpoint_test"
+MODULE_NAME = "core.grok_video_service_endpoint_test"
 
 
 class _Logger:

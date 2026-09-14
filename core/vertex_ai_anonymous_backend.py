@@ -17,6 +17,7 @@ except Exception:
 from astrbot.api import logger
 
 from .image_format import guess_image_mime_and_ext
+from .request_body import merge_request_body
 from .output_spec import OutputIntent, aspect_ratio_from_size, resolution_from_size
 from .vertex_ai_anonymous_utils import (
     DEFAULT_OPERATION_NAME,
@@ -55,6 +56,7 @@ class VertexAIAnonymousSettings:
     query_signature: str
     graphql_api_key: str
     output_format: str = "jpeg"
+    extra_body: dict | None = None
 
 
 class VertexAIAnonymousBackend:
@@ -281,7 +283,7 @@ class VertexAIAnonymousBackend:
         return {
             "querySignature": self.settings.query_signature,
             "operationName": DEFAULT_OPERATION_NAME,
-            "variables": context,
+            "variables": merge_request_body(context, self.settings.extra_body),
         }
 
     async def _call_api(

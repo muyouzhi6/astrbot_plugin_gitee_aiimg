@@ -27,6 +27,7 @@ from astrbot.api import logger
 
 from .image_format import guess_image_mime_and_ext
 from .output_spec import OutputIntent
+from .request_body import merge_request_body
 
 _MD_IMAGE_RE = re.compile(r"!\[.*?\]\((.*?)\)")
 _DATA_IMAGE_RE = re.compile(r"(data:image/[^\s)]+)")
@@ -586,6 +587,7 @@ class GeminiFlow2ApiBackend:
     def __init__(self, *, imgr, settings: dict):
         self.imgr = imgr
         conf = settings if isinstance(settings, dict) else {}
+        self.extra_body = conf.get("extra_body", {})
 
         self.api_url: str = normalize_flow2api_chat_url(conf.get("api_url"))
         self.model: str = str(conf.get("model") or "").strip()
@@ -653,6 +655,7 @@ class GeminiFlow2ApiBackend:
         return p or "a high quality image"
 
     async def _request_stream_text(self, payload: dict, headers: dict) -> str:
+        payload = merge_request_body(payload, self.extra_body)
         session = await self._get_session()
         proxy = self._proxy()
         t0 = time.perf_counter()
@@ -986,6 +989,7 @@ class Flow2ApiVideoBackend:
 
     def __init__(self, *, settings: dict):
         conf = settings if isinstance(settings, dict) else {}
+        self.extra_body = conf.get("extra_body", {})
 
         self.api_url: str = normalize_flow2api_chat_url(conf.get("api_url"))
         self.model: str = str(conf.get("model") or "").strip()
@@ -1033,6 +1037,7 @@ class Flow2ApiVideoBackend:
         return self.proxy_url if self.use_proxy and self.proxy_url else None
 
     async def _request_stream_text(self, payload: dict, headers: dict) -> str:
+        payload = merge_request_body(payload, self.extra_body)
         session = await self._get_session()
         proxy = self._proxy()
         t0 = time.perf_counter()

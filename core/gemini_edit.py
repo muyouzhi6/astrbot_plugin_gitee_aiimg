@@ -21,6 +21,7 @@ import aiohttp
 from astrbot.api import logger
 
 from .image_format import guess_image_mime_and_ext
+from .request_body import merge_request_body
 from .output_spec import (
     OutputIntent,
     aspect_ratio_from_size,
@@ -42,6 +43,7 @@ class GeminiEditBackend:
         self.imgr = imgr
 
         conf = settings if isinstance(settings, dict) else {}
+        self.extra_body = conf.get("extra_body", {})
         self.api_url = conf.get("api_url", "https://generativelanguage.googleapis.com")
         self.model = conf.get("model", "gemini-3-pro-image-preview")
         self.resolution = conf.get("resolution", "4K")
@@ -355,6 +357,7 @@ class GeminiEditBackend:
             ],
         }
 
+        payload = merge_request_body(payload, self.extra_body)
         proxy = self._proxy()
         if proxy:
             logger.debug(f"[Gemini] 使用代理: {proxy}")

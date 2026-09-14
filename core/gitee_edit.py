@@ -16,6 +16,7 @@ import aiohttp
 from astrbot.api import logger
 
 from .image_format import guess_image_mime_and_ext
+from .request_body import merge_request_body, request_field
 
 if TYPE_CHECKING:
     from .image_manager import ImageManager
@@ -34,6 +35,7 @@ class GiteeEditBackend:
         self.imgr = imgr
 
         conf = settings if isinstance(settings, dict) else {}
+        self.extra_body = conf.get("extra_body", {})
         self.base_url = conf.get("base_url", "https://ai.gitee.com/v1")
         self.model = conf.get("model", "Qwen-Image-Edit-2511")
         self.num_inference_steps = conf.get("num_inference_steps", 4)
@@ -155,10 +157,18 @@ class GiteeEditBackend:
         session = await self._get_session()
 
         data = aiohttp.FormData()
-        data.add_field("prompt", prompt)
-        data.add_field("model", self.model)
-        data.add_field("num_inference_steps", str(self.num_inference_steps))
-        data.add_field("guidance_scale", str(self.guidance_scale))
+        fields = merge_request_body(
+            {
+                "prompt": prompt,
+                "model": self.model,
+                "num_inference_steps": self.num_inference_steps,
+                "guidance_scale": self.guidance_scale,
+            },
+            self.extra_body,
+        )
+        for key, value in fields.items():
+            if key not in {"image", "task_types"}:
+                data.add_field(key, request_field(value))
 
         for t in task_types:
             if t in EDIT_TASK_TYPES:

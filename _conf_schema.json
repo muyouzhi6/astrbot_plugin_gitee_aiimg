@@ -663,6 +663,118 @@
     "hint": "在此配置服务商（url/key/model/超时/代理）；功能链路仅引用 provider_id。",
     "type": "template_list",
     "templates": {
+      "openai_images": {
+        "name": "OpenAI 图",
+        "description": "适用于大多数实现了 /v1/images/* 的 OpenAI 兼容网关。",
+        "hint": "若服务商只在 Chat 返回图片，请改用 OpenAI Chat 图模板。",
+        "items": {
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "openai_images"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": ""
+          },
+          "base_url": {
+            "type": "string",
+            "description": "Base URL",
+            "hint": "可填 https://api.example.com 或 https://api.example.com/v1（会自动规范化为包含 /v1）。",
+            "default": ""
+          },
+          "api_keys": {
+            "type": "list",
+            "description": "API Key 池",
+            "default": [],
+            "obvious_hint": true
+          },
+          "model": {
+            "type": "string",
+            "description": "模型名称",
+            "default": ""
+          },
+          "supports_edit": {
+            "type": "bool",
+            "description": "支持改图 (images.edit)",
+            "default": true
+          },
+          "generate_request_mode": {
+            "type": "string",
+            "description": "文生图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
+          "edit_request_mode": {
+            "type": "string",
+            "description": "改图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
+          "timeout": {
+            "type": "int",
+            "description": "超时(秒)",
+            "default": 600
+          },
+          "max_retries": {
+            "type": "int",
+            "description": "最大重试次数",
+            "default": 2
+          },
+          "proxy_url": {
+            "type": "string",
+            "description": "代理地址（可选）",
+            "hint": "如果 SDK 不支持，请使用系统代理环境变量。",
+            "default": ""
+          },
+          "default_size": {
+            "type": "string",
+            "description": "默认输出尺寸",
+            "default": "4096x4096"
+          },
+          "extra_body": {
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游协议填写 JSON 参数, 会覆盖同名默认值. 仅填写模型支持的参数. 例如 quality: high (可选 auto/low/medium/high, 以模型文档为准).",
+            "items": {},
+            "default": {},
+            "template_schema": {
+              "quality": {
+                "name": "Quality",
+                "description": "生成质量",
+                "type": "string",
+                "hint": "仅在模型支持时添加, 如 high/medium/low/auto.",
+                "default": "auto"
+              }
+            }
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
+            "options": [
+              "jpeg",
+              "webp",
+              "webp_lossless",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
+          }
+        },
+        "hide_hint_in_list": true
+      },
       "gemini_native": {
         "name": "Gemini 原生",
         "description": "适用于 Gemini 官方 generateContent 接口（直连或原生协议中转）。",
@@ -760,11 +872,117 @@
               "auto"
             ],
             "default": "jpeg"
+          },
+          "extra_body": {
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游协议填写 JSON 参数, 会覆盖同名默认值. 仅填写模型支持的参数. Gemini 参数放在 generationConfig 内, 嵌套合并保留其他默认项; 不支持 OpenAI 的 quality 字段.",
+            "items": {},
+            "default": {}
           }
-        }
+        },
+        "hide_hint_in_list": true
+      },
+      "openai_chat": {
+        "name": "Chat 出图",
+        "description": "用于 Chat 回复图片（markdown/data:image/URL）的网关。",
+        "hint": "稳定性取决于网关与模型输出格式。",
+        "items": {
+          "id": {
+            "type": "string",
+            "description": "服务商 ID（唯一）",
+            "default": "openai_chat"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称（可选）",
+            "default": ""
+          },
+          "base_url": {
+            "type": "string",
+            "description": "Base URL",
+            "hint": "可填 https://api.example.com 或 https://api.example.com/v1（会自动规范化为包含 /v1）。",
+            "default": ""
+          },
+          "api_keys": {
+            "type": "list",
+            "description": "API Key 池",
+            "default": [],
+            "obvious_hint": true
+          },
+          "model": {
+            "type": "string",
+            "description": "模型名称",
+            "default": ""
+          },
+          "supports_edit": {
+            "type": "bool",
+            "description": "支持改图（图文输入）",
+            "default": true
+          },
+          "generate_request_mode": {
+            "type": "string",
+            "description": "文生图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
+          "edit_request_mode": {
+            "type": "string",
+            "description": "改图请求模式",
+            "options": [
+              "auto",
+              "stream",
+              "non_stream"
+            ],
+            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
+            "default": "auto"
+          },
+          "timeout": {
+            "type": "int",
+            "description": "超时(秒)",
+            "default": 600
+          },
+          "max_retries": {
+            "type": "int",
+            "description": "最大重试次数",
+            "default": 2
+          },
+          "proxy_url": {
+            "type": "string",
+            "description": "代理地址（可选）",
+            "hint": "如果 SDK 不支持，请使用系统代理环境变量。",
+            "default": ""
+          },
+          "extra_body": {
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游协议填写 JSON 参数, 会覆盖同名默认值. 仅填写模型支持的参数. 使用 Chat 协议字段; quality 的位置由网关决定.",
+            "items": {},
+            "default": {}
+          },
+          "output_format": {
+            "type": "string",
+            "description": "输出图片格式",
+            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
+            "options": [
+              "jpeg",
+              "webp",
+              "webp_lossless",
+              "png",
+              "auto"
+            ],
+            "default": "jpeg"
+          }
+        },
+        "hide_hint_in_list": true
       },
       "flow2api": {
-        "name": "Flow2API（出图）",
+        "name": "Flow2API 图",
         "description": "用于 Chat SSE 返回图片（URL 或 data:image）的网关。",
         "hint": "服务商不支持 Images API 时使用。",
         "items": {
@@ -844,8 +1062,16 @@
               "auto"
             ],
             "default": "jpeg"
+          },
+          "extra_body": {
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游协议填写 JSON 参数, 会覆盖同名默认值. 仅填写模型支持的参数. 使用 Chat 协议字段; quality 的位置由网关决定.",
+            "items": {},
+            "default": {}
           }
-        }
+        },
+        "hide_hint_in_list": true
       },
       "vertex_ai_anonymous": {
         "name": "Vertex 匿名",
@@ -948,112 +1174,19 @@
               "auto"
             ],
             "default": "jpeg"
-          }
-        }
-      },
-      "openai_images": {
-        "name": "OpenAI Images",
-        "description": "适用于大多数实现了 /v1/images/* 的 OpenAI 兼容网关。",
-        "hint": "若服务商只在 Chat 返回图片，请改用 OpenAI Chat 图模板。",
-        "items": {
-          "id": {
-            "type": "string",
-            "description": "服务商 ID（唯一）",
-            "default": "openai_images"
-          },
-          "label": {
-            "type": "string",
-            "description": "显示名称（可选）",
-            "default": ""
-          },
-          "base_url": {
-            "type": "string",
-            "description": "Base URL",
-            "hint": "可填 https://api.example.com 或 https://api.example.com/v1（会自动规范化为包含 /v1）。",
-            "default": ""
-          },
-          "api_keys": {
-            "type": "list",
-            "description": "API Key 池",
-            "default": [],
-            "obvious_hint": true
-          },
-          "model": {
-            "type": "string",
-            "description": "模型名称",
-            "default": ""
-          },
-          "supports_edit": {
-            "type": "bool",
-            "description": "支持改图 (images.edit)",
-            "default": true
-          },
-          "generate_request_mode": {
-            "type": "string",
-            "description": "文生图请求模式",
-            "options": [
-              "auto",
-              "stream",
-              "non_stream"
-            ],
-            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
-            "default": "auto"
-          },
-          "edit_request_mode": {
-            "type": "string",
-            "description": "改图请求模式",
-            "options": [
-              "auto",
-              "stream",
-              "non_stream"
-            ],
-            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
-            "default": "auto"
-          },
-          "timeout": {
-            "type": "int",
-            "description": "超时(秒)",
-            "default": 600
-          },
-          "max_retries": {
-            "type": "int",
-            "description": "最大重试次数",
-            "default": 2
-          },
-          "proxy_url": {
-            "type": "string",
-            "description": "代理地址（可选）",
-            "hint": "如果 SDK 不支持，请使用系统代理环境变量。",
-            "default": ""
-          },
-          "default_size": {
-            "type": "string",
-            "description": "默认输出尺寸",
-            "default": "4096x4096"
           },
           "extra_body": {
-            "type": "object",
-            "description": "额外请求体（高级）",
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游协议填写 JSON 参数, 会覆盖同名默认值. 仅填写模型支持的参数. Gemini 参数放在 generationConfig 内, 嵌套合并保留其他默认项; 不支持 OpenAI 的 quality 字段.",
             "items": {},
             "default": {}
-          },
-          "output_format": {
-            "type": "string",
-            "description": "输出图片格式",
-            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
-            "options": [
-              "jpeg",
-              "webp",
-              "webp_lossless",
-              "png",
-              "auto"
-            ],
-            "default": "jpeg"
           }
-        }
+        },
+        "hide_hint_in_list": true
       },
       "openai_full_url_images": {
-        "name": "OpenAI ImagesURL",
+        "name": "Images URL",
         "description": "用于自定义完整 endpoint 路径（非标准 /v1/images/*）。",
         "hint": "full_generate_url/full_edit_url 需填写完整 URL（含路径）。",
         "items": {
@@ -1133,10 +1266,20 @@
             "default": "4096x4096"
           },
           "extra_body": {
-            "type": "object",
-            "description": "额外请求体（高级）",
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游协议填写 JSON 参数, 会覆盖同名默认值. 仅填写模型支持的参数. 例如 quality: high (可选 auto/low/medium/high, 以模型文档为准).",
             "items": {},
-            "default": {}
+            "default": {},
+            "template_schema": {
+              "quality": {
+                "name": "Quality",
+                "description": "生成质量",
+                "type": "string",
+                "hint": "仅在模型支持时添加, 如 high/medium/low/auto.",
+                "default": "auto"
+              }
+            }
           },
           "output_format": {
             "type": "string",
@@ -1151,106 +1294,11 @@
             ],
             "default": "jpeg"
           }
-        }
-      },
-      "openai_chat": {
-        "name": "OpenAI Chat图",
-        "description": "用于 Chat 回复图片（markdown/data:image/URL）的网关。",
-        "hint": "稳定性取决于网关与模型输出格式。",
-        "items": {
-          "id": {
-            "type": "string",
-            "description": "服务商 ID（唯一）",
-            "default": "openai_chat"
-          },
-          "label": {
-            "type": "string",
-            "description": "显示名称（可选）",
-            "default": ""
-          },
-          "base_url": {
-            "type": "string",
-            "description": "Base URL",
-            "hint": "可填 https://api.example.com 或 https://api.example.com/v1（会自动规范化为包含 /v1）。",
-            "default": ""
-          },
-          "api_keys": {
-            "type": "list",
-            "description": "API Key 池",
-            "default": [],
-            "obvious_hint": true
-          },
-          "model": {
-            "type": "string",
-            "description": "模型名称",
-            "default": ""
-          },
-          "supports_edit": {
-            "type": "bool",
-            "description": "支持改图（图文输入）",
-            "default": true
-          },
-          "generate_request_mode": {
-            "type": "string",
-            "description": "文生图请求模式",
-            "options": [
-              "auto",
-              "stream",
-              "non_stream"
-            ],
-            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
-            "default": "auto"
-          },
-          "edit_request_mode": {
-            "type": "string",
-            "description": "改图请求模式",
-            "options": [
-              "auto",
-              "stream",
-              "non_stream"
-            ],
-            "hint": "auto 由当前后端自己决定；stream 强制优先走流式；non_stream 强制直接走非流式。不支持双路径的后端会自动忽略。",
-            "default": "auto"
-          },
-          "timeout": {
-            "type": "int",
-            "description": "超时(秒)",
-            "default": 600
-          },
-          "max_retries": {
-            "type": "int",
-            "description": "最大重试次数",
-            "default": 2
-          },
-          "proxy_url": {
-            "type": "string",
-            "description": "代理地址（可选）",
-            "hint": "如果 SDK 不支持，请使用系统代理环境变量。",
-            "default": ""
-          },
-          "extra_body": {
-            "type": "object",
-            "description": "额外请求体（高级）",
-            "items": {},
-            "default": {}
-          },
-          "output_format": {
-            "type": "string",
-            "description": "输出图片格式",
-            "hint": "jpeg=高质量JPEG（4:4:4可保留彩色细节）；webp=高质量有损WebP；webp_lossless=逐像素无损WebP；png=无损优化PNG；auto=不转换，保留上游原始格式。",
-            "options": [
-              "jpeg",
-              "webp",
-              "webp_lossless",
-              "png",
-              "auto"
-            ],
-            "default": "jpeg"
-          }
-        }
+        },
+        "hide_hint_in_list": true
       },
       "grok_images": {
-        "name": "Grok（Images）",
+        "name": "Grok 图",
         "description": "xAI 预设的 Images 模板（底层等同 OpenAI Images）。",
         "hint": "第三方网关也可直接使用 OpenAI Images 模板。",
         "items": {
@@ -1328,10 +1376,20 @@
             "default": "4096x4096"
           },
           "extra_body": {
-            "type": "object",
-            "description": "额外请求体（高级）",
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游协议填写 JSON 参数, 会覆盖同名默认值. 仅填写模型支持的参数. 例如 quality: high (可选 auto/low/medium/high, 以模型文档为准).",
             "items": {},
-            "default": {}
+            "default": {},
+            "template_schema": {
+              "quality": {
+                "name": "Quality",
+                "description": "生成质量",
+                "type": "string",
+                "hint": "仅在模型支持时添加, 如 high/medium/low/auto.",
+                "default": "auto"
+              }
+            }
           },
           "output_format": {
             "type": "string",
@@ -1346,10 +1404,11 @@
             ],
             "default": "jpeg"
           }
-        }
+        },
+        "hide_hint_in_list": true
       },
       "grok_chat": {
-        "name": "Grok（Chat 出图）",
+        "name": "Grok Chat",
         "description": "xAI 预设的 Chat 出图模板（底层等同 OpenAI Chat 图）。",
         "hint": "仅在不支持 Images API 时使用。",
         "items": {
@@ -1422,8 +1481,9 @@
             "default": ""
           },
           "extra_body": {
-            "type": "object",
-            "description": "额外请求体（高级）",
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游协议填写 JSON 参数, 会覆盖同名默认值. 仅填写模型支持的参数. 使用 Chat 协议字段; quality 的位置由网关决定.",
             "items": {},
             "default": {}
           },
@@ -1440,10 +1500,11 @@
             ],
             "default": "jpeg"
           }
-        }
+        },
+        "hide_hint_in_list": true
       },
       "grok2api_images": {
-        "name": "Grok2API Images",
+        "name": "Grok2API 图",
         "description": "适用于 Grok2API 类自建中转（images/generations）。",
         "hint": "base_url 填服务根（可含 /v1），extra_body 可传自定义参数。",
         "items": {
@@ -1507,10 +1568,20 @@
             "default": "4096x4096"
           },
           "extra_body": {
-            "type": "object",
-            "description": "额外请求体（高级）",
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游协议填写 JSON 参数, 会覆盖同名默认值. 仅填写模型支持的参数. 例如 quality: high (可选 auto/low/medium/high, 以模型文档为准).",
             "items": {},
-            "default": {}
+            "default": {},
+            "template_schema": {
+              "quality": {
+                "name": "Quality",
+                "description": "生成质量",
+                "type": "string",
+                "hint": "仅在模型支持时添加, 如 high/medium/low/auto.",
+                "default": "auto"
+              }
+            }
           },
           "output_format": {
             "type": "string",
@@ -1525,10 +1596,11 @@
             ],
             "default": "jpeg"
           }
-        }
+        },
+        "hide_hint_in_list": true
       },
       "gemini_openai_images": {
-        "name": "Gemini Images",
+        "name": "Gemini 图",
         "description": "Gemini->OpenAI 兼容网关的 Images 预设模板。",
         "hint": "普通 OpenAI 兼容网关优先用 OpenAI Images 模板。",
         "items": {
@@ -1606,10 +1678,20 @@
             "default": "4096x4096"
           },
           "extra_body": {
-            "type": "object",
-            "description": "额外请求体（高级）",
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游协议填写 JSON 参数, 会覆盖同名默认值. 仅填写模型支持的参数. 例如 quality: high (可选 auto/low/medium/high, 以模型文档为准).",
             "items": {},
-            "default": {}
+            "default": {},
+            "template_schema": {
+              "quality": {
+                "name": "Quality",
+                "description": "生成质量",
+                "type": "string",
+                "hint": "仅在模型支持时添加, 如 high/medium/low/auto.",
+                "default": "auto"
+              }
+            }
           },
           "output_format": {
             "type": "string",
@@ -1624,10 +1706,11 @@
             ],
             "default": "jpeg"
           }
-        }
+        },
+        "hide_hint_in_list": true
       },
       "gemini_openai_chat": {
-        "name": "Gemini Chat图",
+        "name": "Gemini Chat",
         "description": "Gemini->OpenAI 兼容网关的 Chat 出图预设模板。",
         "hint": "仅在网关明确支持 OpenAI Chat 生图时使用；Meinianda 会忽略该协议的比例参数，请改用 Gemini 原生。",
         "items": {
@@ -1700,8 +1783,9 @@
             "default": ""
           },
           "extra_body": {
-            "type": "object",
-            "description": "额外请求体（高级）",
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游协议填写 JSON 参数, 会覆盖同名默认值. 仅填写模型支持的参数. 使用 Chat 协议字段; quality 的位置由网关决定.",
             "items": {},
             "default": {}
           },
@@ -1718,10 +1802,11 @@
             ],
             "default": "jpeg"
           }
-        }
+        },
+        "hide_hint_in_list": true
       },
       "gitee_images": {
-        "name": "Gitee Images",
+        "name": "Gitee 图",
         "description": "Gitee AI Images API（文生图，白名单尺寸）。",
         "hint": "不支持的尺寸会自动兜底到可用尺寸。",
         "items": {
@@ -1831,11 +1916,19 @@
               "auto"
             ],
             "default": "jpeg"
+          },
+          "extra_body": {
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游协议填写 JSON 参数, 会覆盖同名默认值. 仅填写模型支持的参数. 例如 quality: high (可选 auto/low/medium/high, 以模型文档为准).",
+            "items": {},
+            "default": {}
           }
-        }
+        },
+        "hide_hint_in_list": true
       },
       "gitee_async": {
-        "name": "Gitee 异步改图",
+        "name": "Gitee 改图",
         "description": "Gitee AI 的异步改图接口（轮询 task）。仅用于改图链路。",
         "hint": "仅对 features.edit / features.selfie 的链路有效；文生图请使用 Gitee Images 模板。",
         "items": {
@@ -1900,7 +1993,7 @@
           "guidance_scale": {
             "type": "float",
             "description": "引导系数",
-            "default": 1.0,
+            "default": 1,
             "slider": {
               "min": 1,
               "max": 5,
@@ -1939,11 +2032,19 @@
               "auto"
             ],
             "default": "jpeg"
+          },
+          "extra_body": {
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游协议填写 JSON 参数, 会覆盖同名默认值. 仅填写模型支持的参数. 转换为 multipart 表单字段; image 和 task_types 由插件管理.",
+            "items": {},
+            "default": {}
           }
-        }
+        },
+        "hide_hint_in_list": true
       },
       "jimeng": {
-        "name": "即梦（豆包）",
+        "name": "即梦",
         "description": "即梦/豆包聚合接口（cookie + apikey）。",
         "hint": "cookie_list 支持轮询；用于提升稳定性。注意隐私与风控风险。",
         "items": {
@@ -2029,11 +2130,19 @@
               "auto"
             ],
             "default": "jpeg"
+          },
+          "extra_body": {
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游协议填写 JSON 参数, 会覆盖同名默认值. 仅填写模型支持的参数. 此接口使用 GET, 额外参数会转换为查询参数.",
+            "items": {},
+            "default": {}
           }
-        }
+        },
+        "hide_hint_in_list": true
       },
       "grok_video": {
-        "name": "Grok（视频）",
+        "name": "Grok 视频",
         "description": "用于 xAI 异步视频生成链路（Text-to-Video / Image-to-Video）。",
         "hint": "仅对 features.video.chain 生效；图片生成/改图请用其它模板。",
         "items": {
@@ -2167,11 +2276,19 @@
               "auto"
             ],
             "default": "jpeg"
+          },
+          "extra_body": {
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游视频协议填写 JSON 参数, 覆盖同名默认项; 带参考图的 OpenAI Videos 请求自动转换为表单字段.",
+            "items": {},
+            "default": {}
           }
-        }
+        },
+        "hide_hint_in_list": true
       },
       "flow2api_video": {
-        "name": "Flow2API（视频）",
+        "name": "Flow2API 视频",
         "description": "用于视频生成链路（通过 /v1/chat/completions 流式输出视频 URL）。",
         "hint": "与官方示例一致：POST /v1/chat/completions + stream=true；可文生视频，也可附带图片做图生视频（若模型支持）。",
         "items": {
@@ -2229,11 +2346,19 @@
               "auto"
             ],
             "default": "jpeg"
+          },
+          "extra_body": {
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游视频协议填写 JSON 参数, 覆盖同名默认项; 带参考图的 OpenAI Videos 请求自动转换为表单字段.",
+            "items": {},
+            "default": {}
           }
-        }
+        },
+        "hide_hint_in_list": true
       },
       "sd20_video": {
-        "name": "3365 SD2.0（视频）",
+        "name": "SD2.0 视频",
         "description": "用于 3365 的 SD2.0 异步文生/图生视频任务。",
         "hint": "POST /v1/video/generations，轮询同一路径；支持 video-v1-5s、video-v1-10s、video-v1-15s。",
         "items": {
@@ -2311,11 +2436,19 @@
             "type": "int",
             "description": "重试基础间隔(秒)",
             "default": 2
+          },
+          "extra_body": {
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游视频协议填写 JSON 参数, 覆盖同名默认项; 带参考图的 OpenAI Videos 请求自动转换为表单字段.",
+            "items": {},
+            "default": {}
           }
-        }
+        },
+        "hide_hint_in_list": true
       },
       "3365_video": {
-        "name": "3365 视频（xAI 兼容）",
+        "name": "伞云视频",
         "description": "适配 3365 New API 的异步 xAI 视频接口。",
         "hint": "POST /v1/videos/generations；支持 grok-imagine-video、grok-imagine-video-1.5 等模型，轮询 /v1/videos/{request_id}。",
         "items": {
@@ -2393,11 +2526,19 @@
             "type": "int",
             "description": "重试基础间隔（秒）",
             "default": 2
+          },
+          "extra_body": {
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游视频协议填写 JSON 参数, 覆盖同名默认项; 带参考图的 OpenAI Videos 请求自动转换为表单字段.",
+            "items": {},
+            "default": {}
           }
-        }
+        },
+        "hide_hint_in_list": true
       },
       "sora2_video": {
-        "name": "OpenAI Videos（异步视频）",
+        "name": "OpenAI 视频",
         "description": "用于 OpenAI 兼容异步视频任务（POST /v1/videos 后轮询任务状态）。",
         "hint": "适配标准 OpenAI Videos 与 New API 网关：无图走文生视频，有图时以 input_reference 上传；任务完成后支持公开 URL 或鉴权 /content 下载。旧 x666_sora2 配置继续兼容。",
         "items": {
@@ -2515,11 +2656,11 @@
             "default": 2
           },
           "extra_body": {
-            "type": "object",
-            "description": "额外请求参数",
-            "hint": "会合并到 POST /v1/videos 请求；带参考图时自动转换为 multipart 表单字段。",
-            "default": {},
-            "items": {}
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游视频协议填写 JSON 参数, 覆盖同名默认项; 带参考图的 OpenAI Videos 请求自动转换为表单字段.",
+            "items": {},
+            "default": {}
           },
           "output_format": {
             "type": "string",
@@ -2534,10 +2675,11 @@
             ],
             "default": "jpeg"
           }
-        }
+        },
+        "hide_hint_in_list": true
       },
       "modelscope_openai_images": {
-        "name": "魔搭 Images",
+        "name": "魔搭图",
         "description": "魔搭社区异步 Images API。",
         "hint": "文生图会自动提交异步任务并轮询结果；当前不支持 images.edit，请使用其他改图链路。",
         "items": {
@@ -2607,7 +2749,7 @@
           "poll_interval": {
             "type": "float",
             "description": "任务轮询间隔（秒）",
-            "default": 2.0,
+            "default": 2,
             "min": 0.5,
             "max": 30
           },
@@ -2629,10 +2771,20 @@
             "default": "1024x1024"
           },
           "extra_body": {
-            "type": "object",
-            "description": "额外请求体（高级）",
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "按上游协议填写 JSON 参数, 会覆盖同名默认值. 仅填写模型支持的参数. 例如 quality: high (可选 auto/low/medium/high, 以模型文档为准).",
             "items": {},
-            "default": {}
+            "default": {},
+            "template_schema": {
+              "quality": {
+                "name": "Quality",
+                "description": "生成质量",
+                "type": "string",
+                "hint": "仅在模型支持时添加, 如 high/medium/low/auto.",
+                "default": "auto"
+              }
+            }
           },
           "output_format": {
             "type": "string",
@@ -2647,7 +2799,8 @@
             ],
             "default": "jpeg"
           }
-        }
+        },
+        "hide_hint_in_list": true
       }
     }
   }

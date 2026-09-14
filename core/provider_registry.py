@@ -298,6 +298,9 @@ class ProviderRegistry:
                 continue
             seen.add(provider_id)
 
+            if not isinstance(item.get("extra_body", {}), dict):
+                errors.append(f"provider '{provider_id}' extra_body must be an object")
+
             template_key = self._resolve_template_key(item)
             if not template_key:
                 errors.append(f"providers[{idx}].__template_key is required")
@@ -486,6 +489,7 @@ class ProviderRegistry:
                 "api_keys": _as_list(conf.get("api_keys")),
                 "model": conf.get("model"),
                 "resolution": conf.get("default_resolution", "4K"),
+                "extra_body": conf.get("extra_body", {}),
                 "timeout": conf.get("timeout", DEFAULT_PROVIDER_TIMEOUT_SECONDS),
                 "max_retries": conf.get("max_retries", 2),
                 "use_proxy": bool(conf.get("use_proxy", False)),
@@ -496,6 +500,7 @@ class ProviderRegistry:
 
         if template_key == "flow2api":
             settings = {
+                "extra_body": conf.get("extra_body", {}),
                 "api_url": conf.get("api_url"),
                 "api_keys": conf.get("api_keys"),
                 "api_key": conf.get("api_key"),
@@ -632,6 +637,7 @@ class ProviderRegistry:
                 extra_body["negative_prompt"] = str(
                     conf.get("negative_prompt") or ""
                 ).strip()
+            extra_body.update(_as_dict(conf.get("extra_body")))
             return OpenAICompatBackend(
                 imgr=self._imgr,
                 base_url=str(conf.get("base_url") or "https://ai.gitee.com/v1").strip(),
@@ -658,6 +664,7 @@ class ProviderRegistry:
 
         if template_key == "jimeng":
             return JimengApiBackend(
+                extra_body=_as_dict(conf.get("extra_body")),
                 imgr=self._imgr,
                 data_dir=self._data_dir,
                 api_url=str(conf.get("api_url") or "").strip(),
@@ -675,6 +682,7 @@ class ProviderRegistry:
             if not graphql_api_key:
                 raise RuntimeError(f"Provider '{pid}' missing graphql_api_key")
             settings = VertexAIAnonymousSettings(
+                extra_body=_as_dict(conf.get("extra_body")),
                 model=str(conf.get("model") or "gemini-3-pro-image-preview").strip(),
                 timeout_seconds=int(
                     conf.get("timeout") or DEFAULT_PROVIDER_TIMEOUT_SECONDS
@@ -717,6 +725,7 @@ class ProviderRegistry:
             backend = Grok2ApiVideoService(settings=p)
         elif template_key == "flow2api_video":
             settings = {
+                "extra_body": p.get("extra_body", {}),
                 "api_url": p.get("api_url"),
                 "api_keys": p.get("api_keys"),
                 "api_key": p.get("api_key"),

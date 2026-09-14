@@ -10,6 +10,8 @@ import aiohttp
 from astrbot.api import logger
 from astrbot.api.message_components import Image
 
+from .request_body import merge_request_body, request_field
+
 
 class JimengApiBackend:
     """即梦/豆包绘图 API（第三方聚合接口）后端。
@@ -31,8 +33,10 @@ class JimengApiBackend:
         default_model: str = "Seedream 4.0",
         timeout: int = 600,
         output_format: str = "jpeg",
+        extra_body: dict | None = None,
     ):
         self.imgr = imgr
+        self.extra_body = extra_body
         self.data_dir = Path(data_dir)
         self.api_url = str(api_url or "").strip()
         self.apikey = str(apikey or "").strip()
@@ -107,6 +111,11 @@ class JimengApiBackend:
         }
         if image_url:
             params["url"] = image_url
+
+        params = {
+            key: request_field(value)
+            for key, value in merge_request_body(params, self.extra_body).items()
+        }
 
         session = await self._get_session()
         t0 = time.time()

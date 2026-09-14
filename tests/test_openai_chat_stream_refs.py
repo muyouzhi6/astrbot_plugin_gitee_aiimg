@@ -358,6 +358,7 @@ class OpenAIChatEditFallbackTests(unittest.IsolatedAsyncioTestCase):
             api_keys=["test-key"],
             default_model="gpt-image-2",
             generate_request_mode="non_stream",
+            extra_body={"quality": "high"},
         )
         backend._get_client = lambda key: client
 
@@ -376,7 +377,7 @@ class OpenAIChatEditFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out_path, Path("/tmp/result.png"))
         self.assertEqual(
             client.chat.completions.calls[0]["extra_body"],
-            {"size": "3840x2160"},
+            {"size": "3840x2160", "quality": "high"},
         )
 
     async def test_edit_retries_with_file_service_url_when_data_uri_is_rejected(self):
@@ -685,6 +686,33 @@ class OpenAIChatGenerateFallbackTests(unittest.IsolatedAsyncioTestCase):
 
 
 class OpenAICompatOutputFormatTests(unittest.IsolatedAsyncioTestCase):
+    async def test_quality_reaches_images_generate_and_edit(self):
+        from unittest.mock import AsyncMock
+
+        _load_module()
+        compat_mod = sys.modules[OPENAI_COMPAT_MODULE_NAME]
+        backend = compat_mod.OpenAICompatBackend(
+            imgr=_DummyImageManager(),
+            base_url="https://api.example.com/v1",
+            api_keys=["test-key"],
+            default_model="gpt-image-2",
+            extra_body={"quality": "high"},
+        )
+        images = types.SimpleNamespace(generate=AsyncMock(), edit=AsyncMock())
+        backend._get_client = lambda key: types.SimpleNamespace(images=images)
+        backend._save_images_response = AsyncMock(
+            return_value=Path("/tmp/missing-test.png")
+        )
+        await backend.generate("test", size="1024x1024")
+        png_bytes = b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2ioAAAAASUVORK5CYII="
+        )
+        await backend.edit("test", [png_bytes], size="1024x1024")
+        self.assertEqual(
+            images.generate.call_args.kwargs["extra_body"]["quality"], "high"
+        )
+        self.assertEqual(images.edit.call_args.kwargs["extra_body"]["quality"], "high")
+
     async def test_url_response_passes_output_format_to_image_manager(self):
         _load_module()
         compat_mod = sys.modules[OPENAI_COMPAT_MODULE_NAME]

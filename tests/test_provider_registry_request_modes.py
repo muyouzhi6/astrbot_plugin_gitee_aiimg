@@ -144,6 +144,41 @@ def _load_module():
 
 
 class ProviderRegistryRequestModeTests(unittest.TestCase):
+    def test_provider_options_are_editable_and_common_protocols_come_first(self):
+        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+        templates = schema["providers"]["templates"]
+        self.assertEqual(
+            list(templates)[:3], ["openai_images", "gemini_native", "openai_chat"]
+        )
+        for key, template in templates.items():
+            with self.subTest(template=key):
+                self.assertTrue(template["hide_hint_in_list"])
+                self.assertEqual(template["items"]["extra_body"]["type"], "dict")
+                self.assertEqual(template["items"]["extra_body"]["default"], {})
+
+    def test_registry_passes_extra_body_to_every_image_backend(self):
+        mod = _load_module()
+        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+        for key, template in schema["providers"]["templates"].items():
+            if "video" in key:
+                continue
+            with self.subTest(template=key):
+                conf = {k: v.get("default") for k, v in template["items"].items()}
+                conf.update(
+                    id="test",
+                    __template_key=key,
+                    graphql_api_key="test",
+                    extra_body={"quality": "high"},
+                )
+                registry = mod.ProviderRegistry(
+                    {"providers": [conf]}, imgr=object(), data_dir=ROOT
+                )
+                kwargs = registry.get_backend("test").kwargs
+                settings = kwargs.get("settings", kwargs)
+                if not isinstance(settings, dict):
+                    settings = settings.kwargs
+                self.assertEqual(settings["extra_body"]["quality"], "high")
+
     def test_provider_schema_uses_600_second_timeout_defaults(self):
         schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
         templates = schema["providers"]["templates"]

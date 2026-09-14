@@ -22,6 +22,8 @@ from urllib.parse import parse_qs, quote, urljoin, urlsplit
 
 import httpx
 
+from .request_body import merge_request_body
+
 from astrbot.api import logger
 
 
@@ -577,6 +579,8 @@ class GrokVideoService:
             payload["aspect_ratio"] = self.aspect_ratio
         if self.resolution:
             payload["resolution"] = self.resolution
+
+        payload = merge_request_body(payload, self.settings.get("extra_body"))
 
         headers = {
             "Content-Type": "application/json",

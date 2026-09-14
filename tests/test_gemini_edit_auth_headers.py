@@ -116,6 +116,24 @@ class _FakeSession:
 
 
 class GeminiEditAuthHeaderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_extra_body_reaches_request_without_losing_image_settings(self):
+        mod = _load_module()
+        extra = {"generationConfig": {"temperature": 0.6}}
+        backend = mod.GeminiEditBackend(
+            imgr=object(),
+            settings={"api_keys": ["test-key"], "extra_body": extra},
+        )
+        session = _FakeSession()
+        backend._get_session = AsyncMock(return_value=session)
+        await backend._request([{"text": "test"}], resolution="4K", aspect_ratio="16:9")
+        config = session.last_json["generationConfig"]
+        self.assertEqual(config["temperature"], 0.6)
+        self.assertEqual(
+            config["imageConfig"], {"imageSize": "4K", "aspectRatio": "16:9"}
+        )
+        self.assertEqual(config["responseModalities"], ["TEXT", "IMAGE"])
+        self.assertEqual(extra, {"generationConfig": {"temperature": 0.6}})
+
     def test_gemini_native_uses_new_runtime_defaults(self):
         mod = _load_module()
         backend = mod.GeminiEditBackend(

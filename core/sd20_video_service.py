@@ -17,6 +17,7 @@ import httpx
 from astrbot.api import logger
 
 from .image_format import guess_image_mime_and_ext
+from .request_body import merge_request_body
 
 
 @dataclass(frozen=True)
@@ -327,6 +328,8 @@ class SD20VideoService:
             mime, _ = guess_image_mime_and_ext(image_bytes)
             encoded = base64.b64encode(image_bytes).decode("ascii")
             payload["image"] = f"data:{mime};base64,{encoded}"
+
+        payload = merge_request_body(payload, self.settings.get("extra_body"))
 
         timeout = httpx.Timeout(
             connect=10.0,
