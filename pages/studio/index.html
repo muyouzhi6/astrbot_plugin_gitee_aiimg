@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <title>映像 · 图片工作台</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="app"><div class="boot">正在打开工作台...</div></div>
+    <div id="overlay"></div>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <input
+      id="upload"
+      type="file"
+      accept="image/png,image/jpeg,image/webp,image/gif"
+      multiple
+      hidden
+    />
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -231,6 +231,24 @@ class EditRouter:
                         pid,
                         time.perf_counter() - t_start,
                     )
+                    store = getattr(self.imgr, "studio_store", None)
+                    if store:
+                        from .studio_capture import capture_result
+
+                        try:
+                            await capture_result(
+                                store,
+                                Path(result),
+                                prompt=prompt,
+                                provider=pid,
+                                model=self.registry.get(pid).get("model", ""),
+                                output=output_kwargs,
+                                mode="edit",
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "[studio] archive failed: %s", type(exc).__name__
+                            )
                     return result
                 except Exception as e:
                     last_error = e

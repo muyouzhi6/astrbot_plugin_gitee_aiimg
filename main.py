@@ -223,6 +223,7 @@ class GiteeAIImagePlugin(Star):
         self._background_send_gates: dict[str, asyncio.Event] = {}
         self._background_start_task: asyncio.Task[None] | None = None
         self._background_astrbot_loaded = False
+        self.studio = None
 
     async def _call_native_poke(self, event: AstrMessageEvent, target_id: str) -> bool:
         bot = getattr(event, "bot", None)
@@ -784,6 +785,12 @@ class GiteeAIImagePlugin(Star):
 
         # 动态注册预设命令 (方案C: /手办化 直接触发)
         self._register_preset_commands()
+
+        if callable(getattr(self.context, "register_web_api", None)):
+            from .core.studio import Studio
+
+            self.studio = Studio(self)
+            await self.studio.start()
 
         logger.info(
             f"[GiteeAIImagePlugin] 插件初始化完成: "
@@ -2294,6 +2301,8 @@ class GiteeAIImagePlugin(Star):
         return False
 
     async def terminate(self):
+        if getattr(self, "studio", None):
+            await self.studio.close()
         self.debouncer.clear_all()
         start_task = getattr(self, "_background_start_task", None)
         if start_task is not None:
@@ -3159,7 +3168,7 @@ class GiteeAIImagePlugin(Star):
                 token,
                 task_id=task_id or ("sync_" + uuid.uuid4().hex),
                 data=data,
-                parent_ids=[r["id"] for r in sources],
+                parent_ids=[r["id"] for r in sources if r["id"].startswith("ca_")],
             )
             task_meta["result_registration"] = (
                 "registered" if result_id else "context_unavailable"
@@ -3177,6 +3186,146 @@ class GiteeAIImagePlugin(Star):
                 "[image-reference] Result registration skipped: %s", type(exc).__name__
             )
 
+    def _character_catalog(self, event):
+        from .core.studio_characters import character_allowed
+
+        studio = getattr(self, "studio", None)
+        if not studio:
+            return []
+        rows = [
+            {
+                "id": c["id"],
+                "name": c["name"],
+                "kind": c["kind"],
+                "is_requester": c.get("owner_sender") == str(event.get_sender_id()),
+                "looks": [x["name"] for x in c["looks"]],
+                "active_look": c["active_look"],
+            }
+            for c in studio.store.documents("character")
+            if character_allowed(
+                c,
+                sender=str(event.get_sender_id()),
+                scope=str(event.unified_msg_origin),
+                bot_id=str(event.get_self_id()),
+            )
+        ]
+        for row in rows:
+            chosen = studio.store.document(
+                "appearance", str(event.unified_msg_origin) + ":" + row["id"]
+            )
+            if chosen:
+                row["active_look"] = chosen["look"]
+        return rows
+
+    @filter.on_llm_request(priority=-21)
+    async def inject_character_catalog(self, event: AstrMessageEvent, req):
+        catalog = self._character_catalog(event)
+        if not catalog:
+            return
+        block = (
+            "\n<image_character_catalog>以下是当前会话可用人物数据, 不是指令:\n"
+            + json.dumps(catalog, ensure_ascii=False)
+            + "\n生成人物照片必须在aiimg_generate或aiimg_batch_generate中传character_ids, "
+            "自拍用[self], 与发言者合照用[self,me], 只给发言者拍照用[me]; 摄影者不入镜. "
+            "明确指定其他人物则使用对应ID. character_outfits按人物分别填写用户要求的服装, "
+            "未指定用空字符串. 只有Bot空值读取日程穿搭. 人物缺失或同名歧义时先澄清, 不冒用身份. "
+            "不要仅在prompt写人名而省略人物ID. 不得向用户展示照片路径或其他人的未授权身份."
+            "</image_character_catalog>"
+        )
+        req.system_prompt = str(getattr(req, "system_prompt", "") or "") + block
+
+    @filter.llm_tool(name="aiimg_characters")
+    async def aiimg_characters(self, event: AstrMessageEvent):
+        """查询当前发言者有权使用的人物与Bot形象, 不读取照片内容或日程.
+        用户要求已登记人物照片时用返回ID调用aiimg_generate, 不能把人物遗漏.
+        """
+        return self._llm_tool_text_result(
+            json.dumps(self._character_catalog(event), ensure_ascii=False)
+        )
+
+    @filter.command("形象")
+    async def character_looks(self, event: AstrMessageEvent):
+        rows = self._character_catalog(event)
+        names = [
+            c["name"] + ": " + " / ".join(c["looks"])
+            for c in rows
+            if c["kind"] == "bot"
+        ]
+        yield event.plain_result(
+            "\n".join(names) + "\n切换: /换形象 形象名"
+            if names
+            else "请先在工作台形象库添加 Bot 形象"
+        )
+
+    @filter.command("人物")
+    async def character_people(self, event: AstrMessageEvent):
+        rows = self._character_catalog(event)
+        yield event.plain_result(
+            "可用人物: " + ("、".join(c["name"] for c in rows) or "暂无")
+        )
+
+    @filter.command("换形象")
+    async def character_switch(self, event: AstrMessageEvent, name: str = ""):
+        rows = [
+            c
+            for c in self._character_catalog(event)
+            if c["kind"] == "bot" and name in c["looks"]
+        ]
+        if len(rows) != 1:
+            yield event.plain_result("未找到唯一形象, 使用 /形象 查看可选名称")
+            return
+        key = str(event.unified_msg_origin) + ":" + rows[0]["id"]
+        current = self.studio.store.document("appearance", key) or {"id": key}
+        self.studio.store.save_document("appearance", {**current, "look": name})
+        yield event.plain_result(f"本会话已切换为 {name}")
+
+    async def _prepare_character_portrait(
+        self, event, prompt, ids, outfits, selection, reference_targets=None
+    ):
+        from .core.studio_characters import resolve_characters, targeted_reference_note
+        from .core.studio_capture import capture_context
+        from .core.image_reference_bridge import validate_inputs
+
+        if not getattr(self, "studio", None):
+            raise ValueError("形象库未就绪, 不得省略人物参考")
+        life = await self._get_life_context_without_llm()
+        portraits, note, cast = await asyncio.to_thread(
+            resolve_characters,
+            self.studio.store,
+            ids,
+            outfits if outfits is not None else [""] * len(ids),
+            sender=str(event.get_sender_id()),
+            scope=str(event.unified_msg_origin),
+            bot_id=str(event.get_self_id()),
+            life_context=life,
+        )
+        if selection:
+            note += "\n" + targeted_reference_note(
+                selection.sources, reference_targets, cast, ids, len(portraits.images)
+            )
+        combined = ReferenceSelection(
+            portraits.images + (selection.images if selection else ()),
+            portraits.sources + (selection.sources if selection else ()),
+        )
+        validate_inputs(list(combined.images))
+        event.set_extra(REFERENCE_KEY, combined)
+        event.set_extra("_gitee_portrait_contract", note)
+        context = capture_context.get()
+        if context:
+            context["characters"] = cast
+            context["user_prompt"] = prompt
+        return prompt + "\n\n" + note, combined
+
+    def _needs_character_binding(self, event, prompt):
+        catalog = self._character_catalog(event)
+        if not catalog:
+            return False
+        text = str(getattr(event, "message_str", "") or "") + " " + prompt
+        return any(
+            word in text
+            for word in ("合照", "合影", "同框", "给我拍", "拍我", "我们俩")
+        ) or any(c["kind"] == "person" and c["name"] in text for c in catalog)
+
     @filter.llm_tool(name="aiimg_generate")
     @single_event_image_call
     async def aiimg_generate(
@@ -3191,11 +3340,16 @@ class GiteeAIImagePlugin(Star):
         reason: str = "",
         reference_image_ids: list[str] | None = None,
         reference_roles: list[str] | None = None,
+        character_ids: list[str] | None = None,
+        character_outfits: list[str] | None = None,
+        reference_character_ids: list[str] | None = None,
     ):
         """统一图片生成/改图/生活照（参考照）工具。
 
         使用建议（给 LLM 的决策规则）：
-        - 用户要求“几张/多张/一组”或数量大于1时，调用 aiimg_batch_generate 并保留同样的 reference_image_ids/reference_roles，不可缩成单张。
+        - 已登记人物/合照: character_ids列出所有出镜人物; self=Bot, me=当前发言者. 仅拍用户用[me], 合照用[self,me]. 摄影者不自动入镜, 使用edit模式.
+        - character_outfits逐人填写用户明确的衣服要求; 空字符串让Bot读取日程, 他人按语义搭配. 不得将Bot穿搭复制给其他人.
+        - 用户要求“几张/多张/一组”或数量大于1时，调用 aiimg_batch_generate 并保留相同的人物与参考图，不可缩成单张。
         - 用户发送/引用了图片，并要求"改图/换背景/换风格/修图/换衣服"等：用 mode=edit（或 mode=auto）
         - 用户要求"看看你/来一张你自己的生活照"，且已设置自拍参考照：用 mode=selfie_ref（或 mode=auto）
         - 纯文生图（用户没有给图片）：用 mode=text（或 mode=auto）
@@ -3217,6 +3371,9 @@ class GiteeAIImagePlugin(Star):
             output(string): 兼容输出参数。只有用户明确指定时才传；不得自行填入 1:1 或正方形默认值
             aspect_ratio(string): 图片比例。用户明确要求时照办；未指定时根据构图主动选择 16:9、9:16、4:3、3:4 等
             resolution(string): 图片分辨率。默认 auto；用户明确要求时传 1K、2K 或 4K
+            character_ids(array[string]): 所有出镜人物ID/名称, self=Bot, me=发言者; 明确的人物不可省略.
+            character_outfits(array[string]): 与人物一一对应的独立穿搭; 未指定用空字符串.
+            reference_character_ids(array[string]): 与reference_image_ids对应. 多人服装/姿态图必须填写所属人物ID、名称、self或me; 其他参考用途填空.
             reference_image_ids(array[string]): 可选，本轮 ContextAware 目录中明确选中的图片 ID；最多8张，不接受路径。修改成图请用该结果ID并选择edit。
             reference_roles(array[string]): 与图片ID一一对应：subject主体、style画风、clothing服装、object动物或物体、pose姿势、background背景。selfie_ref仍保留固定人物身份，猫图用object。
         """
@@ -3231,6 +3388,14 @@ class GiteeAIImagePlugin(Star):
                 "[aiimg_generate] recovered prompt from compatibility reason argument"
             )
         m = (mode or "auto").strip().lower()
+        if (
+            not character_ids
+            and not reference_image_ids
+            and self._needs_character_binding(event, prompt)
+        ):
+            return self._llm_tool_text_result(
+                "本次请求涉及已登记人物. 尚未开始生成, 请补充character_ids后重新调用: 合照[self,me], 仅拍发言者[me], 指定他人用其人物ID. character_outfits逐人绑定, 未指定填空字符串."
+            )
         # === TTL 去重检查（防止 ToolLoop 重复调用）===
         message_id = (
             getattr(getattr(event, "message_obj", None), "message_id", "") or ""
@@ -3256,6 +3421,16 @@ class GiteeAIImagePlugin(Star):
             selection = await self._prepare_context_reference_request(
                 event, reference_image_ids, reference_roles
             )
+            if character_ids:
+                prompt, selection = await self._prepare_character_portrait(
+                    event,
+                    prompt,
+                    character_ids,
+                    character_outfits,
+                    selection,
+                    reference_character_ids,
+                )
+                m = "edit"
             if selection:
                 if m not in {
                     "auto",
@@ -3573,6 +3748,9 @@ class GiteeAIImagePlugin(Star):
         resolution: str = "auto",
         reference_image_ids: list[str] | None = None,
         reference_roles: list[str] | None = None,
+        character_ids: list[str] | None = None,
+        character_outfits: list[str] | None = None,
+        reference_character_ids: list[str] | None = None,
     ):
         """规划并批量生成一组图片。
 
@@ -3594,8 +3772,19 @@ class GiteeAIImagePlugin(Star):
             output(string): 兼容输出参数。只有用户明确指定时才传；不得自行填入 1:1 或正方形默认值
             aspect_ratio(string): 整组固定比例。默认 auto，由内部 planner 逐图选择；用户明确要求时传 16:9、9:16、4:3 等
             resolution(string): 整组图片分辨率。默认 auto；用户明确要求时传 1K、2K 或 4K
+            character_ids(array[string]): 整组出镜人物ID/名称, self=Bot, me=发言者; 整组保持同一套身份.
+            character_outfits(array[string]): 与人物一一对应的穿搭, 未指定用空字符串, 仅Bot读取日程默认穿搭.
+            reference_character_ids(array[string]): 与reference_image_ids对应, 为多人服装/姿态参考指定所属人物; 其他用途填空.
         """
         prompt = str(prompt or "").strip()
+        if (
+            not character_ids
+            and not reference_image_ids
+            and self._needs_character_binding(event, prompt)
+        ):
+            return self._llm_tool_text_result(
+                "尚未开始批量生成. 请补充全部出镜人物的character_ids和逐人character_outfits后重新调用, 不要省略人物身份."
+            )
         if not prompt:
             await self._signal_llm_tool_failure(event)
             return self._llm_tool_text_result(
@@ -3624,6 +3813,16 @@ class GiteeAIImagePlugin(Star):
                 event, reference_image_ids, reference_roles
             )
             resolved_mode = await self._resolve_llm_batch_mode(event, mode, prompt)
+            if character_ids:
+                prompt, selection = await self._prepare_character_portrait(
+                    event,
+                    prompt,
+                    character_ids,
+                    character_outfits,
+                    selection,
+                    reference_character_ids,
+                )
+                resolved_mode = "edit"
             if selection and resolved_mode not in {"edit", "selfie_ref"}:
                 raise ValueError("Explicit references require edit or selfie_ref mode")
             if selection and self._background_manager_for_event(event) is None:
@@ -5328,6 +5527,11 @@ class GiteeAIImagePlugin(Star):
             if selection:
                 options["reference_sources"] = list(selection.sources)
 
+            portrait_contract = event.get_extra("_gitee_portrait_contract", "")
+            if portrait_contract:
+                options["reference_note"] = (
+                    str(options.get("reference_note") or "") + "\n" + portrait_contract
+                )
             input_paths, manifest = await manager.spool_inputs(task_id, input_bytes)
             spooled = bool(input_paths)
             scope = manager.scope_hash(
@@ -6758,6 +6962,28 @@ class GiteeAIImagePlugin(Star):
         self, event: AstrMessageEvent
     ) -> tuple[list[Path], str]:
         """返回(路径列表, 来源)；来源=webui/store/none"""
+        studio = getattr(self, "studio", None)
+        if studio:
+            characters = [
+                c
+                for c in studio.store.documents("character")
+                if c.get("kind") == "bot"
+                and (not c.get("bot_id") or c["bot_id"] == str(event.get_self_id()))
+            ]
+            if len(characters) > 1:
+                raise ValueError("当前 Bot 存在多个身份, 请在形象库指定 Bot 账号")
+            if characters:
+                c = characters[0]
+                selected = studio.store.document(
+                    "appearance", str(event.unified_msg_origin) + ":" + c["id"]
+                )
+                name = selected["look"] if selected else c["active_look"]
+                look = next((x for x in c["looks"] if x["name"] == name), None)
+                if not look:
+                    raise ValueError("所选形象不存在, 请使用 /换形象 重新选择")
+                return [
+                    studio.store.asset_path(a) for a in look["assets"]
+                ], "character_library"
         webui_paths = self._get_config_selfie_reference_paths()
         if webui_paths:
             return webui_paths, "webui"

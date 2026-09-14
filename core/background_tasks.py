@@ -14,6 +14,7 @@ import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
+from contextvars import Context, copy_context
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
@@ -145,6 +146,7 @@ class _ScheduledWork:
     parent_id: str
     factory: Callable[[], Awaitable[Any]]
     future: asyncio.Future[Any]
+    context: Context
 
 
 class BackgroundImageTaskManager:
@@ -520,7 +522,9 @@ class BackgroundImageTaskManager:
                 record["owner_epoch"] = self.owner_epoch
                 record["updated_at"] = now
                 record["finished_at"] = now
-                record["notification_state"] = "pending"
+                record["notification_state"] = (
+                    "not_required" if record.get("task_kind") == "studio" else "pending"
+                )
                 token = str(record.get("notification_token") or uuid.uuid4().hex)
                 record["notification_token"] = token
                 payload = self._encode_record(record)
@@ -544,6 +548,8 @@ class BackgroundImageTaskManager:
                     "UPDATE reservations SET remaining=0, released=1 WHERE task_id=?",
                     (row["task_id"],),
                 )
+                if record.get("task_kind") == "studio":
+                    continue
                 conn.execute(
                     "INSERT OR IGNORE INTO notification_outbox("
                     "token, task_id, kind, state, payload_json, queued_at_ms, updated_at_ms"
@@ -971,7 +977,11 @@ class BackgroundImageTaskManager:
         """
 
         if state == "completed":
-            if record.get("task_kind") == "batch":
+            if record.get("task_kind") == "studio":
+                valid = bool(
+                    record.get("image_generated") and record.get("gallery_asset_id")
+                )
+            elif record.get("task_kind") == "batch":
                 requested = int(record.get("requested_count") or 0)
                 sent = int(record.get("sent_count") or 0)
                 unknown = int(record.get("unknown_count") or 0)
@@ -1382,6 +1392,8 @@ class BackgroundImageTaskManager:
             record["notification_state"] = (
                 str(existing["state"]) if existing is not None else "pending"
             )
+            if record.get("task_kind") == "studio":
+                record["notification_state"] = "not_required"
             payload = self._encode_record(record)
             expires = now + self.terminal_ttl_seconds * 1000
             changed = conn.execute(
@@ -1401,7 +1413,9 @@ class BackgroundImageTaskManager:
                 "WHERE task_id=? AND delivery_state='attempting'",
                 (task_id,),
             )
-            if existing is None:
+            if record.get("task_kind") == "studio":
+                pass
+            elif existing is None:
                 conn.execute(
                     "INSERT INTO notification_outbox("
                     "token, task_id, kind, state, payload_json, queued_at_ms, updated_at_ms"
@@ -1465,7 +1479,12 @@ class BackgroundImageTaskManager:
             raise asyncio.CancelledError
         loop = asyncio.get_running_loop()
         future: asyncio.Future[_T] = loop.create_future()
-        work = _ScheduledWork(parent_id=parent_id, factory=work_factory, future=future)
+        work = _ScheduledWork(
+            parent_id=parent_id,
+            factory=work_factory,
+            future=future,
+            context=copy_context(),
+        )
         async with self._scheduler_lock:
             queue = self._ready_by_parent.setdefault(parent_id, deque())
             queue.append(work)
@@ -1516,7 +1535,8 @@ class BackgroundImageTaskManager:
                     work.future.cancel()
                 continue
             self._provider_running += 1
-            self._track(
+            work.context.run(
+                self._track,
                 self._execute_scheduled(work),
                 name=f"background-provider-{parent_id}",
             )

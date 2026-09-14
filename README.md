@@ -1,6 +1,6 @@
 # AstrBot Gitee AI 图像生成插件
 
-[![Plugin Version](https://img.shields.io/badge/Version-v5.3.0-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
+[![Plugin Version](https://img.shields.io/badge/Version-v5.4.0-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.16.0%2C%20%3C5-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![Platform](https://img.shields.io/badge/Primary-aiocqhttp-4caf50?style=for-the-badge)](#平台与限制)
 [![CI](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml/badge.svg)](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml)
@@ -8,12 +8,29 @@
 多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件。`v5` 的核心升级是 **LLM 生图不再阻塞对话**：Bot 接下单图或批量任务后可以继续聊天，期间始终知道任务状态和安全摘要，完整提示词按需查询，任务完成或失败后还会按当前人格主动回来回应。
 
 > [!IMPORTANT]
-> 这份文档对应 `v5.3.0`，沿用现有配置结构。
+> 这份文档对应 `v5.4.0`, 需要 AstrBot >=4.28.0, 沿用现有配置结构.
 >
 > - `v5` 延续 `v4` 配置结构；从 `v3 / v2` 升级时仍需重新检查 WebUI 配置。
 > - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了发送图片前优化。
 > - 批量结果的“合并转发”当前只有 `aiocqhttp` 原生支持；其他平台会在开启回退时自动改为普通消息逐条发送。
 > - 历史更新内容见 [CHANGELOG.md](./CHANGELOG.md)。
+
+## 映像工作台
+
+在 AstrBot 插件详情中打开 **映像工作台**, 无需另开端口或设置另一套密码.
+
+- 服务商: 填写接口和密钥后获取模型列表, 从列表选择或手动输入模型 ID. 拖动功能链路调整尝试顺序, 手机也可使用上下移动按钮. 保存时保留未修改的密钥, 配置变更先备份再生效.
+- 形象库: 为 Bot 和其他人物分别建档, 每个人物可保存多套形象. 从资产库选取清晰的单人身份参考图, 不要把同一人的照片登记成两个人.
+- 他人形象: 填写本人用户 ID, 将其聊天里的“我”绑定到该人物; 允许使用的用户 ID 控制引用权限, 可进一步限定会话. 不做自动人脸识别或未知身份猜测.
+- 中文指令: `/形象` 查看 Bot 形象, `/换形象 日常` 切换当前会话的 Bot 形象, `/人物` 查看当前发言者有权引用的人物.
+- 聊天联动: “我们合照”使用 `character_ids=["self","me"]`; “给穿黑色西装的我拍一张”仅使用 `["me"]`. 工具通过 `character_outfits` 分别绑定穿搭, 空值仅对 Bot 读取 `life_scheduler.get_life_context(allow_generate=False)` 的当天缓存.
+- 画廊: 保存新生成图片的最终提示词, 模型, 参数和人物绑定. 支持大图预览, 原图下载和继续创作; 旧图片缓存若无可靠提示词记录, 显示“旧缓存未保存提示词”, 不推测补写.
+- 工作区: 多画布持久化, 参考图选择, 多图摆放, 平移缩放, 旋转, 图层排序, 撤销重做, 裁剪及 PNG 导出. 裁剪产生新资产而不覆盖原图.
+- 任务: 刷新或关闭页面不会再次发送生成请求. 重载后的未完成请求标为中断, 不自动重试付费任务. 取消只能停止本地等待, 不保证上游停止计费.
+
+人物绑定在接单时固化, 切换形象不会改变排队中的参考图. 多人物要求后端支持有序多图输入; 模型不支持时明确失败, 不合并成单人或只取第一张. 提示和输入约束可以降低串脸/串衣概率, 不能保证生成模型永不出错.
+
+工作台原图和数据库保存在插件数据目录下的 `studio/`, 只通过 AstrBot 鉴权接口读取. 不会随临时图片缓存清理而删除. 多个管理员同时编辑时检查版本冲突, 避免静默覆盖.
 
 ## v5.3：群聊图片引用、批量合影与主体特征保留
 

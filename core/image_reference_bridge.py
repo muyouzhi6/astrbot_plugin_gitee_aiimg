@@ -34,12 +34,16 @@ def single_event_image_call(function):
 
     @wraps(function)
     async def wrapped(self, event, *args, **kwargs):
+        from .studio_capture import capture_context
+
+        capture_token = capture_context.set({"source": "chat"})
         getter, setter = (
             getattr(event, "get_extra", None),
             getattr(event, "set_extra", None),
         )
         key = "_gitee_image_reference_call_active"
         if callable(getter) and getter(key, False):
+            capture_context.reset(capture_token)
             return self._llm_tool_text_result(
                 "An image request is already being prepared for this message; do not submit another concurrently."
             )
@@ -48,8 +52,10 @@ def single_event_image_call(function):
         try:
             return await function(self, event, *args, **kwargs)
         finally:
+            capture_context.reset(capture_token)
             if callable(setter):
                 setter(key, False)
+                setter("_gitee_portrait_contract", "")
 
     return wrapped
 

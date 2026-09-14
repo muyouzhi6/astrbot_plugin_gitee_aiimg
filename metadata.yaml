@@ -1,10 +1,10 @@
 name: astrbot_plugin_gitee_aiimg
 display_name: Gitee AI Image
 desc: >
-  [主要适配 QQ / aiocqhttp，兼容个人微信 weixin_oc] v5.3 与 ContextAware v3.6 联动，支持历史图片编辑、自拍混合参考、按需主体特征提取和批量结果接续；支持 LLM 单图与批量后台生成，生图不阻塞对话；Bot 会持续感知任务状态与安全摘要，完整提示词仅通过按需任务查询读取，并在安全的原会话中按当前人格回应任务终态，通知链路失败时保持静默。另支持多服务商文生图、改图、自拍参考照、视频、预设、精确尺寸、多 Key 轮询和失败兜底。
-version: v5.3.1
+  [主要适配 QQ / aiocqhttp，兼容个人微信 weixin_oc] 内置映像工作台，支持可视化服务商配置、模型列表、拖动回退链路、私人画廊和持久化画布；支持多人物多套形象、中文切换指令和独立穿搭，与 life_scheduler 日程及 ContextAware 历史图片联动。支持单图与批量后台生成、多服务商文生图、改图、自拍、视频、精确尺寸和多 Key 轮询。
+version: v5.4.0
 author: 木有知、Zhalslar
-astrbot_version: ">=4.16.0,<5"
+astrbot_version: ">=4.28.0,<5"
 support_platforms:
   - aiocqhttp
   - weixin_oc
