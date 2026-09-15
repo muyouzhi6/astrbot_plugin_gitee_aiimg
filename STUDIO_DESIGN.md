@@ -1,5 +1,9 @@
 # Studio delivery contract
 
+- Execute typed acyclic graphs through existing studio planning and generation, persist node states, freeze identity references at run acceptance, and stop downstream nodes after failure.
+- Protect favorites, character references, saved graph inputs and active task assets from manual deletion and retention. Default retention to unlimited. Remove shared media only after its last live asset record is deleted.
+- Prune deleted images from canvas documents with a revision increment. Preserve tombstones so task history cannot resurrect deleted outputs.
+
 - Embed `pages/studio` in AstrBot Pages and use authenticated plugin APIs.
 - Keep existing configuration as the single provider/routing source. Mask credentials, preserve unchanged secrets, reject stale writes, back up before saving.
 - Fetch model IDs from the selected provider. Preserve manual IDs. Do not infer parameter capabilities from model listing.

@@ -23,6 +23,8 @@ import {
 } from "./ui.js";
 import { Canvas } from "./canvas.js";
 import { createWorkspace } from "./workspace.js";
+import { createLibrary } from "./library.js";
+import { createGraphEditor } from "./graph.js";
 
 const root = document.querySelector("#app");
 const state = {
@@ -74,8 +76,23 @@ const shoot = createWorkspace({
   viewAsset,
   changed: onCanvasChange,
 });
+const library = createLibrary({
+  state,
+  render: renderPage,
+  getAssets,
+  viewAsset,
+  refresh,
+  saveCanvas,
+});
+const graph = createGraphEditor({
+  state,
+  render: renderPage,
+  picker,
+  viewAsset,
+});
 const pages = [
   ["workspace", "工作区", "canvas"],
+  ["flows", "工作流", "flow"],
   ["gallery", "画廊", "gallery"],
   ["characters", "形象库", "people"],
   ["providers", "服务商", "settings"],
@@ -88,8 +105,6 @@ const chainNames = {
   video: "视频",
 };
 const providerName = (p) => p.label || p.id || "新服务商";
-const imageCard = (a) =>
-  `<button class="asset-card" data-action="view-asset" data-id="${esc(a.id)}"><div><img data-asset="${esc(a.id)}" alt="${esc(a.name || a.model || "生成图片")}" loading="lazy"></div><span>${esc(a.model || a.name || "图片")}<small>${a.width} × ${a.height}</small></span></button>`;
 const providerOptions = (selected) =>
   `<option value="">按功能链路</option>${state.config.providers
     .filter((p) => !p.__template_key.includes("video"))
@@ -112,6 +127,7 @@ function renderPage() {
   if (state.page === "characters") renderCharacters(el);
   if (state.page === "providers") renderProviders(el);
   if (state.page === "jobs") renderJobs(el);
+  if (state.page === "flows") graph.render(el);
   loadImages();
 }
 async function refresh() {
@@ -121,6 +137,11 @@ async function refresh() {
   state.workspaces = data.workspaces;
   state.planners = data.planners || [];
   state.plans = data.plans || [];
+  state.graphs = data.graphs || [];
+  state.graphRuns = data.graph_runs || [];
+  state.nodeTypes = data.node_types || {};
+  state.storage = data.storage;
+  graph.restore();
   if (!canvas) {
     let doc = state.workspaces[0];
     if (!doc) {
@@ -188,23 +209,7 @@ function renderWorkspace(el) {
   shoot.renderWorkspace(el);
 }
 function renderGallery(el) {
-  el.className = "standard-page";
-  el.innerHTML = `<div class="section-toolbar"><div class="segments">${[
-    ["history", "生成历史"],
-    ["", "全部资产"],
-    ["reference", "参考图"],
-  ]
-    .map(([id, label]) =>
-      button(
-        label,
-        "gallery-kind",
-        "",
-        `data-kind="${id}" class="${state.kind === id ? "selected" : ""}"`,
-      ),
-    )
-    .join(
-      "",
-    )}</div><span class="muted">${state.assets.length} 张</span></div><div class="asset-grid">${state.assets.map(imageCard).join("")}</div>${!state.assets.length ? empty("这里收好每一次创作.", "", "") : ""}${state.more ? button("加载更多", "more-assets", "", 'class="load-more"') : ""}`;
+  library.render(el);
 }
 async function getAssets(reset = true) {
   if (reset) {
@@ -232,6 +237,9 @@ async function viewAsset(id) {
     `<div class="asset-detail"><div class="large-image"><img id="large-image" alt="原图"></div><div><p class="muted">${esc(a.model || a.name || "图片")} · ${a.width} × ${a.height}</p><h3>生成提示词</h3><pre class="prompt-view">${esc(a.prompt || "旧缓存未保存提示词")}</pre><div class="metadata"><span>${esc(a.provider || "")}</span><span>${time(a.created)}</span></div>${cast}</div></div>`,
     `${button("下载原图", "download", "download", `data-id="${id}"`)}${button("做变体", "shoot-from", "copy", `data-mode="variants" data-id="${id}"`)}${button("仿拍", "shoot-from", "canvas", `data-mode="recreate" data-id="${id}"`)}${button("继续创作", "reuse", "canvas", `data-id="${id}" class="primary"`)}`,
   );
+  document
+    .querySelector(".sheet footer")
+    ?.insertAdjacentHTML("afterbegin", library.assetActions(a));
   const img = document.querySelector("#large-image");
   try {
     img.src = await assetURL(id, "preview");
@@ -483,6 +491,9 @@ function renderJobs(el) {
 async function pollJobs() {
   try {
     const jobs = await api("jobs");
+    for (const job of jobs)
+      for (const item of job.items || [])
+        if (item.deleted) item.state = "deleted";
     const changed = JSON.stringify(jobs) !== JSON.stringify(state.jobs);
     state.jobs = jobs;
     if (state.page === "jobs" && changed) renderPage();
@@ -513,6 +524,7 @@ async function pollJobs() {
       }
     }
     await shoot.poll();
+    await graph.poll();
     pollJobs.initialized = true;
   } catch {
     /* Retry polling without submitting another generation. */
@@ -521,6 +533,8 @@ async function pollJobs() {
 pollJobs.seen = new Set();
 
 async function act(action, el) {
+  if (await library.action(action, el)) return;
+  if (await graph.action(action, el)) return;
   if (action === "shoot-run") action = "generate";
   if (await shoot.action(action, el)) return;
   if (action === "page") {
@@ -1104,7 +1118,7 @@ document.addEventListener("keydown", (e) => {
   if (state.page === "workspace" && e.key === "Delete") canvas.mutate("remove");
 });
 window.addEventListener("beforeunload", (e) => {
-  if (state.dirty) {
+  if (state.dirty || graph.dirty) {
     e.preventDefault();
     e.returnValue = "";
   }

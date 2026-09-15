@@ -8,6 +8,7 @@ import json
 import re
 import sqlite3
 import time
+import threading
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -27,6 +28,7 @@ class StudioStore:
         self.root.chmod(0o700)
         self.media.chmod(0o700)
         self.db_path = self.root / "studio.sqlite3"
+        self.media_lock = threading.RLock()
         with self.connect() as db:
             db.executescript(
                 "CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, "
@@ -48,6 +50,10 @@ class StudioStore:
             db.close()
 
     def add_image(self, blob: bytes, *, kind="upload", metadata=None):
+        with self.media_lock:
+            return self._add_image(blob, kind=kind, metadata=metadata)
+
+    def _add_image(self, blob: bytes, *, kind="upload", metadata=None):
         limit = 64 if kind == "history" else 20
         if not blob or len(blob) > limit * 1024 * 1024:
             raise ValueError(f"图片需小于 {limit} MB")
@@ -113,14 +119,23 @@ class StudioStore:
     def public_asset(data):
         return {k: v for k, v in data.items() if k != "file"}
 
-    def asset(self, asset_id):
+    def asset(self, asset_id, *, include_deleted=False):
         with self.connect() as db:
             row = db.execute(
                 "SELECT data FROM assets WHERE id=?", (asset_id,)
             ).fetchone()
         if not row:
             raise ValueError("图片不存在或已移除")
-        return json.loads(row[0])
+        data = json.loads(row[0])
+        if data.get("deleted_at") and not include_deleted:
+            raise ValueError("图片已删除")
+        return data
+
+    def available(self, asset_id):
+        try:
+            return bool(asset_id and self.asset(asset_id))
+        except ValueError:
+            return False
 
     def asset_path(self, asset_id, *, thumbnail=False):
         a = self.asset(asset_id)
@@ -142,9 +157,14 @@ class StudioStore:
 
     def list_assets(self, *, kind="", offset=0, limit=48):
         offset, limit = max(0, int(offset)), max(1, min(100, int(limit)))
-        query, args = "SELECT data FROM assets", []
-        if kind:
-            query += " WHERE kind=?"
+        query, args = (
+            "SELECT data FROM assets WHERE json_extract(data,'$.deleted_at') IS NULL",
+            [],
+        )
+        if kind == "favorite":
+            query += " AND json_extract(data,'$.favorite')=1"
+        elif kind:
+            query += " AND kind=?"
             args.append(kind)
         with self.connect() as db:
             rows = db.execute(
@@ -155,6 +175,206 @@ class StudioStore:
             "items": [self.public_asset(json.loads(r[0])) for r in rows[:limit]],
             "more": len(rows) > limit,
         }
+
+    def protected_assets(self, extra=()):
+        protected = {key: "任务正在使用" for key in extra}
+        for c in self.documents("character"):
+            for look in c.get("looks", []):
+                for key in look["assets"]:
+                    protected[key] = "人物身份参考"
+        for graph in self.documents("graph"):
+            for node in graph.get("nodes", []):
+                if node.get("type") == "image" and node.get("asset_id"):
+                    protected[node["asset_id"]] = "工作流参考图"
+        return protected
+
+    def library_settings(self):
+        return self.document("settings", "library") or {
+            "id": "library",
+            "revision": 0,
+            "max_count": 0,
+        }
+
+    def library_status(self, extra=()):
+        protected = self.protected_assets(extra)
+        with self.connect() as db:
+            assets = [
+                json.loads(r[0])
+                for r in db.execute(
+                    "SELECT data FROM assets WHERE json_extract(data,'$.deleted_at') IS NULL"
+                )
+            ]
+        return {
+            **self.library_settings(),
+            "count": len(assets),
+            "favorites": sum(bool(a.get("favorite")) for a in assets),
+            "protected": sum(
+                bool(
+                    a.get("favorite")
+                    or a["kind"] == "reference"
+                    or a["id"] in protected
+                )
+                for a in assets
+            ),
+            "bytes": sum(a["bytes"] for a in {a["sha256"]: a for a in assets}.values()),
+        }
+
+    def favorite(self, ids, value):
+        if not isinstance(value, bool):
+            raise ValueError("收藏状态无效")
+        self.validate_asset_ids(ids)
+        with self.media_lock, self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = []
+            for key in ids:
+                a = self.asset(key)
+                a["favorite"] = value
+                rows.append(a)
+            db.executemany(
+                "UPDATE assets SET data=? WHERE id=?",
+                [(json.dumps(a, ensure_ascii=False), a["id"]) for a in rows],
+            )
+        return {"updated": ids, "favorite": value}
+
+    @staticmethod
+    def validate_asset_ids(ids):
+        if (
+            not isinstance(ids, list)
+            or not 1 <= len(ids) <= 500
+            or any(not isinstance(x, str) for x in ids)
+            or len(set(ids)) != len(ids)
+        ):
+            raise ValueError("请选择 1 至 500 张不同图片")
+
+    def delete_assets(self, ids, *, extra=(), automatic=False):
+        self.validate_asset_ids(ids)
+        deleted, skipped = [], []
+        with self.media_lock, self.connect() as db:
+            protected = self.protected_assets(extra)
+            db.execute("BEGIN IMMEDIATE")
+            removed = []
+            for key in ids:
+                row = db.execute(
+                    "SELECT data FROM assets WHERE id=?", (key,)
+                ).fetchone()
+                if not row:
+                    skipped.append({"id": key, "reason": "图片不存在"})
+                    continue
+                a = json.loads(row[0])
+                if a.get("deleted_at"):
+                    continue
+                reason = (
+                    "已收藏, 请先取消收藏" if a.get("favorite") else protected.get(key)
+                )
+                if a["kind"] == "reference":
+                    reason = reason or "原有参考图库正在使用"
+                if automatic and a["created"] > time.time() - 300:
+                    reason = reason or "新图片保留期"
+                if reason:
+                    skipped.append({"id": key, "reason": reason})
+                    continue
+                a["deleted_at"] = time.time()
+                db.execute(
+                    "UPDATE assets SET data=? WHERE id=?",
+                    (json.dumps(a, ensure_ascii=False), key),
+                )
+                removed.append(a)
+                deleted.append(key)
+            gone = set(deleted)
+            for row in db.execute(
+                "SELECT id,data,revision FROM documents WHERE kind='workspace'"
+            ).fetchall():
+                doc = json.loads(row["data"])
+                before = json.dumps(doc, sort_keys=True)
+                doc["layers"] = [
+                    layer
+                    for layer in doc.get("layers", [])
+                    if layer.get("asset_id") not in gone
+                ]
+                shoot = doc.get("shoot", {})
+                shoot["picked"] = [
+                    key for key in shoot.get("picked", []) if key not in gone
+                ]
+                if shoot.get("source") in gone:
+                    shoot.update(source="", plan_id="", plan_shots=[])
+                if json.dumps(doc, sort_keys=True) != before:
+                    db.execute(
+                        "UPDATE documents SET data=?,revision=revision+1 WHERE kind='workspace' AND id=?",
+                        (json.dumps(doc, ensure_ascii=False), row["id"]),
+                    )
+            db.commit()
+            for a in removed:
+                if not db.execute(
+                    "SELECT 1 FROM assets WHERE sha=? AND json_extract(data,'$.deleted_at') IS NULL LIMIT 1",
+                    (a["sha256"],),
+                ).fetchone():
+                    for name in (
+                        a["file"],
+                        a["sha256"] + ".thumb.jpg",
+                        a["sha256"] + ".preview.jpg",
+                    ):
+                        path = self.media / name
+                        if path.parent.resolve() != self.media.resolve():
+                            raise ValueError("图片路径无效")
+                        try:
+                            path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+        return {"deleted": deleted, "skipped": skipped}
+
+    def enforce_limit(self, extra=()):
+        self.collect_deleted_files()
+        limit = self.library_settings()["max_count"]
+        if not limit:
+            return {"deleted": [], "remaining_over_limit": 0}
+        with self.connect() as db:
+            assets = [
+                json.loads(r[0])
+                for r in db.execute(
+                    "SELECT data FROM assets WHERE json_extract(data,'$.deleted_at') IS NULL ORDER BY created ASC"
+                )
+            ]
+        excess = max(0, len(assets) - limit)
+        protected = self.protected_assets(extra)
+        candidates = [
+            a["id"]
+            for a in assets
+            if not a.get("favorite")
+            and a["kind"] != "reference"
+            and a["id"] not in protected
+            and a["created"] <= time.time() - 300
+        ][:excess]
+        deleted = []
+        for i in range(0, len(candidates), 500):
+            deleted.extend(
+                self.delete_assets(
+                    candidates[i : i + 500], extra=extra, automatic=True
+                )["deleted"]
+            )
+        return {
+            "deleted": deleted,
+            "remaining_over_limit": max(0, excess - len(deleted)),
+        }
+
+    def collect_deleted_files(self):
+        with self.media_lock, self.connect() as db:
+            rows = db.execute(
+                "SELECT data FROM assets a WHERE json_extract(data,'$.deleted_at') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM assets b WHERE b.sha=a.sha AND json_extract(b.data,'$.deleted_at') IS NULL)"
+            ).fetchall()
+            for row in rows:
+                a = json.loads(row[0])
+                for name in (
+                    a["file"],
+                    a["sha256"] + ".thumb.jpg",
+                    a["sha256"] + ".preview.jpg",
+                ):
+                    path = self.media / name
+                    if path.parent.resolve() != self.media.resolve():
+                        continue
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
     def documents(self, kind):
         with self.connect() as db:
@@ -178,6 +398,21 @@ class StudioStore:
         )
 
     def save_document(self, kind, value):
+        with self.media_lock:
+            if kind == "character":
+                for look in value.get("looks", []):
+                    for key in look.get("assets", []):
+                        self.asset(key)
+            if kind == "graph":
+                for node in value.get("nodes", []):
+                    if node.get("asset_id"):
+                        self.asset(node["asset_id"])
+            if kind == "workspace":
+                for layer in value.get("layers", []):
+                    self.asset(layer["asset_id"])
+            return self._save_document(kind, value)
+
+    def _save_document(self, kind, value):
         data = dict(value)
         doc_id = str(data.get("id") or uuid.uuid4().hex)
         if kind in {"character", "workspace"} and not re.fullmatch(
@@ -213,6 +448,17 @@ class StudioStore:
                             (row["id"],),
                         )
         return dict(data, id=doc_id, revision=revision + 1)
+
+    def delete_graph(self, key, revision):
+        with self.media_lock, self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT revision FROM documents WHERE kind='graph' AND id=?", (key,)
+            ).fetchone()
+            if not row or row[0] != revision:
+                raise StudioConflict("工作流已变化, 请刷新")
+            db.execute("DELETE FROM documents WHERE kind='graph' AND id=?", (key,))
+        return {"deleted": key}
 
     def delete_character(self, doc_id, revision):
         with self.connect() as db:

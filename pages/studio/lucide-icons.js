@@ -1,5 +1,18 @@
 // Selected icon nodes from lucide-react 1.16.0, ISC license.
 export const iconNodes = {
+  star: [
+    [
+      "path",
+      {
+        d: "m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9Z",
+      },
+    ],
+  ],
+  flow: [
+    ["rect", { x: 3, y: 3, width: 6, height: 6, rx: 1 }],
+    ["rect", { x: 15, y: 15, width: 6, height: 6, rx: 1 }],
+    ["path", { d: "M6 9v9h9M9 6h9v9" }],
+  ],
   canvas: [
     [
       "rect",

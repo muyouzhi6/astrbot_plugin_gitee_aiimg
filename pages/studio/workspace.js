@@ -30,6 +30,7 @@ const statuses = {
   interrupted: "已中断",
   cancelled: "已取消",
   expired: "已过期",
+  deleted: "图片已删除",
 };
 const special = (mode) => ["variants", "recreate", "outfit"].includes(mode);
 const sourceNames = {

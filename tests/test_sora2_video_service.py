@@ -91,7 +91,7 @@ class Sora2VideoServiceTests(unittest.IsolatedAsyncioTestCase):
         async def _no_sleep(_seconds):
             return None
 
-        mod.asyncio.sleep = _no_sleep
+        mod.asyncio = types.SimpleNamespace(sleep=_no_sleep)
 
         class Service(mod.Sora2VideoService):
             async def _request_json_with_retries(self, *args, **kwargs):
@@ -158,7 +158,7 @@ class Sora2VideoServiceTests(unittest.IsolatedAsyncioTestCase):
         async def _no_sleep(_seconds):
             return None
 
-        mod.asyncio.sleep = _no_sleep
+        mod.asyncio = types.SimpleNamespace(sleep=_no_sleep)
 
         class Service(mod.Sora2VideoService):
             async def _request_json_with_retries(self, *args, **kwargs):
@@ -260,7 +260,7 @@ class Sora2VideoServiceTests(unittest.IsolatedAsyncioTestCase):
         async def _no_sleep(_seconds):
             return None
 
-        mod.asyncio.sleep = _no_sleep
+        mod.asyncio = types.SimpleNamespace(sleep=_no_sleep)
 
         class Service(mod.Sora2VideoService):
             async def _request_json_with_retries(self, *args, **kwargs):

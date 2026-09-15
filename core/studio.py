@@ -27,6 +27,7 @@ from .studio_characters import (
 )
 from .studio_store import StudioConflict, StudioStore
 from .studio_workflows import StudioWorkflows, request_key
+from .studio_graph import StudioGraph, NODE_TYPES
 
 MASK = "******** (已保存)"
 SECRET = re.compile(r"api.?key|token|password|secret|cookie|authorization", re.I)
@@ -74,9 +75,12 @@ class Studio:
         self.retired = []
         self.tasks = set()
         self.workflows = StudioWorkflows(self)
+        self.graphs = StudioGraph(self)
+        self.retention_task = None
 
     async def start(self):
         self.workflows.recover()
+        self.graphs.recover()
         self.plugin.imgr.studio_store = self.store
         await asyncio.to_thread(
             self.store.import_existing,
@@ -107,6 +111,12 @@ class Studio:
             "crop",
             "plan",
             "retry",
+            "favorite",
+            "delete-assets",
+            "storage",
+            "graph",
+            "graph-run",
+            "graph-cancel",
         ):
 
             async def handler(action=action):
@@ -118,12 +128,17 @@ class Studio:
                 ["GET", "POST"],
                 "Image studio",
             )
+        self.retention_task = asyncio.create_task(self.retention_loop())
 
     @property
     def manager(self):
         return self.plugin.background_tasks or self.own_manager
 
     async def close(self):
+        if self.retention_task:
+            self.retention_task.cancel()
+            await asyncio.gather(self.retention_task, return_exceptions=True)
+        await self.graphs.close()
         await self.workflows.close()
         for task in self.tasks:
             task.cancel()
@@ -132,6 +147,51 @@ class Studio:
             await self.own_manager.close()
         for registry in self.retired:
             await registry.close()
+
+    async def protected_assets(self):
+        protected = set()
+        for plan in self.store.documents("plan"):
+            if plan["state"] == "planning":
+                protected.add(plan["source_asset"])
+        for run in self.store.documents("graph_run"):
+            if run["state"] == "running":
+                protected.update(run.get("assets", []))
+                for node in run["nodes"].values():
+                    protected.update(node.get("assets", []))
+                for node in run["graph"]["nodes"]:
+                    if node.get("asset_id"):
+                        protected.add(node["asset_id"])
+        if self.manager and self.manager.started:
+            for job in self.store.documents("job"):
+                row = await self.manager.get_task(job["task_id"])
+                if row and row["state"] not in {
+                    "completed",
+                    "partial",
+                    "failed",
+                    "cancelled",
+                    "interrupted",
+                }:
+                    protected.update(
+                        row.get("studio_snapshot", {}).get("asset_ids", [])
+                    )
+                    protected.update(
+                        i["asset_id"] for i in row.get("items", []) if i.get("asset_id")
+                    )
+                    if job.get("source_asset"):
+                        protected.add(job["source_asset"])
+        return protected
+
+    async def retention_loop(self):
+        while True:
+            await asyncio.sleep(60)
+            try:
+                async with self.lock:
+                    protected = await self.protected_assets()
+                    await asyncio.to_thread(self.store.enforce_limit, protected)
+            except Exception:
+                from astrbot.api import logger
+
+                logger.warning("[studio] automatic library cleanup failed")
 
     def revision(self):
         return hashlib.sha256(
@@ -165,6 +225,8 @@ class Studio:
 
     async def save_config(self, body):
         async with self.lock:
+            if self.graphs.tasks or self.workflows.tasks:
+                raise ValueError("工作流或镜头规划正在执行, 请结束后保存服务商")
             if self.manager and self.manager.started:
                 health = await self.manager.health_snapshot()
                 if health.get("active_tasks", 0):
@@ -305,7 +367,7 @@ class Studio:
             raise ValueError("上游未返回模型列表, 可手动填写模型 ID")
         return {"models": result, "source": "live"}
 
-    async def submit(self, body):
+    async def submit(self, body, *, portrait=None):
         request_id = request_key(body.get("request_id"))
         manager = self.manager
         if not manager or not manager.accepting:
@@ -316,7 +378,10 @@ class Studio:
         body, shots = self.workflows.generation(body)
         images, portrait_note, cast = [], "", []
         ids = body.get("characters", [])
-        if ids:
+        if portrait:
+            selection, portrait_note, cast = portrait
+            images.extend(selection.images)
+        elif ids:
             life = await self.plugin._get_life_context_without_llm()
             selection, portrait_note, cast = await asyncio.to_thread(
                 resolve_characters,
@@ -665,6 +730,9 @@ class Studio:
                 "models",
                 "crop",
                 "retry",
+                "favorite",
+                "delete-assets",
+                "graph-cancel",
             }
             if action in writes and request.method != "POST":
                 return json_response({"error": "请使用 POST 请求"}, status_code=405)
@@ -676,6 +744,13 @@ class Studio:
                     "config": self.config_view(),
                     "planners": self.workflows.providers(),
                     "plans": self.store.documents("plan")[-30:],
+                    "graphs": self.store.documents("graph"),
+                    "graph_runs": [
+                        self.graphs.public_run(r)
+                        for r in self.store.documents("graph_run")[-30:]
+                    ],
+                    "node_types": NODE_TYPES,
+                    "storage": self.store.library_status(),
                 }
             elif action == "config":
                 result = (
@@ -689,6 +764,66 @@ class Studio:
                 result = self.store.list_assets(
                     kind=body.get("kind", ""), offset=body.get("offset", 0)
                 )
+            elif action == "favorite":
+                async with self.lock:
+                    result = self.store.favorite(body["ids"], body["value"])
+            elif action == "delete-assets":
+                async with self.lock:
+                    result = await asyncio.to_thread(
+                        self.store.delete_assets,
+                        body["ids"],
+                        extra=await self.protected_assets(),
+                    )
+            elif action == "storage":
+                async with self.lock:
+                    if request.method == "POST":
+                        limit = body.get("max_count")
+                        if (
+                            isinstance(limit, bool)
+                            or not isinstance(limit, int)
+                            or not 0 <= limit <= 100000
+                        ):
+                            raise ValueError("最大数量需为 0 至 100000, 0 表示不限制")
+                        self.store.save_document(
+                            "settings",
+                            {
+                                "id": "library",
+                                "revision": body.get("revision", 0),
+                                "max_count": limit,
+                            },
+                        )
+                        cleanup = await asyncio.to_thread(
+                            self.store.enforce_limit, await self.protected_assets()
+                        )
+                    else:
+                        cleanup = {}
+                    result = {**self.store.library_status(), **cleanup}
+            elif action == "graph":
+                if request.method == "POST":
+                    async with self.lock:
+                        if body.get("delete"):
+                            if any(
+                                r["state"] == "running" and r["graph_id"] == body["id"]
+                                for r in self.store.documents("graph_run")
+                            ):
+                                raise ValueError("工作流正在运行, 请先停止")
+                            result = self.store.delete_graph(
+                                body["id"], body["revision"]
+                            )
+                        else:
+                            result = self.graphs.save(body)
+                else:
+                    result = self.store.document("graph", body["id"])
+            elif action == "graph-run":
+                if request.method == "POST":
+                    async with self.lock:
+                        result = await self.graphs.start(body)
+                else:
+                    result = self.graphs.public_run(
+                        self.store.document("graph_run", body["id"])
+                    )
+            elif action == "graph-cancel":
+                result = await self.graphs.cancel(body["id"])
             elif action == "asset":
                 path = self.store.asset_path(
                     body["id"],
@@ -780,7 +915,8 @@ class Studio:
                             raise ValueError("画布图层参数错误")
                         if key in {"width", "height"} and value <= 0:
                             raise ValueError("图层宽高必须大于零")
-                result = self.store.save_document("workspace", body)
+                async with self.lock:
+                    result = self.store.save_document("workspace", body)
             elif action == "generate":
                 async with self.lock:
                     result = await self.submit(body)
@@ -807,7 +943,9 @@ class Studio:
                             "state": row.get("state", "interrupted")
                             if row
                             else "expired",
-                            "asset_id": row.get("gallery_asset_id", "") if row else "",
+                            "asset_id": row.get("gallery_asset_id", "")
+                            if row and self.store.available(row.get("gallery_asset_id"))
+                            else "",
                             "error": row.get("error", "") if row else "",
                             "items": [
                                 {
@@ -821,6 +959,13 @@ class Studio:
                                         "error",
                                     )
                                     if k in s
+                                    and (k != "asset_id" or self.store.available(s[k]))
+                                }
+                                | {
+                                    "deleted": bool(
+                                        s.get("asset_id")
+                                        and not self.store.available(s["asset_id"])
+                                    )
                                 }
                                 for s in (row.get("items", []) if row else [])
                             ],
