@@ -1,4 +1,5 @@
 import { api, query, loadImages } from "./api.js";
+import { uid } from "./id.js";
 import {
   esc,
   icon,
@@ -65,7 +66,7 @@ export function createWorkspace({
       const fingerprint = JSON.stringify(payload);
       let entry = pending[endpoint];
       if (!entry || entry.fingerprint !== fingerprint)
-        entry = { fingerprint, id: crypto.randomUUID() };
+        entry = { fingerprint, id: uid() };
       pending[endpoint] = entry;
       persist();
       await saveCanvas();
@@ -341,6 +342,7 @@ export function createWorkspace({
       if (planning) return true;
       if (!source) throw Error("先选择" + sourceNames[mode]);
       if (!planner) throw Error("先选择镜头规划模型");
+      view = "board";
       planning = true;
       render();
       try {
@@ -442,6 +444,7 @@ export function createWorkspace({
   }
   function submitted(id) {
     generationGroup = id;
+    view = "board";
     persist();
     renderBoard();
   }

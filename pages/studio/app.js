@@ -25,6 +25,7 @@ import { Canvas } from "./canvas.js";
 import { createWorkspace } from "./workspace.js";
 import { createLibrary } from "./library.js";
 import { createGraphEditor } from "./graph.js";
+import { uid } from "./id.js";
 
 const root = document.querySelector("#app");
 const state = {
@@ -66,6 +67,10 @@ Object.defineProperty(state, "dirty", {
 });
 let canvasSaves = Promise.resolve();
 let cropRect, cropAsset;
+let providerTab = "connections",
+  providerOpen = false;
+let configSaving = false;
+const modelLists = new Map();
 const shoot = createWorkspace({
   state,
   getCanvas: () => canvas,
@@ -132,7 +137,7 @@ function renderPage() {
 }
 async function refresh() {
   const data = await api("state");
-  state.config = data.config;
+  if (!state.configDirty) state.config = data.config;
   state.characters = data.characters;
   state.workspaces = data.workspaces;
   state.planners = data.planners || [];
@@ -318,16 +323,30 @@ function readCharacterForm() {
   if (characterDraft.active_look === prev) characterDraft.active_look = next;
 }
 function renderProviders(el) {
-  el.className = "providers-page";
-  el.innerHTML = `<div class="provider-list"><div class="list-heading"><span>${state.config.providers.length} 个服务商</span>${ib("添加服务商", "new-provider", "plus")}</div>${state.config.providers.map((p) => `<button class="provider-row ${state.provider === p.id ? "selected" : ""}" data-action="edit-provider" data-id="${esc(p.id)}"><span class="protocol-mark">${p.__template_key.startsWith("gemini") ? "G" : p.__template_key.includes("chat") ? "C" : "O"}</span><span><strong>${esc(providerName(p))}</strong><small>${esc(p.model || p.default_model || p.__template_key)}</small></span>${icon("arrow")}</button>`).join("")}<div class="chain-heading"><h3>回退链路</h3><small>从上到下尝试</small></div>${Object.entries(
-    chainNames,
-  )
+  if (!state.provider && !providerOpen)
+    state.provider = state.config.providers[0]?.id;
+  el.className = `providers-page provider-studio ${providerOpen ? "editing" : ""}`;
+  const tabs = `<div class="provider-tabs" role="tablist" aria-label="服务商设置">${[
+    ["connections", "模型连接"],
+    ["chains", "回退链路"],
+  ]
     .map(
       ([id, label]) =>
-        `<section class="chain"><header><strong>${label}</strong>${ib("添加" + label + "服务商", "chain-add", "plus", `data-feature="${id}"`)}</header><div class="chain-list" data-feature="${id}">${(state.config.features[id]?.chain || []).map((x, i) => `<div class="chain-row" data-index="${i}"><button class="drag-handle" aria-label="拖动排序" data-drag="${id}" data-index="${i}">${icon("grip")}</button><span class="chain-number">${i + 1}</span><span class="chain-label">${esc(providerName(state.config.providers.find((p) => p.id === x.provider_id) || { id: x.provider_id }))}${x.output ? `<small>${esc(x.output)}</small>` : ""}</span><div>${ib("上移", "chain-up", "up", `data-feature="${id}" data-index="${i}" ${i === 0 ? "disabled" : ""}`)}${ib("下移", "chain-down", "down", `data-feature="${id}" data-index="${i}"`)}${ib("移除", "chain-remove", "close", `data-feature="${id}" data-index="${i}"`)}</div></div>`).join("") || '<p class="chain-empty">尚未添加</p>'}</div></section>`,
+        `<button type="button" role="tab" aria-selected="${providerTab === id}" data-action="provider-tab" data-tab="${id}">${label}</button>`,
     )
-    .join("")}</div><div class="provider-editor" id="provider-editor"></div>`;
-  renderProviderEditor();
+    .join("")}</div>`;
+  const chains = Object.entries(chainNames)
+    .map(
+      ([id, label]) =>
+        `<section class="chain"><header><div><strong>${label}</strong><small>${state.config.features[id]?.enabled === false ? "当前已停用" : "首个为主用, 失败后依次回退"}</small></div>${button("添加", "chain-add", "plus", `data-feature="${id}" aria-label="添加${label}服务商"`)}</header><div class="chain-list" data-feature="${id}">${(state.config.features[id]?.chain || []).map((x, i, rows) => `<div class="chain-row" data-index="${i}"><button class="drag-handle" aria-label="拖动${label}第${i + 1}项" data-drag="${id}" data-index="${i}">${icon("grip")}</button><span class="chain-number">${i + 1}</span><button class="chain-label" data-action="chain-edit" data-feature="${id}" data-index="${i}">${esc(providerName(state.config.providers.find((p) => p.id === x.provider_id) || { id: x.provider_id }))}<small>${esc(x.output || "默认画幅")}</small></button><div>${ib("上移", "chain-up", "up", `data-feature="${id}" data-index="${i}" ${i === 0 ? "disabled" : ""}`)}${ib("下移", "chain-down", "down", `data-feature="${id}" data-index="${i}" ${i === rows.length - 1 ? "disabled" : ""}`)}${ib("移除", "chain-remove", "close", `data-feature="${id}" data-index="${i}"`)}</div></div>`).join("") || '<p class="chain-empty">添加一个已配置的服务商开始使用.</p>'}</div></section>`,
+    )
+    .join("");
+  el.innerHTML =
+    tabs +
+    (providerTab === "chains"
+      ? `<div class="routing-page"><div class="routing-heading"><h2>按顺序接力</h2><p>拖动左侧手柄排序, 点击服务商名称调整画幅.</p></div>${chains}<div class="provider-savebar"><span>${state.configDirty ? "有未保存修改" : "所有配置已保存"}</span>${button("保存链路", "save-config", "check", 'class="primary"')}</div></div>`
+      : `<div class="provider-layout"><div class="provider-list"><div class="list-heading"><span>${state.config.providers.length} 个连接</span>${button("添加服务商", "new-provider", "plus")}</div>${state.config.providers.map((p) => `<button class="provider-row ${state.provider === p.id ? "selected" : ""}" data-action="edit-provider" data-id="${esc(p.id)}"><span class="protocol-mark">${p.__template_key.startsWith("gemini") ? "G" : p.__template_key.includes("chat") ? "C" : "O"}</span><span><strong>${esc(providerName(p))}</strong><small>${esc(p.model || p.default_model || "尚未设置模型")}</small></span>${icon("edit")}</button>`).join("")}</div><div class="provider-editor" id="provider-editor"></div></div>`);
+  if (providerTab === "connections") renderProviderEditor();
   bindChains();
 }
 function renderProviderEditor() {
@@ -350,13 +369,14 @@ function renderProviderEditor() {
     "default_model",
     "default_size",
     "default_resolution",
+    "quality",
   ]);
   function renderField([k, m]) {
     let v = p[k] ?? m.default ?? "",
       control;
     const secret = /api.?key|token|password|cookie/i.test(k);
     if (k === "model" || k === "default_model") {
-      control = `<div class="model-input">${input(k, v, "text", 'list="model-list" placeholder="获取后选择, 或手动填写"')}${ib("获取模型列表", "fetch-models", "refresh")}</div><datalist id="model-list"></datalist>`;
+      control = `<div class="model-input">${input(k, v, "text", 'placeholder="模型 ID" autocomplete="off"')}${button("获取模型", "fetch-models", "refresh")}</div><div class="model-list-entry">${modelLists.has(p.id) ? button(`从 ${modelLists.get(p.id).length} 个模型中选择`, "choose-model", "down") : "<small>填写地址和密钥后获取, 也可直接输入模型 ID.</small>"}</div>`;
     } else if (m.type === "bool")
       control = `<select name="${k}">${option("true", "开启", String(v))}${option("false", "关闭", String(v))}</select>`;
     else if (m.type === "dict" || m.type === "object")
@@ -364,7 +384,7 @@ function renderProviderEditor() {
     else if (m.type === "list") {
       control =
         typeof v === "string"
-          ? input(k, v, "password", `placeholder="每行一个"`)
+          ? `<textarea name="${k}" rows="2" class="secret-input" placeholder="已保存密钥, 留空保留; 替换时每行一个">${esc(v === "******** (已保存)" ? "" : v)}</textarea>`
           : `<textarea name="${k}" rows="2" ${secret ? 'class="secret-input"' : ""}>${esc(v.join("\n"))}</textarea>`;
     } else if (m.options && !secret)
       control = `<input name="${k}" value="${esc(v)}" list="options-${k}"><datalist id="options-${k}">${m.options.map((x) => `<option value="${esc(x)}">`).join("")}</datalist>`;
@@ -379,12 +399,26 @@ function renderProviderEditor() {
             : "text",
       );
     if (k === "id") control = input(k, v, "text", "readonly");
-    return field(m.description || k, control);
+    const labels = {
+      label: "连接名称",
+      base_url: "接口地址",
+      api_url: "接口地址",
+      server_url: "接口地址",
+      api_keys: "API Key",
+      api_key: "API Key",
+      apikey: "API Key",
+      model: "模型",
+      default_model: "模型",
+      default_size: "默认画幅",
+      default_resolution: "默认清晰度",
+      quality: "Quality",
+    };
+    return `<div class="provider-field" data-field="${k}">${field(labels[k] || m.description || k, control, ["base_url", "api_url", "server_url"].includes(k) ? "使用服务商提供的 API 地址." : "")}</div>`;
   }
   const items = Object.entries(t?.items || {}).filter(
     ([k]) => k !== "extra_body",
   );
-  el.innerHTML = `<div class="editor-title"><div><span class="eyebrow">${esc(t?.name || p.__template_key)}</span><h2>${esc(providerName(p))}</h2></div>${ib("复制服务商", "copy-provider", "copy")}${ib("移除服务商", "remove-provider", "trash")}</div><form id="provider-form"><div class="form-grid">${items
+  el.innerHTML = `${button("返回连接列表", "provider-back", "back", 'class="provider-back"')}<div class="editor-title"><div><span class="eyebrow">${esc(t?.name || p.__template_key)}</span><h2>${esc(providerName(p))}</h2></div>${ib("复制服务商", "copy-provider", "copy")}${ib("移除服务商", "remove-provider", "trash")}</div><form id="provider-form" novalidate><div class="form-grid">${items
     .filter(([k]) => mainKeys.has(k))
     .map(renderField)
     .join(
@@ -394,7 +428,7 @@ function renderProviderEditor() {
     .map(renderField)
     .join(
       "",
-    )}</div></details><details class="extra-options"><summary>额外参数 <span>${Object.keys(p.extra_body || {}).length}</span></summary><p class="field-help">按模型协议填写, 如 quality 或 generationConfig.</p><textarea name="extra_body" spellcheck="false" rows="7" aria-label="额外请求体 JSON">${esc(JSON.stringify(p.extra_body || {}, null, 2))}</textarea></details></form>`;
+    )}</div></details><details class="extra-options"><summary>额外请求体 <span>${Object.keys(p.extra_body || {}).length}</span></summary><p class="field-help">填写 JSON 对象, 如 {"quality":"high"}. 可用值取决于模型.</p><textarea name="extra_body" spellcheck="false" rows="7" aria-label="额外请求体 JSON">${esc(JSON.stringify(p.extra_body || {}, null, 2))}</textarea></details><div class="provider-error" role="alert"></div><div class="provider-savebar"><span data-config-status>${state.configDirty ? "有未保存修改" : "配置已保存"}</span>${button("保存并生效", "save-config", "check", 'class="primary"')}</div></form>`;
 }
 function readProvider() {
   const p = state.config.providers.find((p) => p.id === state.provider),
@@ -406,8 +440,11 @@ function readProvider() {
   for (const [k, m] of Object.entries(t.items)) {
     if (!data.has(k)) continue;
     const v = String(data.get(k));
-    if (v === "******** (已保存)") {
-      next[k] = v;
+    if (
+      v === "******** (已保存)" ||
+      (!v.trim() && p[k] === "******** (已保存)")
+    ) {
+      next[k] = "******** (已保存)";
       continue;
     }
     if (m.type === "bool") next[k] = v === "true";
@@ -417,9 +454,17 @@ function readProvider() {
         .split("\n")
         .map((x) => x.trim())
         .filter(Boolean);
-    else if (m.type === "dict" || m.type === "object")
-      next[k] = JSON.parse(v || "{}");
-    else next[k] = v;
+    else if (m.type === "dict" || m.type === "object") {
+      try {
+        next[k] = JSON.parse(v || "{}");
+      } catch {
+        form.elements[k].closest("details")?.setAttribute("open", "");
+        form.elements[k].focus();
+        throw Error(
+          `${m.description || k} 的 JSON 格式不正确, 请检查引号和逗号`,
+        );
+      }
+    } else next[k] = v;
   }
   if (
     !next.extra_body ||
@@ -436,6 +481,34 @@ function readProvider() {
   }
   Object.assign(p, next);
 }
+function chooseModel() {
+  const p = state.config.providers.find((p) => p.id === state.provider);
+  if (!p || !modelLists.has(p.id)) return;
+  dialog(
+    "选择模型",
+    `<input id="model-search" type="search" placeholder="搜索模型名称" aria-label="搜索模型"><div class="model-results"></div>`,
+  );
+  const show = () => {
+    const term = document
+      .querySelector("#model-search")
+      .value.trim()
+      .toLowerCase();
+    const ids = modelLists
+      .get(p.id)
+      .filter((id) => id.toLowerCase().includes(term));
+    document.querySelector(".model-results").innerHTML = ids.length
+      ? ids
+          .map(
+            (id) =>
+              `<button type="button" data-action="select-model" data-id="${esc(id)}" data-provider="${esc(p.id)}"><span>${esc(id)}</span>${p.model === id || p.default_model === id ? icon("check") : icon("plus")}</button>`,
+          )
+          .join("")
+      : '<p class="field-help">没有匹配项, 关闭后可手动填写模型 ID.</p>';
+  };
+  document.querySelector("#model-search").oninput = show;
+  show();
+  document.querySelector("#model-search").focus();
+}
 function bindChains() {
   let drag;
   root.onpointerdown = (e) => {
@@ -450,6 +523,20 @@ function bindChains() {
     };
     h.setPointerCapture(e.pointerId);
     row.classList.add("dragging");
+  };
+  root.onpointermove = (e) => {
+    if (!drag) return;
+    root
+      .querySelectorAll(".drag-over")
+      .forEach((row) => row.classList.remove("drag-over"));
+    const row = document
+      .elementFromPoint(e.clientX, e.clientY)
+      ?.closest(".chain-row");
+    if (
+      row?.closest(".chain-list")?.dataset.feature === drag.feature &&
+      row !== drag.row
+    )
+      row.classList.add("drag-over");
   };
   root.onpointerup = (e) => {
     if (!drag) return;
@@ -471,6 +558,9 @@ function bindChains() {
   };
   root.onpointercancel = () => {
     if (drag) drag.row.classList.remove("dragging");
+    root
+      .querySelectorAll(".drag-over")
+      .forEach((row) => row.classList.remove("drag-over"));
     drag = null;
   };
 }
@@ -533,6 +623,10 @@ async function pollJobs() {
 pollJobs.seen = new Set();
 
 async function act(action, el) {
+  if (configSaving) {
+    toast("正在保存配置, 请稍候");
+    return;
+  }
   if (await library.action(action, el)) return;
   if (await graph.action(action, el)) return;
   if (action === "shoot-run") action = "generate";
@@ -881,21 +975,40 @@ async function act(action, el) {
   if (action === "edit-provider") {
     readProvider();
     state.provider = el.dataset.id;
+    providerOpen = true;
     renderPage();
     document
       .querySelector("#provider-editor")
       .scrollIntoView({ behavior: "smooth", block: "start" });
   }
+  if (action === "provider-tab" || action === "provider-back") {
+    readProvider();
+    if (action === "provider-tab") providerTab = el.dataset.tab;
+    providerOpen = false;
+    renderPage();
+  }
   if (action === "new-provider") {
     readProvider();
     dialog(
       "添加服务商",
-      `<div class="template-options">${Object.entries(state.config.templates)
+      `<p class="field-help">按服务商支持的接口格式选择.</p><div class="template-options">${Object.entries(
+        state.config.templates,
+      )
+        .slice(0, 3)
         .map(
           ([id, t], i) =>
             `<button data-action="add-provider" data-template="${id}"><span class="protocol-mark">${i < 3 ? ["O", "G", "C"][i] : icon("plus")}</span><div><strong>${esc(t.name)}</strong><small>${esc((t.description || "").slice(0, 70))}</small></div>${icon("arrow")}</button>`,
         )
-        .join("")}</div>`,
+        .join(
+          "",
+        )}</div><details class="extra-options"><summary>其他接口</summary><div class="template-options">${Object.entries(
+        state.config.templates,
+      )
+        .slice(3)
+        .map(([id, t]) =>
+          button(t.name, "add-provider", "plus", `data-template="${id}"`),
+        )
+        .join("")}</div></details>`,
     );
   }
   if (action === "add-provider") {
@@ -908,9 +1021,12 @@ async function act(action, el) {
         ]),
       );
     p.__template_key = key;
-    p.id = key + "_" + crypto.randomUUID().slice(0, 6);
+    p.id = key + "_" + uid().slice(0, 8);
+    p.label ||= t.name + "连接";
     state.config.providers.push(p);
     state.provider = p.id;
+    providerTab = "connections";
+    providerOpen = true;
     state.dirty = true;
     close();
     shell();
@@ -920,7 +1036,7 @@ async function act(action, el) {
     const p = structuredClone(
       state.config.providers.find((p) => p.id === state.provider),
     );
-    p.id += "_" + crypto.randomUUID().slice(0, 6);
+    p.id += "_" + uid().slice(0, 8);
     p.label = (p.label || p.id) + " 副本";
     for (const k of Object.keys(p))
       if (/api.?key|token|cookie/i.test(k))
@@ -931,10 +1047,20 @@ async function act(action, el) {
           : "";
     state.config.providers.push(p);
     state.provider = p.id;
+    providerOpen = true;
     state.dirty = true;
     shell();
   }
   if (action === "remove-provider") {
+    readProvider();
+    const p = state.config.providers.find((p) => p.id === state.provider);
+    dialog(
+      "移除服务商",
+      `<p>移除 ${esc(providerName(p))}? 已保存的图片会保留.</p>`,
+      button("确认移除", "remove-provider-confirm", "trash"),
+    );
+  }
+  if (action === "remove-provider-confirm") {
     const id = state.provider;
     if (
       Object.keys(chainNames).some((k) =>
@@ -944,50 +1070,123 @@ async function act(action, el) {
       throw Error("请先从回退链路移除此服务商");
     state.config.providers = state.config.providers.filter((p) => p.id !== id);
     state.provider = null;
+    providerOpen = false;
     state.dirty = true;
+    close();
     shell();
+  }
+  if (action === "choose-model") {
+    readProvider();
+    chooseModel();
+  }
+  if (action === "select-model") {
+    const p = state.config.providers.find((p) => p.id === el.dataset.provider);
+    if (!p || p.id !== state.provider) return;
+    const key =
+      "model" in state.config.templates[p.__template_key].items
+        ? "model"
+        : "default_model";
+    p[key] = el.dataset.id;
+    state.configDirty = true;
+    close();
+    renderProviderEditor();
+    document.querySelector(`[name="${key}"]`)?.focus();
   }
   if (action === "fetch-models") {
     readProvider();
     el.disabled = true;
-    const selected = state.provider;
+    const selected = state.provider,
+      draft = structuredClone(
+        state.config.providers.find((p) => p.id === selected),
+      );
+    const status = document.querySelector("#model-status");
+    status.textContent = "正在连接服务商...";
     try {
       const r = await api("models", {
-        provider: state.config.providers.find((p) => p.id === selected),
+        provider: draft,
       });
-      if (state.provider !== selected) return;
-      document.querySelector("#model-list").innerHTML = r.models
-        .map((id) => `<option value="${esc(id)}">`)
-        .join("");
-      const modelInput = document.querySelector("input[list=model-list]");
-      modelInput.focus();
-      document.querySelector("#model-status").textContent =
-        "已获取 " + r.models.length + " 个模型, 点击模型输入框选择";
-      toast("模型列表已更新");
+      if (state.provider !== selected || state.page !== "providers") return;
+      readProvider();
+      const current = state.config.providers.find((p) => p.id === selected);
+      if (
+        [
+          "base_url",
+          "api_url",
+          "server_url",
+          "api_keys",
+          "api_key",
+          "apikey",
+        ].some((k) => JSON.stringify(current[k]) !== JSON.stringify(draft[k]))
+      ) {
+        status.textContent = "连接信息已改变, 请重新获取模型.";
+        return;
+      }
+      modelLists.set(selected, r.models);
+      renderProviderEditor();
+      chooseModel();
+    } catch (error) {
+      if (status.isConnected) status.textContent = error.message;
+      throw error;
     } finally {
       el.disabled = false;
     }
+  }
+  if (action === "chain-edit") {
+    readProvider();
+    const f = el.dataset.feature,
+      i = Number(el.dataset.index),
+      link = state.config.features[f].chain[i];
+    dialog(
+      "链路画幅",
+      field(
+        "覆盖输出",
+        input(
+          "chain-output",
+          link.output || "",
+          "text",
+          'placeholder="例如 3:4 4K"',
+        ),
+        "留空使用该功能的默认画幅.",
+      ),
+      button(
+        "应用",
+        "chain-edit-save",
+        "check",
+        `data-feature="${f}" data-index="${i}"`,
+      ),
+    );
+  }
+  if (action === "chain-edit-save") {
+    state.config.features[el.dataset.feature].chain[
+      Number(el.dataset.index)
+    ].output = document.querySelector('[name="chain-output"]').value.trim();
+    state.configDirty = true;
+    close();
+    renderPage();
   }
   if (action === "chain-add") {
     readProvider();
     const f = el.dataset.feature;
     dialog(
       "添加到" + chainNames[f],
-      `<div class="template-options">${state.config.providers
-        .filter((p) =>
-          f === "video"
-            ? p.__template_key.includes("video")
-            : !p.__template_key.includes("video"),
-        )
-        .map((p) =>
-          button(
-            providerName(p),
-            "chain-select",
-            "plus",
-            `data-feature="${f}" data-id="${esc(p.id)}"`,
-          ),
-        )
-        .join("")}</div>`,
+      `<div class="template-options">${
+        state.config.providers
+          .filter((p) =>
+            f === "video"
+              ? p.__template_key.includes("video")
+              : !p.__template_key.includes("video"),
+          )
+          .map((p) =>
+            button(
+              providerName(p),
+              "chain-select",
+              "plus",
+              `data-feature="${f}" data-id="${esc(p.id)}"`,
+            ),
+          )
+          .join("") ||
+        '<p class="field-help">没有可用连接, 请先在模型连接里添加服务商.</p>'
+      }</div>`,
     );
   }
   if (action === "chain-select") {
@@ -1014,7 +1213,18 @@ async function act(action, el) {
   }
   if (action === "save-config") {
     readProvider();
-    el.disabled = true;
+    configSaving = true;
+    const page = document.querySelector("#page-content");
+    page.inert = true;
+    document.querySelectorAll("[data-config-status]").forEach((el) => {
+      el.textContent = "正在保存...";
+    });
+    const buttons = [
+      ...document.querySelectorAll('[data-action="save-config"]'),
+    ];
+    buttons.forEach((b) => {
+      b.disabled = true;
+    });
     try {
       state.config = await api("config", {
         revision: state.config.revision,
@@ -1026,18 +1236,30 @@ async function act(action, el) {
           ]),
         ),
       });
-      state.dirty = false;
+      state.configDirty = false;
       shell();
       toast("配置已保存并生效");
     } finally {
-      el.disabled = false;
+      configSaving = false;
+      page.inert = false;
+      document.querySelectorAll("[data-config-status]").forEach((el) => {
+        el.textContent = state.configDirty ? "有未保存修改" : "配置已保存";
+      });
+      buttons.forEach((b) => {
+        b.disabled = false;
+      });
     }
   }
 }
 document.addEventListener("click", (e) => {
   const el = e.target.closest("[data-action]");
   if (el && !el.disabled)
-    act(el.dataset.action, el).catch((error) => toast(error.message));
+    act(el.dataset.action, el).catch((error) => {
+      const target = document.querySelector(".provider-error");
+      if (state.page === "providers" && target)
+        target.textContent = error.message;
+      toast(error.message);
+    });
 });
 document.addEventListener("input", (e) => {
   shoot.onInput(e);
@@ -1048,7 +1270,23 @@ document.addEventListener("input", (e) => {
   }
   if (e.target.dataset.outfit)
     state.outfits[e.target.dataset.outfit] = e.target.value;
-  if (e.target.closest("#provider-form")) state.dirty = true;
+  if (e.target.closest("#provider-form")) {
+    state.configDirty = true;
+    document.querySelector("[data-config-status]").textContent = "有未保存修改";
+    document.querySelector(".provider-error").textContent = "";
+    if (/url|key|token/i.test(e.target.name)) {
+      modelLists.delete(state.provider);
+      const entry = document.querySelector(".model-list-entry");
+      if (entry)
+        entry.innerHTML = "<small>连接信息已修改, 可重新获取模型.</small>";
+    }
+  }
+});
+document.addEventListener("submit", (e) => {
+  if (e.target.id === "provider-form") {
+    e.preventDefault();
+    e.target.querySelector('[data-action="save-config"]').click();
+  }
 });
 document.addEventListener("change", async (e) => {
   try {

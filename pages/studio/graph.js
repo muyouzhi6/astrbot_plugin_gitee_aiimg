@@ -1,4 +1,5 @@
 import { api, query, loadImages } from "./api.js";
+import { uid } from "./id.js";
 import {
   esc,
   icon,
@@ -39,7 +40,6 @@ const statusNames = {
   interrupted: "已中断",
   skipped: "已跳过",
 };
-const uid = () => crypto.randomUUID();
 
 export function createGraphEditor({ state, render, picker, viewAsset }) {
   let doc = null,
@@ -131,6 +131,61 @@ export function createGraphEditor({ state, render, picker, viewAsset }) {
     document.querySelector("#graph-save")?.removeAttribute("disabled");
     const label = document.querySelector("#graph-save span");
     if (label) label.textContent = "保存修改";
+    const status = document.querySelector(".node-save-status");
+    if (status) status.textContent = "有未保存修改";
+    steps();
+  }
+  function issue(n) {
+    const incoming = doc.edges.filter((e) => e.to === n.id),
+      has = (p) => incoming.some((e) => e.port === p);
+    if (n.type !== "output" && !doc.edges.some((e) => e.from === n.id))
+      return "连接到下一步";
+    if (n.type === "text" && !n.text?.trim()) return "填写画面描述";
+    if (n.type === "image" && !n.asset_id) return "选择参考图片";
+    if (n.type === "person" && !n.characters?.length) return "选择出镜人物";
+    if (n.type === "plan") {
+      if (!has("image")) return "连接参考图片";
+      if (!n.planner) return "选择规划模型";
+      if (["recreate", "outfit"].includes(n.workflow) && !has("people"))
+        return "连接出镜人物";
+    }
+    if (n.type === "generate") {
+      if (has("plan") && incoming.length > 1)
+        return "保留镜头输入, 移除重复输入";
+      if (!has("plan") && !has("text")) return "连接提示词或镜头";
+      if (
+        n.provider &&
+        !state.config.providers.some((p) => p.id === n.provider)
+      )
+        return "重新选择服务商";
+    }
+    if (n.type === "output" && !has("image")) return "连接生成图片";
+    return "";
+  }
+  function steps() {
+    const el = document.querySelector(".graph-steps");
+    if (!el || !doc) return;
+    el.innerHTML = doc.nodes
+      .map(
+        (n, i) =>
+          `<button type="button" data-action="flow-select" data-id="${n.id}" class="${selected === n.id ? "active" : ""}" aria-pressed="${selected === n.id}"><span class="step-number">${i + 1}</span><span><strong>${esc(n.label || names[n.type])}</strong><small>${esc(issue(n) || "可编辑")}</small></span>${icon(issue(n) ? "edit" : "check")}</button>`,
+      )
+      .join("");
+    const label = document.querySelector(".graph-readiness");
+    if (label) {
+      const count = doc.nodes.filter(issue).length;
+      label.textContent = count ? `${count} 项待设置` : "设置就绪";
+    }
+  }
+  function selectNode(id, scroll = false) {
+    selected = id;
+    paint();
+    inspector();
+    steps();
+    if (scroll && matchMedia("(max-width: 900px)").matches)
+      document
+        .querySelector(".graph-inspector")
+        ?.scrollIntoView({ block: "start", behavior: "smooth" });
   }
   function renderGraph(el) {
     el.className = "graph-page";
@@ -138,7 +193,9 @@ export function createGraphEditor({ state, render, picker, viewAsset }) {
       el.innerHTML = `<div class="graph-welcome"><span class="eyebrow">可编排的创作</span><h2>把想法连成工作流.</h2><p>从模板开始, 拖动节点, 连接图片、提示词与模型.</p><div>${button("自由生图", "flow-new", "plus", 'data-template="simple"')}${button("成片变体", "flow-new", "copy", 'data-template="variants"')}${button("人物仿拍", "flow-new", "people", 'data-template="recreate"')}</div>${button("导入工作流", "flow-import", "upload")}</div>`;
       return;
     }
-    el.innerHTML = `<div class="graph-toolbar"><div><select id="graph-select" aria-label="选择工作流">${state.graphs.map((g) => option(g.id, g.name, doc.id)).join("")}${!doc.id ? option("", doc.name, "") : ""}</select>${ib("新建工作流", "flow-new", "plus")}${ib("重命名工作流", "flow-rename", "edit")}</div><div>${button("导入", "flow-import", "upload")}${button("导出", "flow-export", "download")}${button(dirty ? "保存修改" : "已保存", "flow-save", "check", `id="graph-save" ${dirty ? "" : "disabled"}`)}${run?.state === "running" ? button("停止", "flow-stop", "close") : button("运行工作流", "flow-run", "play", 'class="primary"')}</div></div>
+    if (!doc.nodes.some((n) => n.id === selected))
+      selected = (doc.nodes.find(issue) || doc.nodes[0])?.id || "";
+    el.innerHTML = `<div class="graph-toolbar"><div><select id="graph-select" aria-label="选择工作流">${state.graphs.map((g) => option(g.id, g.name, doc.id)).join("")}${!doc.id ? option("", doc.name, "") : ""}</select>${ib("新建工作流", "flow-new", "plus")}${ib("重命名工作流", "flow-rename", "edit")}</div><div>${button("导入", "flow-import", "upload")}${button("导出", "flow-export", "download")}${button(dirty ? "保存修改" : "已保存", "flow-save", "check", `id="graph-save" ${dirty ? "" : "disabled"}`)}${run?.state === "running" ? button("停止", "flow-stop", "close") : button("运行工作流", "flow-run", "play", 'class="primary"')}</div></div><div class="graph-setup-heading"><span>点击步骤, 编辑内容</span><span class="graph-readiness"></span></div><div class="graph-steps" aria-label="工作流步骤"></div>
       <div class="graph-body"><div class="graph-stage-wrap"><div class="node-palette">${Object.keys(
         names,
       )
@@ -152,7 +209,8 @@ export function createGraphEditor({ state, render, picker, viewAsset }) {
         )
         .join(
           "",
-        )}</div><div class="graph-stage" tabindex="0" aria-label="节点工作流画布"><div class="graph-world"><svg class="graph-wires" aria-hidden="true"></svg><div class="graph-nodes"></div></div><div class="graph-hint">${linking ? "选择一个兼容的输入接口" : "拖动节点 · 点击输出圆点, 再点击输入圆点连线"}</div></div><div class="graph-controls">${ib("缩小", "flow-zoom-out", "back")}<span id="graph-zoom">${Math.round(zoom * 100)}%</span>${ib("放大", "flow-zoom-in", "plus")}${button("适应画布", "flow-fit", "zoom")}${linking ? button("取消连线", "flow-unlink", "close") : ""}</div><div class="graph-mobile-list">${doc.nodes.map((n) => button(names[n.type], "flow-select", symbols[n.type], `data-id="${n.id}" class="${selected === n.id ? "active" : ""}"`)).join("")}</div></div><aside class="graph-inspector"></aside></div><div class="graph-run-summary"></div>`;
+        )}</div><div class="graph-stage" tabindex="0" aria-label="节点工作流画布"><div class="graph-world"><svg class="graph-wires" aria-hidden="true"></svg><div class="graph-nodes"></div></div><div class="graph-hint">点击编辑 · 拖动标题移动节点 · 输出接输入</div></div><div class="graph-controls">${ib("缩小", "flow-zoom-out", "back")}<span id="graph-zoom">${Math.round(zoom * 100)}%</span>${ib("放大", "flow-zoom-in", "plus")}${button("适应画布", "flow-fit", "zoom")}${button("取消连线", "flow-unlink", "close", `class="unlink-control" ${linking ? "" : "hidden"}`)}</div></div><aside class="graph-inspector"></aside></div><div class="graph-run-summary"></div>`;
+    steps();
     paint();
     inspector();
     summary();
@@ -175,6 +233,15 @@ export function createGraphEditor({ state, render, picker, viewAsset }) {
       y: n.y + 90 + (port ? keys.indexOf(port) * 32 : 0),
     };
   }
+  function runMatches() {
+    if (!run?.graph) return false;
+    const signature = (graph) =>
+      JSON.stringify({
+        nodes: graph.nodes.map(({ x, y, label, ...rest }) => rest),
+        edges: graph.edges,
+      });
+    return signature(doc) === signature(run.graph);
+  }
   function paint() {
     const root = document.querySelector(".graph-stage");
     if (!root || !doc) return;
@@ -182,7 +249,7 @@ export function createGraphEditor({ state, render, picker, viewAsset }) {
       `translate(${pan.x}px,${pan.y}px) scale(${zoom})`;
     root.querySelector(".graph-nodes").innerHTML = doc.nodes
       .map((n) => {
-        const result = run?.nodes?.[n.id];
+        const result = runMatches() ? run?.nodes?.[n.id] : null;
         const inputs = state.nodeTypes[n.type]?.inputs || {},
           output = state.nodeTypes[n.type]?.output;
         const detail =
@@ -191,7 +258,10 @@ export function createGraphEditor({ state, render, picker, viewAsset }) {
             : n.type === "plan"
               ? `${{ variants: "变体", recreate: "仿拍", outfit: "换装" }[n.workflow]} · ${n.count} 张`
               : n.type === "generate"
-                ? n.provider || "按回退链路"
+                ? state.config.providers.find((p) => p.id === n.provider)
+                    ?.label ||
+                  n.provider ||
+                  "按回退链路"
                 : n.type === "person"
                   ? `${n.characters?.length || 0} 位人物`
                   : "";
@@ -204,7 +274,7 @@ export function createGraphEditor({ state, render, picker, viewAsset }) {
           )
           .join(
             "",
-          )}${output ? `<button class="node-output" data-action="flow-link" data-node="${n.id}" aria-label="${names[n.type]}输出"><span>${{ text: "文字", images: "图片", people: "人物", plan: "镜头" }[output]}</span><i></i></button>` : ""}</div>${n.type === "image" && n.asset_id ? `<button class="node-preview" data-action="flow-select" data-id="${n.id}"><img data-asset="${n.asset_id}" alt="节点参考图"></button>` : ""}</article>`;
+          )}${output ? `<button class="node-output" data-action="flow-link" data-node="${n.id}" aria-label="${names[n.type]}输出"><span>${{ text: "文字", images: "图片", people: "人物", plan: "镜头" }[output]}</span><i></i></button>` : ""}</div>${n.type === "image" && n.asset_id ? `<button class="node-preview" data-action="flow-select" data-id="${n.id}"><img data-asset="${n.asset_id}" alt="节点参考图"></button>` : ""}${button(issue(n) || "编辑节点", "flow-select", "edit", `data-id="${n.id}" class="node-edit" aria-label="编辑${esc(n.label || names[n.type])}"`)}</article>`;
       })
       .join("");
     root.querySelector("svg.graph-wires").innerHTML = doc.edges
@@ -221,6 +291,13 @@ export function createGraphEditor({ state, render, picker, viewAsset }) {
     loadImages(root);
     const z = document.querySelector("#graph-zoom");
     if (z) z.textContent = Math.round(zoom * 100) + "%";
+    const hint = document.querySelector(".graph-hint");
+    if (hint)
+      hint.textContent = linking
+        ? "点击同类型的输入圆点完成连线"
+        : "点击编辑 · 拖动标题移动节点 · 输出接输入";
+    const cancel = document.querySelector(".unlink-control");
+    if (cancel) cancel.hidden = !linking;
   }
   function inspector() {
     const el = document.querySelector(".graph-inspector");
@@ -231,8 +308,8 @@ export function createGraphEditor({ state, render, picker, viewAsset }) {
       return;
     }
     const hasPlan = doc.edges.some((e) => e.to === n.id && e.port === "plan"),
-      result = run?.nodes?.[n.id];
-    let fields = field("名称", input("label", n.label || names[n.type]));
+      result = runMatches() ? run?.nodes?.[n.id] : null;
+    let fields = "";
     if (n.type === "text")
       fields += field(
         "提示词",
@@ -288,8 +365,22 @@ export function createGraphEditor({ state, render, picker, viewAsset }) {
         );
     else if (hasPlan)
       fields += '<p class="field-help">数量、人物与画幅使用上游镜头规划.</p>';
-    el.innerHTML = `<header><h3>${names[n.type]}</h3>${ib("移除节点", "flow-remove", "trash")}</header><div class="node-fields">${fields}</div><div class="node-connections"><h4>输入连线</h4>${
+    el.innerHTML = `<header><div><small>步骤 ${doc.nodes.indexOf(n) + 1}</small><h3>${esc(n.label || names[n.type])}</h3></div>${ib("移除节点", "flow-remove", "trash")}</header><div class="node-fields">${fields}</div><div class="node-connections"><h4>输入来源</h4>${
       Object.entries(state.nodeTypes[n.type]?.inputs || {})
+        .filter(([port, type]) => {
+          const connected = doc.edges.some(
+            (e) => e.to === n.id && e.port === port,
+          );
+          if (hasPlan && port !== "plan" && !connected) return false;
+          return (
+            connected ||
+            port === "text" ||
+            n.type === "output" ||
+            doc.nodes.some(
+              (s) => s.id !== n.id && state.nodeTypes[s.type]?.output === type,
+            )
+          );
+        })
         .map(([port, type]) =>
           field(
             ports[port],
@@ -308,8 +399,8 @@ export function createGraphEditor({ state, render, picker, viewAsset }) {
               .join("")}</select>`,
           ),
         )
-        .join("") || "<small>这个节点不需要输入.</small>"
-    }</div>${result?.error ? `<p class="node-error">${esc(result.error)}</p>` : ""}${result?.assets?.length ? `<div class="node-results">${result.assets.map((id) => `<button data-action="view-asset" data-id="${id}"><img data-asset="${id}" alt="节点结果"></button>`).join("")}</div>` : ""}`;
+        .join("") || ""
+    }</div><details class="node-naming"><summary>节点名称</summary><div class="node-fields">${field("名称", input("label", n.label || names[n.type]))}</div></details>${result?.error ? `<p class="node-error">${esc(result.error)}</p>` : ""}${result?.assets?.length ? `<div class="node-results">${result.assets.map((id) => `<button data-action="view-asset" data-id="${id}"><img data-asset="${id}" alt="节点结果"></button>`).join("")}</div>` : ""}<div class="node-savebar"><small class="node-save-status">${dirty ? "有未保存修改" : "已保存"}</small>${button("保存", "flow-save", "check")}${button(doc.nodes.indexOf(n) === doc.nodes.length - 1 ? "回到第一步" : "下一步", "flow-next", "arrow")}</div>`;
     el.querySelectorAll(
       ".node-fields input,.node-fields select,.node-fields textarea",
     ).forEach(
@@ -363,7 +454,8 @@ export function createGraphEditor({ state, render, picker, viewAsset }) {
     const runs = [...(state.graphRuns || [])]
       .filter((r) => r.graph_id === doc.id)
       .reverse();
-    el.innerHTML = `<div><h3>运行记录</h3><select id="graph-run-select" aria-label="查看运行记录"><option value="">本次运行</option>${runs.map((r) => option(r.id, `${time(r.created)} · ${statusNames[r.state] || r.state}`, run?.id)).join("")}</select></div>${run ? `<p>${statusNames[run.state]} · ${Object.values(run.nodes).filter((n) => n.state === "completed").length} / ${Object.keys(run.nodes).length} 个节点</p>` : "<p>运行后逐节点显示状态与结果.</p>"}`;
+    el.innerHTML = `<div><h3>运行记录</h3><select id="graph-run-select" aria-label="查看运行记录">${!run ? '<option value="">尚未运行</option>' : ""}${runs.map((r) => option(r.id, `${time(r.created)} · ${statusNames[r.state] || r.state}`, run?.id)).join("")}</select></div>${run ? `<p>${statusNames[run.state]} · ${Object.values(run.nodes).filter((n) => n.state === "completed").length} / ${Object.keys(run.nodes).length} 个节点${!runMatches() ? " · 当前配置已有修改" : ""}</p><div class="run-images">${(run.assets || []).map((id) => `<button data-action="view-asset" data-id="${id}"><img data-asset="${id}" alt="本次运行结果"></button>`).join("")}</div>` : "<p>运行后逐节点显示状态与结果.</p>"}`;
+    loadImages(el);
     el.querySelector("select").onchange = async (e) => {
       if (e.target.value) {
         run = await query("graph-run", { id: e.target.value });
@@ -382,7 +474,9 @@ export function createGraphEditor({ state, render, picker, viewAsset }) {
           state.graphs.find((g) => g.id === e.target.value),
         );
         selected = "";
-        run = null;
+        run =
+          [...state.graphRuns].reverse().find((r) => r.graph_id === doc.id) ||
+          null;
         runKey = "";
         autoView = true;
         render();
@@ -415,8 +509,11 @@ export function createGraphEditor({ state, render, picker, viewAsset }) {
       if (id) {
         selected = id;
         inspector();
+        paint();
+        steps();
       }
       const n = doc.nodes.find((n) => n.id === id);
+      if (id && !e.target.closest("[data-drag-node]")) return;
       activeDrag = {
         id,
         x: e.clientX,
@@ -439,6 +536,8 @@ export function createGraphEditor({ state, render, picker, viewAsset }) {
     };
     stage.onpointerup = () => {
       activeDrag = null;
+      paint();
+      steps();
     };
     stage.onpointercancel = stage.onpointerup;
     stage.onwheel = (e) => {
@@ -483,12 +582,22 @@ export function createGraphEditor({ state, render, picker, viewAsset }) {
   async function save() {
     if (saving) throw Error("正在保存, 请稍候");
     saving = true;
+    const current = doc,
+      snapshot = structuredClone(doc);
     try {
-      doc = await api("graph", doc);
-      const i = state.graphs.findIndex((g) => g.id === doc.id);
-      if (i < 0) state.graphs.push(doc);
-      else state.graphs[i] = doc;
-      dirty = false;
+      const saved = await api("graph", snapshot);
+      const unchanged = JSON.stringify(current) === JSON.stringify(snapshot);
+      if (doc === current) {
+        if (unchanged) doc = structuredClone(saved);
+        else {
+          doc.id = saved.id;
+          doc.revision = saved.revision;
+        }
+        dirty = !unchanged;
+      }
+      const i = state.graphs.findIndex((g) => g.id === saved.id);
+      if (i < 0) state.graphs.push(structuredClone(saved));
+      else state.graphs[i] = structuredClone(saved);
       return doc;
     } finally {
       saving = false;
@@ -521,13 +630,15 @@ export function createGraphEditor({ state, render, picker, viewAsset }) {
         80 + doc.nodes.length * 16,
       );
     if (action === "flow-select") {
-      selected = el.dataset.id;
-      paint();
-      inspector();
-      document
-        .querySelector(".graph-inspector")
-        .scrollIntoView({ block: "nearest", behavior: "smooth" });
+      selectNode(el.dataset.id, true);
     }
+    if (action === "flow-next")
+      selectNode(
+        doc.nodes[
+          (doc.nodes.findIndex((n) => n.id === selected) + 1) % doc.nodes.length
+        ].id,
+        true,
+      );
     if (action === "flow-link") {
       linking = el.dataset.node;
       paint();
@@ -589,7 +700,16 @@ export function createGraphEditor({ state, render, picker, viewAsset }) {
       render();
     }
     if (action === "flow-run") {
+      const pending = doc.nodes.filter(issue);
+      if (pending.length) {
+        selectNode(pending[0].id, true);
+        toast(
+          `${pending[0].label || names[pending[0].type]}: ${issue(pending[0])}`,
+        );
+        return true;
+      }
       if (dirty) await save();
+      if (dirty) throw Error("内容刚刚有改动, 请保存后再运行");
       dialog(
         "运行工作流",
         `<p>执行 ${doc.nodes.length} 个节点. 规划完成后会自动进入生成节点, 使用各节点选择的模型.</p><p class="field-help">开始后可以离开页面, 刷新不会重复执行.</p>`,
@@ -661,6 +781,7 @@ export function createGraphEditor({ state, render, picker, viewAsset }) {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
     if (action === "flow-import") {
+      if (dirty) await save();
       const file = document.createElement("input");
       file.type = "file";
       file.accept = "application/json";

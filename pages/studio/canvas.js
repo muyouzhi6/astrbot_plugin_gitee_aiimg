@@ -1,4 +1,5 @@
 import { assetURL } from "./api.js";
+import { uid } from "./id.js";
 import { esc, icon, ib, toast } from "./ui.js";
 
 export class Canvas {
@@ -34,7 +35,7 @@ export class Canvas {
     this.snapshot();
     const width = Math.min(asset.width, 900);
     this.doc.layers.push({
-      id: crypto.randomUUID(),
+      id: uid(),
       asset_id: asset.id,
       x: this.doc.layers.length * 60,
       y: this.doc.layers.length * 50,
@@ -177,7 +178,7 @@ export class Canvas {
     if (action === "copy")
       this.doc.layers.push({
         ...l,
-        id: crypto.randomUUID(),
+        id: uid(),
         x: l.x + 40,
         y: l.y + 40,
       });
