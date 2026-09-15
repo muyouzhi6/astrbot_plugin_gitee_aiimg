@@ -3,9 +3,33 @@ import { webcrypto } from "node:crypto";
 import test from "node:test";
 import { uid } from "../pages/studio/id.js";
 import { Canvas } from "../pages/studio/canvas.js";
-import { ready } from "../pages/studio/api.js";
+import { api, query, ready } from "../pages/studio/api.js";
 import { createGraphEditor } from "../pages/studio/graph.js";
 import { createWorkspace } from "../pages/studio/workspace.js";
+
+test("connection failures stay actionable and never replay image requests", async (t) => {
+  const previous = globalThis.window;
+  t.after(() => {
+    globalThis.window = previous;
+  });
+  let calls = 0;
+  globalThis.window = {
+    AstrBotPluginPage: {
+      ready: async () => ({}),
+      apiPost: async () => {
+        calls++;
+        throw Error("Request failed with status code 503");
+      },
+      apiGet: async () => {
+        throw Error("Network Error");
+      },
+    },
+  };
+  await ready();
+  await assert.rejects(api("generate", {}), /HTTP 503.*任务页/);
+  assert.equal(calls, 1);
+  await assert.rejects(query("state", {}), /连接中断/);
+});
 
 test("planning from free canvas opens the visible review and result view", async (t) => {
   const previous = globalThis.window;

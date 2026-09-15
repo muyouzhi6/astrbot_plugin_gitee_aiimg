@@ -11,6 +11,30 @@ function unwrap(result) {
   if (result?.data?.ok === false) throw Error(result.data.error);
   throw Error("服务响应异常, 请刷新页面");
 }
+function requestError(error) {
+  const message = error?.message || "";
+  const status = message.match(
+    /^Request failed with status code (\d{3})$/,
+  )?.[1];
+  if (status === "401" || status === "403")
+    return Error("登录已失效或没有访问权限, 请重新登录 AstrBot");
+  if (status)
+    return Error(
+      `服务暂时无法响应 (HTTP ${status}), 请稍后重试. 已提交的生成可到任务页查看`,
+    );
+  if (!message || /^(Failed to fetch|Network Error|Load failed)$/.test(message))
+    return Error(
+      "连接中断, 请检查网络. 已提交的生成可到任务页查看, 不必重复提交",
+    );
+  return Error(message);
+}
+async function response(promise) {
+  try {
+    return unwrap(await promise);
+  } catch (error) {
+    throw requestError(error);
+  }
+}
 export async function api(action, body) {
   try {
     return unwrap(
@@ -19,13 +43,12 @@ export async function api(action, body) {
         : bridge.apiPost("studio/" + action, body)),
     );
   } catch (e) {
-    throw Error(e.message || "连接中断, 请稍后重试");
+    throw requestError(e);
   }
 }
 export const query = (action, params) =>
-  bridge.apiGet("studio/" + action, params).then(unwrap);
-export const upload = (file) =>
-  bridge.upload("studio/upload", file).then(unwrap);
+  response(bridge.apiGet("studio/" + action, params));
+export const upload = (file) => response(bridge.upload("studio/upload", file));
 export const download = (id) => bridge.download("studio/download", { id });
 const thumbs = new Map();
 export async function assetURL(id, thumbnail = true) {
