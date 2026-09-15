@@ -199,7 +199,7 @@ Gemini 原生可填写 `{"generationConfig":{"temperature":0.6}}`, 嵌套合并�
 | Gitee AI 文生图 | `gitee_images` |
 | Gitee AI 异步改图 | `gitee_async` |
 | Grok / xAI | `grok_images` 或 `grok_chat` |
-| 视频生成 | `grok_video`（xAI 官方） / `3365_video`（3365 xAI 兼容） / `flow2api_video` / `sora2_video`（通用 OpenAI Videos） |
+| 视频生成 | `agnes_video` / `grok_video`（xAI 官方） / `flow2api_video` / `sora2_video`（通用 OpenAI Videos） |
 
 provider 模板中的通用 `timeout` 默认均为 `600` 秒。升级时会保留现有 provider 的 URL、Key、模型、超时和其它自定义值；旧配置缺少新字段时才使用新版运行时默认值。`gemini_native` 额外支持 `max_retries`，默认重试 `2` 次，设为 `0` 可关闭重试。
 
@@ -592,9 +592,17 @@ Q版化:Convert to chibi illustration style
 
 如果第一个 token 命中 `features.video.presets` 里的预设名，就会按“视频预设 + 额外提示词”处理。
 
-已验证的聚合渠道模板：3365 的 `grok-imagine-video` / `grok-imagine-video-1.5` 使用 `3365_video`；美年达的 `gemini-omni-flash` / `video-2.0-pro` 使用 `sora2_video`。模型出现在 `/v1/models` 只代表可见，是否能生成仍取决于渠道余额和上游 token pool。
+Agnes Video 2.5 Flash 使用 `agnes_video` 模板, API 地址为 `https://apihub.agnes-ai.com/v1`, 模型 ID 为 `agnes-video-2.5-flash`. 默认 `mode=auto`: 没有图片时文生视频, 有图片时使用首帧生成. 时长 4 至 12 秒, 分辨率固定 `720P`, 画幅可选 `16:9`, `9:16`, `1:1`, `4:3`, `3:4`, `21:9`. 每次仅生成 1 个视频.
 
-3365 的鉴权 `/content` 可能是限次媒体地址，插件会用不带 Range 的单个流式请求下载，不会再做探测后并发分块。创建任务遇到上游明确返回的瞬时 HTTP 错误时会有限重试；连接超时不会自动重提任务。
+创建与查询共用同一 Key 的持久化请求间隔, 默认至少 61 秒, 满足 RPM 1; 即使插件重载也不会立即重置额度. 默认总超时 1800 秒. 创建请求结果不明、轮询超时或查询失败时停止链路, 不会重新创建任务. 查询的临时网络错误和限流可以重试, 但仍遵守请求间隔. 上游队列已满时需稍后再次尝试.
+
+高级请求体可配置 `seed`, `mode`, `first_frame`, `last_frame`, `images`, `audios`. `reference` 最多 5 张图片和 3 段音频, Flash 不支持视频参考. URL 必须能被 Agnes 访问. 消息中的单张图片会固定为本次任务的图片字节, 不会上传到第三方图床.
+
+视频和 LLM 调用分别由 `features.video.enabled` 和 `features.video.llm_tool_enabled` 控制. `/视频 @agnes_video 描述` 可明确选择 Agnes; 发图或引用图片后使用同一指令生成动画. LLM 工具名沿用 `grok_generate_video`, 实际使用视频链路, 不限定 Grok.
+
+需要 Bot 本人出镜时, 直接说“拍个你跳舞的视频我看看”. 视频工具使用 `mode=selfie`, 在一个后台任务内先按当前 Bot 形象、当前会话选择和日程穿搭生成自拍底图, 再把生成后的底图交给视频模型. 可选 `selfie_prompt` 描述静态起始画面, `prompt` 描述视频动作. 中间底图正常进入画廊, 聊天只发送最后的视频; 底图失败就结束任务, 不会无参考生成一个长相不同的人.
+
+3365 与 SD2.0 专用模板已移除, 升级时请移除旧服务商和链路引用. 美年达等 OpenAI Videos 渠道继续使用 `sora2_video`, xAI 官方继续使用 `grok_video`. 历史视频不会因模板移除而删除.
 
 ## LLM 工具
 

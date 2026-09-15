@@ -4107,11 +4107,26 @@ class GiteeAIImagePlugin(Star):
         return self._llm_tool_text_result(json.dumps(payload, ensure_ascii=False))
 
     @filter.llm_tool()
-    async def grok_generate_video(self, event: AstrMessageEvent, prompt: str):
-        """根据用户发送/引用的图片生成视频。
+    async def grok_generate_video(
+        self,
+        event: AstrMessageEvent,
+        prompt: str,
+        mode: str = "auto",
+        selfie_prompt: str = "",
+    ):
+        """根据用户明确的视频请求生成短视频, 有发送/引用图片时作为视频参考.
+
+        仅在用户要视频、动画或让图片动起来时调用, 普通照片使用图片工具.
+        用户要看你(Bot)本人的视频, 如“拍个你跳舞的视频”, 必须用 mode=selfie.
+        selfie 会在一个后台任务内先用当前 Bot 身份和日程穿搭生成底图,
+        再用该底图生成视频. 不要先另调图片工具, 不要以文生视频猜测 Bot 长相.
+        普通素材动画用 auto; 没有图片且不是 Bot 本人视频时用文字生成.
+        任务在后台执行, 接受后不要重复调用.
 
         Args:
             prompt(string): 视频提示词。支持 "预设名 额外提示词"（与 `/视频 预设名 额外提示词` 一致）
+            mode(string): auto 为消息图片转视频或文生视频; selfie 为先生成 Bot 自拍底图再转视频.
+            selfie_prompt(string): selfie 模式的单帧画面描述, 只写姿势、场景、构图及明确要求的穿搭. 跳舞等动作保留全身空间, 穿搭未指定时用日程默认值. 不用于描述视频运动.
         """
         vconf = self._get_feature("video")
         if not bool(vconf.get("enabled", False)):
@@ -4123,6 +4138,18 @@ class GiteeAIImagePlugin(Star):
             await self._signal_llm_tool_failure(event)
             return self._llm_tool_text_result(
                 "The requested video tool is disabled by plugin configuration."
+            )
+
+        mode = str(mode or "auto").strip().lower()
+        if mode not in {"auto", "selfie"} or (selfie_prompt and mode != "selfie"):
+            await self._signal_llm_tool_failure(event)
+            return self._llm_tool_text_result(
+                "视频模式需为 auto 或 selfie; 自拍底图描述仅用于 selfie 模式."
+            )
+        if mode == "selfie" and not self._is_selfie_llm_enabled():
+            await self._signal_llm_tool_failure(event)
+            return self._llm_tool_text_result(
+                "自拍 LLM 工具已关闭, 本次自拍视频未提交."
             )
 
         arg = (prompt or "").strip()
@@ -4164,7 +4191,20 @@ class GiteeAIImagePlugin(Star):
 
         try:
             await mark_processing(event)
-            image_snapshot = await self._capture_video_image_snapshot(event)
+            selfie_snapshot = None
+            if mode == "selfie":
+                still_prompt = (
+                    "Create a single opening still frame for a video of the reference person. "
+                    + (selfie_prompt.strip() or extra_prompt)
+                    + ". Use a natural starting pose with room for the requested movement. "
+                    "One person, one frame, no storyboard or collage."
+                )
+                selfie_snapshot = await self._prepare_background_selfie(
+                    event, still_prompt, None
+                )
+                image_snapshot = (False, None)
+            else:
+                image_snapshot = await self._capture_video_image_snapshot(event)
             task = asyncio.create_task(
                 self._async_generate_video(
                     event,
@@ -4173,13 +4213,18 @@ class GiteeAIImagePlugin(Star):
                     provider_id=provider_override,
                     llm_tool_failure=True,
                     image_snapshot=image_snapshot,
+                    selfie_snapshot=selfie_snapshot,
                 )
             )
-        except Exception:
+        except asyncio.CancelledError:
+            await self._video_end(user_id)
+            raise
+        except Exception as exc:
             await self._video_end(user_id)
             await self._signal_llm_tool_failure(event)
             return self._llm_tool_text_result(
-                "The video request failed before background execution could start. This request has ended."
+                "视频准备失败, 未提交视频任务: "
+                + self._summarize_status_text(exc, fallback="无法读取参考图或自拍配置")
             )
 
         self._video_tasks.add(task)
@@ -6527,9 +6572,41 @@ class GiteeAIImagePlugin(Star):
         provider_id: str | None = None,
         llm_tool_failure: bool = False,
         image_snapshot: tuple[bool, bytes | None] | None = None,
+        selfie_snapshot: tuple[list[bytes], str, dict, dict] | None = None,
     ) -> None:
         try:
-            if image_snapshot is None:
+            if selfie_snapshot is not None:
+                images, still_prompt, options, _ = selfie_snapshot
+                if not images:
+                    raise RuntimeError("自拍视频缺少身份参考, 不会改用文生视频")
+                logger.info("[视频] 阶段=selfie_frame 开始生成自拍视频底图")
+
+                async def make_frame():
+                    return await self.edit.edit(
+                        prompt=still_prompt,
+                        images=images,
+                        task_types=options.get("task_types"),
+                        default_output=options.get("default_output"),
+                        chain_override=options.get("chain_override"),
+                        infer_source_aspect=False,
+                    )
+
+                manager = getattr(self, "background_tasks", None)
+                if manager and manager.accepting:
+                    path = await manager.run_provider(
+                        "selfie-video-" + uuid.uuid4().hex, make_frame
+                    )
+                else:
+                    path = await make_frame()
+                image_bytes = await asyncio.to_thread(Path(path).read_bytes)
+                if not image_bytes:
+                    raise RuntimeError("自拍视频底图为空, 未提交视频任务")
+                self._remember_last_image(event, Path(path))
+                image_snapshot = (True, image_bytes)
+                logger.info(
+                    "[视频] 阶段=animate 自拍底图已固定, bytes=%s", len(image_bytes)
+                )
+            elif image_snapshot is None:
                 image_snapshot = await self._capture_video_image_snapshot(event)
             had_image, image_bytes = image_snapshot
 
@@ -6601,6 +6678,8 @@ class GiteeAIImagePlugin(Star):
                         detail,
                         type(e).__name__,
                     )
+                    if getattr(e, "stop_provider_chain", False):
+                        break
 
             if not used_pid:
                 if last_error is not None:

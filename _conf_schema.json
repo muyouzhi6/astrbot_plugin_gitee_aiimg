@@ -2141,6 +2141,136 @@
         },
         "hide_hint_in_list": true
       },
+      "agnes_video": {
+        "name": "Agnes 视频",
+        "hide_hint_in_list": true,
+        "description": "Agnes Video 2.5 Flash, 支持异步文生视频和图片参考.",
+        "hint": "POST /v1/videos, 使用 video_id 查询 /agnesapi. Flash 仅支持 720P, 请求间隔至少 61 秒.",
+        "items": {
+          "id": {
+            "type": "string",
+            "description": "服务商 ID",
+            "default": "agnes_video"
+          },
+          "label": {
+            "type": "string",
+            "description": "显示名称",
+            "default": "Agnes Video 2.5 Flash"
+          },
+          "base_url": {
+            "type": "string",
+            "description": "API 地址",
+            "default": "https://apihub.agnes-ai.com/v1"
+          },
+          "api_key": {
+            "type": "string",
+            "description": "API Key",
+            "default": ""
+          },
+          "model": {
+            "type": "string",
+            "description": "模型 ID",
+            "default": "agnes-video-2.5-flash",
+            "options": [
+              "agnes-video-2.5-flash"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "description": "生成模式",
+            "default": "auto",
+            "options": [
+              "auto",
+              "text",
+              "keyframe",
+              "reference"
+            ],
+            "hint": "auto 无图使用 text, 有图使用首帧 keyframe. reference 用图片作为风格与内容参考."
+          },
+          "seconds": {
+            "type": "string",
+            "description": "视频时长(秒)",
+            "default": "5",
+            "options": [
+              "4",
+              "5",
+              "6",
+              "7",
+              "8",
+              "9",
+              "10",
+              "11",
+              "12"
+            ]
+          },
+          "size": {
+            "type": "string",
+            "description": "分辨率",
+            "default": "720P",
+            "options": [
+              "720P"
+            ]
+          },
+          "aspect_ratio": {
+            "type": "string",
+            "description": "画幅",
+            "default": "16:9",
+            "options": [
+              "21:9",
+              "16:9",
+              "4:3",
+              "1:1",
+              "3:4",
+              "9:16"
+            ]
+          },
+          "request_interval_seconds": {
+            "type": "int",
+            "description": "所有 API 请求的最短间隔(秒)",
+            "default": 61,
+            "min": 61,
+            "max": 600,
+            "hint": "创建与查询共用额度, 按 Key 持久化限速, 跨插件重载保持, 满足 RPM 1."
+          },
+          "timeout_seconds": {
+            "type": "int",
+            "description": "任务总超时(秒)",
+            "default": 1800,
+            "min": 120,
+            "max": 3600
+          },
+          "request_timeout_seconds": {
+            "type": "int",
+            "description": "单次请求超时(秒)",
+            "default": 120,
+            "min": 10,
+            "max": 300
+          },
+          "poll_interval_seconds": {
+            "type": "int",
+            "description": "轮询间隔(秒)",
+            "default": 61,
+            "min": 1,
+            "max": 600
+          },
+          "max_retries": {
+            "type": "int",
+            "description": "查询临时错误重试次数",
+            "default": 3,
+            "min": 0,
+            "max": 5,
+            "hint": "只重试查询, 不重新创建结果不明的任务."
+          },
+          "extra_body": {
+            "type": "dict",
+            "description": "额外请求体(高级)",
+            "hint": "可配置 seed, first_frame, last_frame, images, audios. Flash 最多 5 张图片和 3 段音频, 不支持 videos.",
+            "default": {},
+            "items": {},
+            "template_schema": {}
+          }
+        }
+      },
       "grok_video": {
         "name": "Grok 视频",
         "description": "用于 xAI 异步视频生成链路（Text-to-Video / Image-to-Video）。",
@@ -2159,7 +2289,7 @@
           "server_url": {
             "type": "string",
             "description": "API 服务地址",
-            "hint": "可填站点根地址或 /v1，例如：https://api.3365api.cn/v1；内部补全 /v1/videos/generations。",
+            "hint": "可填站点根地址或 /v1, 内部补全 /v1/videos/generations.",
             "default": "https://api.x.ai"
           },
           "api_key": {
@@ -2357,186 +2487,6 @@
         },
         "hide_hint_in_list": true
       },
-      "sd20_video": {
-        "name": "SD2.0 视频",
-        "description": "用于 3365 的 SD2.0 异步文生/图生视频任务。",
-        "hint": "POST /v1/video/generations，轮询同一路径；支持 video-v1-5s、video-v1-10s、video-v1-15s。",
-        "items": {
-          "id": {
-            "type": "string",
-            "description": "服务商 ID（唯一）",
-            "default": "3365_video"
-          },
-          "label": {
-            "type": "string",
-            "description": "显示名称（可选）",
-            "default": "3365 SD2.0"
-          },
-          "base_url": {
-            "type": "string",
-            "description": "API 服务地址",
-            "hint": "例如：https://api.3365api.cn 或 https://api.3365api.cn/v1。内部补全 /v1/video/generations。",
-            "default": "https://api.3365api.cn"
-          },
-          "api_keys": {
-            "type": "list",
-            "description": "API Key 池",
-            "default": [],
-            "obvious_hint": true
-          },
-          "api_key": {
-            "type": "string",
-            "description": "单个 API Key（api_keys 为空时使用）",
-            "default": "",
-            "obvious_hint": true
-          },
-          "api_key_env": {
-            "type": "string",
-            "description": "API Key 环境变量名",
-            "default": ""
-          },
-          "model": {
-            "type": "string",
-            "description": "模型 ID",
-            "hint": "video-v1-5s、video-v1-10s 或 video-v1-15s。",
-            "default": "video-v1-5s"
-          },
-          "ratio": {
-            "type": "string",
-            "description": "视频宽高比",
-            "hint": "可选：16:9、9:16、1:1。",
-            "default": "16:9"
-          },
-          "timeout_seconds": {
-            "type": "int",
-            "description": "任务总超时(秒)",
-            "default": 900
-          },
-          "request_timeout_seconds": {
-            "type": "int",
-            "description": "单次 HTTP 请求超时(秒)",
-            "default": 120
-          },
-          "poll_interval_seconds": {
-            "type": "int",
-            "description": "轮询间隔(秒)",
-            "default": 15
-          },
-          "create_max_retries": {
-            "type": "int",
-            "description": "创建任务最大重试次数",
-            "default": 0
-          },
-          "max_retries": {
-            "type": "int",
-            "description": "轮询请求最大重试次数",
-            "default": 2
-          },
-          "retry_delay": {
-            "type": "int",
-            "description": "重试基础间隔(秒)",
-            "default": 2
-          },
-          "extra_body": {
-            "type": "dict",
-            "description": "额外请求体(高级)",
-            "hint": "按上游视频协议填写 JSON 参数, 覆盖同名默认项; 带参考图的 OpenAI Videos 请求自动转换为表单字段.",
-            "items": {},
-            "default": {}
-          }
-        },
-        "hide_hint_in_list": true
-      },
-      "3365_video": {
-        "name": "伞云视频",
-        "description": "适配 3365 New API 的异步 xAI 视频接口。",
-        "hint": "POST /v1/videos/generations；支持 grok-imagine-video、grok-imagine-video-1.5 等模型，轮询 /v1/videos/{request_id}。",
-        "items": {
-          "id": {
-            "type": "string",
-            "description": "服务商 ID（唯一）",
-            "default": "3365_video"
-          },
-          "label": {
-            "type": "string",
-            "description": "显示名称（可选）",
-            "default": "3365 视频"
-          },
-          "server_url": {
-            "type": "string",
-            "description": "API 服务地址",
-            "hint": "例如：https://api.3365api.cn；内部补全 /v1/videos/generations。",
-            "default": "https://api.3365api.cn"
-          },
-          "api_key": {
-            "type": "string",
-            "description": "API Key",
-            "default": "",
-            "obvious_hint": true
-          },
-          "model": {
-            "type": "string",
-            "description": "模型 ID",
-            "hint": "例如：grok-imagine-video-1.5。先用 /v1/models 确认该 Key 有视频 channel。",
-            "default": "grok-imagine-video-1.5"
-          },
-          "duration": {
-            "type": "int",
-            "description": "视频时长（秒）",
-            "default": 5
-          },
-          "aspect_ratio": {
-            "type": "string",
-            "description": "视频宽高比",
-            "default": ""
-          },
-          "resolution": {
-            "type": "string",
-            "description": "视频分辨率",
-            "default": ""
-          },
-          "timeout_seconds": {
-            "type": "int",
-            "description": "任务总超时（秒）",
-            "default": 600
-          },
-          "request_timeout_seconds": {
-            "type": "int",
-            "description": "单次 HTTP 请求超时（秒）",
-            "hint": "图生视频会在 JSON 中上传 base64 图片；网络较慢时建议至少 120 秒。",
-            "default": 120
-          },
-          "poll_interval_seconds": {
-            "type": "int",
-            "description": "轮询间隔（秒）",
-            "default": 5
-          },
-          "max_retries": {
-            "type": "int",
-            "description": "轮询请求最大重试次数",
-            "default": 2
-          },
-          "create_max_retries": {
-            "type": "int",
-            "description": "创建任务最大重试次数",
-            "hint": "仅重试明确返回的 408/409/425/429/5xx；连接超时等结果不明的故障不会重试，避免重复任务。",
-            "default": 2
-          },
-          "retry_delay": {
-            "type": "int",
-            "description": "重试基础间隔（秒）",
-            "default": 2
-          },
-          "extra_body": {
-            "type": "dict",
-            "description": "额外请求体(高级)",
-            "hint": "按上游视频协议填写 JSON 参数, 覆盖同名默认项; 带参考图的 OpenAI Videos 请求自动转换为表单字段.",
-            "items": {},
-            "default": {}
-          }
-        },
-        "hide_hint_in_list": true
-      },
       "sora2_video": {
         "name": "OpenAI 视频",
         "description": "用于 OpenAI 兼容异步视频任务（POST /v1/videos 后轮询任务状态）。",
@@ -2555,7 +2505,7 @@
           "base_url": {
             "type": "string",
             "description": "API 服务地址",
-            "hint": "例如：https://api.3365api.cn/v1 或 https://meinianda.top（内部补全 /v1/videos）。",
+            "hint": "例如 https://meinianda.top, 内部补全 /v1/videos.",
             "default": "https://api.openai.com"
           },
           "api_keys": {

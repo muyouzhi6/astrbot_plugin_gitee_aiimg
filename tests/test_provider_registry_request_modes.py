@@ -73,6 +73,10 @@ def _load_module():
     sys.modules["astrbot.api"] = api_mod
 
     _install_stub_module(
+        f"{CORE_PACKAGE_NAME}.agnes_video_service",
+        AgnesVideoService=_StubBackend,
+    )
+    _install_stub_module(
         f"{CORE_PACKAGE_NAME}.gemini_edit",
         GeminiEditBackend=_StubBackend,
     )
@@ -338,7 +342,7 @@ class ProviderRegistryRequestModeTests(unittest.TestCase):
             "https://gateway.example/v1",
         )
 
-    def test_registry_resolves_3365_video_provider(self):
+    def test_registry_rejects_removed_video_provider(self):
         mod = _load_module()
         registry = mod.ProviderRegistry(
             config={
@@ -356,14 +360,10 @@ class ProviderRegistryRequestModeTests(unittest.TestCase):
             data_dir=Path("/tmp"),
         )
 
-        backend = registry.get_video_backend("3365_video")
+        with self.assertRaisesRegex(RuntimeError, "not a video provider"):
+            registry.get_video_backend("3365_video")
 
-        self.assertEqual(backend.__class__.__name__, "_StubBackend")
-        self.assertEqual(
-            backend.kwargs["settings"]["server_url"], "https://api.3365api.cn"
-        )
-
-    def test_validate_requires_3365_video_credentials(self):
+    def test_validate_rejects_removed_video_template(self):
         mod = _load_module()
         registry = mod.ProviderRegistry(
             config={
@@ -380,7 +380,9 @@ class ProviderRegistryRequestModeTests(unittest.TestCase):
             data_dir=Path("/tmp"),
         )
 
-        self.assertEqual(registry.validate(), ["provider '3365_video' missing api_key"])
+        self.assertEqual(
+            registry.validate(), ["provider '3365_video' uses a removed video template"]
+        )
 
     def test_validate_requires_sora2_api_key_source(self):
         mod = _load_module()

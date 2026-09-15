@@ -556,6 +556,34 @@ class BatchResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_uncertain_video_creation_does_not_fall_through(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={"features": {"video": {"chain": ["agnes", "other"]}}},
+        )
+        calls = []
+
+        class Uncertain(RuntimeError):
+            stop_provider_chain = True
+
+        class Backend:
+            async def generate_video_url(self, **kwargs):
+                calls.append("generate")
+                raise Uncertain("request outcome unknown")
+
+        plugin.registry = types.SimpleNamespace(get_video_backend=lambda _: Backend())
+
+        async def noop(*args, **kwargs):
+            return None
+
+        plugin._video_end = noop
+        mod.mark_failed = noop
+        await plugin._async_generate_video(
+            _DummyEvent(), "a cup", "user", image_snapshot=(False, None)
+        )
+        self.assertEqual(calls, ["generate"])
+
     async def test_video_chain_forwards_single_request_download_hint(self):
         mod = _load_module()
         plugin = mod.GiteeAIImagePlugin(
