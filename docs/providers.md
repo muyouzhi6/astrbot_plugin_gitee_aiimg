@@ -30,7 +30,7 @@
 
 ![Gitee 历史免费额度: 每日免费体验 100 张](assets/tutorials/gitee-free-quota.png)
 
-这两张截图恢复自早期仓库教程, 原截图时间为 2025-12-05, 用于说明操作位置和当时的 **每日 100 张** 额度. 平台界面、账号资格及免费尺寸档位可能变化, 申请时以当前页面为准; **模型支持 2K 不等于 2K 一定包含在免费额度内**.
+截图来自 2025-12-05 的教程. 当前免费额度及适用尺寸以账号页面为准.
 
 ### 配置 2K 文生图
 
@@ -76,7 +76,7 @@
 /aiimg @gitee_zimage 一位成年女性站在窗边, 自然日光, 真实摄影 3:4
 ```
 
-可用尺寸见 [Gitee 尺寸表](configuration.md#gitee-支持的图像尺寸). `z-image-turbo` 只加入 **文生图链路**, 不加入改图或自拍链路. Gitee 平台的其它改图模型是另外的能力, 不能因为平台相同就认为这个模型也能改图.
+可用尺寸见 [Gitee 尺寸表](configuration.md#gitee-支持的图像尺寸). `z-image-turbo` 只加入 **文生图链路**, 不加入改图或自拍链路.
 
 ### Gitee 文字伪自拍
 
@@ -103,7 +103,7 @@
 backend=gitee_zimage, 不使用自拍参考图或图像编辑模式.
 ```
 
-这能让画面风格和外貌描述相近, 但没有人脸参考约束, 不能保证同一身份. 需要可靠得多的身份保持、合影或自拍视频时, 配置支持参考图编辑的模型, 如下方美年达香蕉.
+文字伪自拍不能锁定同一张脸. 需要参考图自拍、合影或自拍视频时, 使用支持改图的模型, 如美年达香蕉.
 
 [查看 Gitee 出图](../README.md#gitee-z-image-turbo-文生图)
 
@@ -111,7 +111,7 @@ backend=gitee_zimage, 不使用自拍参考图或图像编辑模式.
 
 [注册美年达](https://meinianda.top/sign-up?aff=Qs4O) · [公开模型与价格页](https://meinianda.top/pricing) · [查看本插件自拍成片](../README.md#美年达-gemini-自拍)
 
-注册链接带作者 AFF 标识. 作者推荐香蕉系列用于真人写实, GPT Image 系列用于二次元与插画; 具体价格按所选模型、分组和站点计费规则计算, 不在这里固定一个可能过期的单张价格.
+注册链接带作者 AFF 标识. 香蕉系列推荐用于真人写实, GPT Image 系列推荐用于二次元与插画; 价格以站点计费页为准.
 
 ### 申请令牌与选择分组
 
@@ -120,7 +120,7 @@ backend=gitee_zimage, 不使用自拍参考图或图像编辑模式.
 3. 将 Key 填入插件的 **API Key 池**, 在模型连接中获取列表并搜索目标模型. 获取不到时, 按当前分组页面填写精确模型 ID.
 4. 香蕉和 GPT Image 分别创建服务商连接, 不把一个连接的协议随模型名称一起混用.
 
-以下两套“专用配置”复用插件已有的通用协议模板, 不是新增的协议或必须安装的扩展. 服务商 ID 和显示名称可以自行修改, 修改后同步更新链路引用.
+以下提供两套配置. 修改服务商 ID 后, 同步更新链路引用.
 
 ### 美年达香蕉配置
 
@@ -144,11 +144,13 @@ backend=gitee_zimage, 不使用自拍参考图或图像编辑模式.
 }
 ```
 
-不要只因为模型名含 Gemini 就选 Chat 出图协议. 此配置使用原生 `generationConfig.imageConfig` 传递画幅和分辨率, 适合参考图自拍与多人合影. `webp_lossless` 是本地无损编码, 不会降低像素分辨率.
+画幅和分辨率通过 Gemini 原生参数传递. `webp_lossless` 使用无损编码保存图片.
 
 ### 美年达 GPT Image 配置
 
-选择 **OpenAI Images** 模板. 示例以明确支持生成和编辑接口的 `gpt-image-2` 为起点:
+美年达 **GPT Image 全系列统一使用 OpenAI Images 模板 (`openai_images`)**, 包括 `gpt-image-2`、2.5 flare、2.5 sunburst 及其 `-1K` 型号.
+
+下面以 `gpt-image-2` 为例; 使用其他型号时, 替换 `model` 即可:
 
 ```json
 {
@@ -167,18 +169,9 @@ backend=gitee_zimage, 不使用自拍参考图或图像编辑模式.
 }
 ```
 
-需要设置质量时, 在额外请求体添加该型号支持的值, 如 `{"quality":"high"}`. `quality` 的值是字符串, 但 `max` 不代表所有模型都支持的最高档; 不支持的值可能被拒绝或忽略, 以模型文档和实际响应为准.
+可选模型 ID: `gpt-image-2`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`、`gpt-image-2.5-flare-1K`、`gpt-image-2.5-sunburst-1K`. 按令牌分组选择可用型号, 并使用该型号支持的分辨率.
 
-截至 2026-09-16, 公开模型目录中的接口区别如下; 它说明接入方式, 不代表当前 Key 一定有权调用所有型号:
-
-| 精确模型 ID                                            | 公开目录中的接口               | 插件选择                                 |
-| ------------------------------------------------------ | ------------------------------ | ---------------------------------------- |
-| `gpt-image-2`                                          | Images 生成、Images 编辑、Chat | 优先 `openai_images`                     |
-| `gpt-image-2.5-flare`                                  | Images 生成、Images 编辑、Chat | 可用 `openai_images`, 按分组确认参数     |
-| `gpt-image-2.5-sunburst`                               | Chat                           | 使用 `openai_chat`                       |
-| `gpt-image-2.5-flare-1K` / `gpt-image-2.5-sunburst-1K` | Chat                           | 使用 `openai_chat`, 遵守型号的分辨率限制 |
-
-因此不要把 `gpt-image-2.5` 系列统统复制成 OpenAI Images 配置, 也不要给名称含 `1K` 的型号强填 `4K`. Chat 接口的质量参数和嵌套位置也可能与 Images 接口不同.
+质量参数写在额外请求体中, 如 `{"quality":"high"}`. 值为字符串, 只填写当前型号支持的档位.
 
 ### 加入文生图与自拍链路
 
@@ -234,14 +227,14 @@ backend=gitee_zimage, 不使用自拍参考图或图像编辑模式.
 }
 ```
 
-自拍还需要在 [形象库](studio.md#形象库与日程联动) 绑定 Bot 身份参考, 或用 [自拍参考指令](configuration.md#自拍参考照) 保存图片. 只配置模型不会自动知道 Bot 长什么样.
+自拍还需要在 [形象库](studio.md#形象库与日程联动) 绑定 Bot 身份参考, 或用 [自拍参考指令](configuration.md#自拍参考照) 保存图片.
 
 ```text
 /aiimg @meinianda_gpt_image 成年女性角色设定, 二次元插画, 干净背景
 /自拍 @meinianda_banana 在窗边看书, 自然光, 3:4
 ```
 
-`use_edit_chain_when_empty=true` 也会把改图链追加为自拍后备, 按 ID 去重; 不希望自拍切换到其它模型时设为 `false`. 多人物能力和画幅必须由所选模型支持, 不能通过增加一个参数凭空获得.
+`use_edit_chain_when_empty=true` 会把改图链追加为自拍后备, 按 ID 去重; 只想使用自拍链路时设为 `false`.
 
 ## Agnes 视频
 
@@ -272,7 +265,7 @@ backend=gitee_zimage, 不使用自拍参考图或图像编辑模式.
 
 ### 云智配置
 
-原文中的云智接入示例保留在此, 不影响其它服务商. [站点入口](https://ai.beimo.cc/register?aff=9FDGT62B49SM) 带原有 AFF 标识, 当前地址、价格和模型可用性请在站点核对.
+[云智站点入口](https://ai.beimo.cc/register?aff=9FDGT62B49SM), 链接带 AFF 标识. 使用 OpenAI Images 模板:
 
 ```json
 {
