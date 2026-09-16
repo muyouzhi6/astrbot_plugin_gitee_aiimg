@@ -1,1052 +1,191 @@
-# AstrBot Gitee AI 图像生成插件
+<div align="center">
 
-[![Plugin Version](https://img.shields.io/badge/Version-v5.7.0-4f8cc9?style=for-the-badge)](./CHANGELOG.md)
-[![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.28.0%2C%20%3C5-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
-[![Platform](https://img.shields.io/badge/Primary-aiocqhttp-4caf50?style=for-the-badge)](#平台与限制)
-[![CI](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml/badge.svg)](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml)
+# AstrBot Gitee AI Image
 
-多服务商文生图 / 改图 / 自拍 / 视频生成插件, 内置 **映像工作台 WebUI**, 提供模型连接、拖动回退链路、形象库、私人画廊、批量创作、自由画布与节点工作流. Bot 接下后台图片任务后可以继续聊天; 要看 Bot 本人的视频时, 还可以先按形象和日程穿搭生成自拍底图, 再将底图转成视频.
+**让 Bot 有自己的形象, 也有每天不一样的生活.**
 
-> [!IMPORTANT]
-> 这份文档对应 `v5.7.0`, 需要 AstrBot >=4.28.0 且 <5, 沿用现有配置结构.
+自拍 · 合影 · 后台生图 · 视频 · 映像工作台
+
+[![Version](https://img.shields.io/badge/version-v5.7.0-287c78?style=flat-square)](CHANGELOG.md) [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.28.0%20%3C5-52646f?style=flat-square)](https://github.com/AstrBotDevs/AstrBot) [![CI](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml/badge.svg)](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml) [![QQ Group](https://img.shields.io/badge/QQ%E4%BA%A4%E6%B5%81%E7%BE%A4-215532038-267ac3?style=flat-square)](#交流与反馈)
+
+[特色功能](#特色功能) · [推荐服务商](#推荐服务商) · [出图展示](#出图展示) · [申请与配置教程](#申请与配置教程) · [更新日志](CHANGELOG.md)
+
+</div>
+
+这是一个为 AstrBot 提供 **文生图、改图、固定形象自拍、多人合影和视频生成** 的插件. 你可以直接用自然语言让 Bot 拍照, 也可以在内置的 **映像工作台 WebUI** 中配置服务商、批量创作、整理画廊、排版画布和连接节点工作流.
+
+它不只是把一句提示词转发给模型: Bot 可以保留自己的参考形象, 按当天的穿搭与日程拍照, 在等待图片时继续和你聊天, 或先拍一张自己, 再让照片中的自己动起来.
+
+> **插件开发与交流 QQ 群: `215532038`** · [查看群二维码](#交流与反馈)
 >
-> - `v5` 延续 `v4` 配置结构；从 `v3 / v2` 升级时仍需重新检查 WebUI 配置。
-> - 插件主维护场景是 `QQ / aiocqhttp`，并针对个人微信 `weixin_oc` 增加了发送图片前优化。
-> - 批量结果的“合并转发”当前只有 `aiocqhttp` 原生支持；其他平台会在开启回退时自动改为普通消息逐条发送。
-> - 历史更新内容见 [CHANGELOG.md](./CHANGELOG.md)。
+> 主要维护 `QQ / aiocqhttp`, 同时适配个人微信 `weixin_oc`. 需要 **AstrBot >=4.28.0 且 <5**. 插件支持多个平台接口, 不限于 Gitee; 具体模型能力由所选服务商决定.
 
-## 新功能与入口
+## 特色功能
 
-| 想做什么 | 从哪里开始 |
-| --- | --- |
-| 注册后体验 Agnes 限时免费视频模型 | [Agnes 注册与配置](#agnes-注册与配置) |
-| 让 Bot 拍一段自己跳舞的视频 | [先自拍再转视频](#先自拍再转视频) |
-| 可视化添加服务商、获取模型、调整回退顺序 | [WebUI 模型连接与回退链路](#模型连接与回退链路) |
-| 批量生成、做变体、仿拍或换装 | [工作区与批量创作](#工作区与批量创作) |
-| 拼排图片、裁剪和导出 | [自由画布](#自由画布) |
-| 自己连接节点并保存生成流程 | [节点工作流](#节点工作流) |
-| 保存多套人物形象、按中文指令切换 | [形象库与日程联动](#形象库与日程联动) |
-| 看历史提示词、下载、收藏或批量删除 | [画廊与存储管理](#画廊与存储管理) |
+### 01 · 预设 Bot 形象自拍
 
-## 映像工作台 WebUI
+**本插件的首创设计之一.** 预先保存 Bot 的身份参考图, 聊天时只需说“拍张你在窗边的照片”, 插件就会带着固定身份参考生成新照片. 不必每次重新上传参考图, 也不只是依靠文字猜长相. 支持多套形象, 用 `/换形象 日常` 切换当前会话的 Bot 造型.
 
-在 **AstrBot 管理面板 > 插件 > Gitee AI Image 插件详情** 中打开 **映像工作台**. 工作台使用 AstrBot 的登录鉴权, 无需单独部署前端、开放新端口或另设密码. 电脑和手机访问同一入口.
+[看实际自拍成片](#美年达-gemini-自拍) · [设置自拍与形象库](docs/studio.md#形象库与日程联动)
 
-左侧导航分为工作区、工作流、画廊、形象库、服务商和任务. 先配置模型连接及功能链路, 再开始创作. **自由画布负责图片排版, 节点工作流负责编排生成步骤**, 两者可以独立使用, 普通生图不需要先搭节点.
+### 02 · LLM 后台生图, 不阻塞主对话
 
-### 模型连接与回退链路
+**本插件的另一项首创设计.** LLM 接下图片任务后立即回到对话, 用户与 Bot 可以继续聊天. 图片在后台生成, Bot 能知道任务进度, 完成或失败后再按当前人格回来回应. 单图、自拍、改图和批量任务都能使用, 不用等一张慢图把整段聊天卡住.
 
-1. 打开 **服务商 > 模型连接 > 添加服务商**, 按实际 API 格式选择模板. OpenAI Images、Gemini 原生、Chat 出图优先显示.
-2. 填写唯一服务商 ID、API 地址和密钥. 点击获取模型, 在下拉列表中搜索并选择; 服务商不提供模型列表时, 按其文档手动填写模型 ID.
-3. 在 **额外请求体** 中填写模型支持的 JSON 参数, 如 OpenAI Images 的 `{"quality":"high"}`. 值必须以当前模型支持范围为准, `max` 不是所有模型都支持的通用最高档.
-4. 点击 **保存并生效**, 再切换到 **回退链路**, 将该服务商加入文生图、改图、自拍或视频的对应链路.
-5. 拖动左侧手柄调整顺序, 第一个为主用. 手机上也可用上移、下移按钮. 图片链路可点击服务商名称调整单项画幅, 最后点击 **保存链路**.
+[开启后台生图](docs/background-and-context.md#llm-后台生图)
 
-编辑已有连接时, 已保存密钥留空会保留; 修改 API 地址后需要重新填写密钥. 配置保存前自动备份, 多个管理员同时修改时检查版本冲突. 删除服务商前, 先从功能链路中移除它.
+<sub>“首创”是作者对本插件原创设计的定位, 不表示对所有同类项目做过排他性比较.</sub>
 
-回退只处理允许切换的失败. 例如 Agnes 创建结果不明时会停止链路, 不会再向备用渠道提交一个可能重复的付费任务.
+### 让创作连起来的更多能力
 
-### 工作区与批量创作
+| 特色                            | 可以做什么                                                                                                                                                              |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **03 · Fallback 回退链路**      | 文生图、改图、自拍和视频分别配置主用与备用服务商. 按顺序处理可回退的失败, 不必每次手动切换.                                                                             |
+| **04 · WebUI / 画布 / 画廊**    | 获取模型列表、拖动链路、可视化编辑配置; 在画廊看提示词和大图, 在自由画布排版, 用节点工作流保存创作流程.                                                                 |
+| **05 · 预设提示词**             | 保存常用文生图、改图和视频提示词, 用“预设名 + 本次要求”调用; 改图预设还可注册成独立中文指令.                                                                            |
+| **06 · 他人形象与 Bot 合影**    | 为自己或其他人物建档, 将聊天里的“我”绑定到对应形象. 可以说“我们合照”, 也可以只给“穿西装的我”拍照. 人物身份与穿搭分别约束.                                               |
+| **07 · 每天不同的穿搭与场景**   | 联动 [日程与穿搭插件 life_scheduler](https://github.com/muyouzhi6/astrbot_plugin_life_scheduler), 让 Bot 默认穿当天的衣服、置身当天的生活场景. 用户明确要求优先.        |
+| **08 · LLM 拍视频**             | “你拍个你跳舞的视频我看看”会先按 Bot 形象生成自拍底图, 再转成视频. 普通图片也可以直接做动画, 没有图片时可文生视频.                                                      |
+| **09 · 批量、变体、仿拍与换装** | 从一张成片继续规划多组镜头, 编辑每张提示词, 勾选后批量生成; 失败项单独重试, 已成功图片不重跑.                                                                           |
+| **10 · 历史图片与精细控制**     | 联动 [ContextAware](https://github.com/muyouzhi6/astrbot_plugin_context_aware) 引用聊天里的历史图片; 支持比例、精确尺寸、1K/2K/4K、多 Key 轮询、质量参数和无损图片保存. |
 
-打开 **工作区**, 默认进入创作与选片视图. 普通生图填写描述, 选择生成服务商与每组 **1 至 12 张**的数量后生成. 也可以从画廊或成片上的 **做变体**、**仿拍**、**继续创作** 进入下一轮.
+形象参考不能保证模型每次都完美保持同一张脸, 内容和分辨率也取决于上游能力. 对无法确认是否创建成功的付费任务, 插件会停止自动重建, 避免“回退”变成重复扣费.
 
-| 创作方式 | 用途 |
-| --- | --- |
-| 自由生成 | 按文字描述生成一张或一组图片 |
-| 图片编辑 | 以选中的图片为输入进行修改 |
-| 成片变体 | 保留母片的服装、场景与风格, 改变景别、机位、动作或表情 |
-| 严格仿拍 | 复现目标图的服装、姿势、表情、场景、光线与构图, 只做连拍级微小变化 |
-| 换装拍摄 | 提取参考服装的版型、材质和穿法, 不复制参考人物的身份或背景 |
+## 推荐服务商
 
-变体、仿拍和换装使用以下流程:
+以下推荐结合作者实际使用体验. **免费额度、价格、模型名称和可用分组会变化**, 申请与配置步骤放在后面的教程入口, 首页先看适合自己的方案.
 
-1. 选择参考图, 仿拍和换装还需选择出镜人物; 多人参考图需指定对应人物.
-2. 选择 AstrBot 中已配置且支持看图的 **对话模型** 规划镜头. 它负责理解参考图, 不是最终生图模型.
-3. 点击 **规划镜头**, 检查和修改每张提示词, 勾选需要的镜头.
-4. 选择插件中的 **图片生成服务商**, 提交生成, 在选片视图查看结果.
+### Gitee AI · 免费文生图入门
 
-有明确人物身份时, 仿拍或换装目标图经过视觉规划转换成文字要求, 最终图像模型只接收对应身份参考, 降低目标照片的人脸混入结果的风险. 批量结果按组展示, 成功图片立即进入画廊; 失败项可单独重试, 使用原任务保存的参考图和提示词, 不重跑成功图片.
+**推荐模型: `z-image-turbo`**. 适合先用免费额度体验文生图, 支持最高 2K 的白名单尺寸, 真人写实效果不错. 作者使用及旧版教程记录的额度为 **每天免费 100 张**; 当前账号是否仍享有此额度, 以 Gitee 模型页显示为准.
 
-### 自由画布
+作者体验中它的内容限制较少, 可生成 NSFW 题材; 这不是托管 API 永久“无审查”的承诺, 平台规则和实际返回可能变化.
 
-在 **工作区** 切换到 **自由画布**, 将图库或生成结果加入画布进行排版. 支持多个工作区保存, 多图摆放、平移缩放、图层旋转与排序、复制、撤销重做、裁剪及 PNG 导出.
+> **只支持文生图, 不能进行参考图自拍、改图或身份合影.**
+> 只配置此模型时, 不要启用参考图自拍模式. 可以在人设中详细描述成年人物的五官、发型、体态与气质, 让 LLM 每次将描述加入文生图提示词, 实现文字驱动的“伪自拍”; 它不是身份锁定, 不保证每张同脸.
 
-裁剪会产生新资产, 不覆盖原图. 画布导出得到当前排版的图片, 不会发起新的模型生成请求. 手机可通过触摸和图层控件操作, 不要求精确拖拽节点或连线.
+[前往 Gitee 模型页](https://ai.gitee.com/serverless-api?model=z-image-turbo) · [查看 Gitee 出图](#gitee-z-image-turbo-文生图) · [API Key 图文申请与配置](docs/providers.md#gitee-ai)
 
-### 节点工作流
+### 美年达 · 真人自拍与二次元创作
 
-打开 **工作流**, 从 **自由生图**、**成片变体** 或 **人物仿拍** 模板开始, 再按需要添加或调整节点. 当前内置六类节点:
+**作者日常使用并推荐的生图站点**, 价格实惠, 出图质量高. 真人写真与固定形象自拍优先试 **Gemini 香蕉系列**, 二次元题材可优先试 **GPT Image 2 / 2.5 系列**. 这是作者的使用偏好, 两个系列都不局限于单一画风.
 
-| 节点 | 要配置的内容 |
-| --- | --- |
-| 提示词 | 图片描述和本次要求 |
-| 参考图片 | 从资产库选择的图片 |
-| 出镜人物 | 形象库人物和各自穿搭 |
-| 镜头规划 | 视觉对话模型、创作方式和数量 |
-| 生成图片 | 图片服务商、画幅及生成参数 |
-| 结果输出 | 要展示的上游生成图片 |
+| 用途                         | 模型与接入建议                                                                                                               |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 真人写实、Bot 自拍、日常合影 | `gemini-3.1-flash-image`, 使用 **Gemini 原生** 模板. 下方 10 张 Bot 照片均由作者通过本插件自拍模式生成.                      |
+| 二次元、插画、文生图与改图   | `gpt-image-2`, 使用 **OpenAI Images** 模板. `gpt-image-2.5-flare` 等型号按后台支持的接口选择; 部分 2.5 型号仅提供 Chat 接口. |
 
-1. 点击顶部步骤或节点中的 **编辑**, 在参数面板填写内容, 用 **下一步** 逐个检查.
-2. 拖动节点标题移动位置. 点击输出圆点, 再点击同类型输入圆点完成连接; 手机可直接在参数面板选择输入来源.
-3. 最简单的流程是 `提示词 -> 生成图片 -> 结果输出`. 加入参考图片或出镜人物后, 将它们接到生成节点对应输入. 需要先规划镜头时, 将规划结果接入生成节点.
-4. 点击 **保存修改**, 再点 **运行工作流**. 待设置项会在运行前定位, 运行状态和结果显示在画布下方.
+教程提供 **美年达香蕉** 与 **美年达 GPT Image** 两套独立服务商配置示例, 可分别放入自拍、改图和文生图链路. 支持的模型以账号所选令牌分组和获取模型列表为准, 不要把模型系列名称当作精确模型 ID.
 
-工作流按依赖顺序执行, 循环、类型不匹配和缺失输入会在发起生成前阻止. 人物参考在运行开始时固定, 节点失败后停止后续节点并保留已完成图片. 支持工作台工作流 JSON 的导入、导出和再次运行.
+[注册美年达](https://meinianda.top/sign-up?aff=Qs4O) · [查看 Bot 自拍成片](#美年达-gemini-自拍) · [申请 Key 与两套配置示例](docs/providers.md#美年达)
 
-> [!NOTE]
-> 当前节点用于图片生成, 不是 ComfyUI JSON 导入接口, 不支持安装第三方节点或执行任意脚本, 也尚未提供视频生成节点. Agnes 视频和自拍转视频通过聊天指令或 LLM 视频工具调用. 画廊与自由画布目前管理图片, 不是视频剪辑器或视频历史库.
+<sub>注册链接包含作者 AFF 推荐标识. 价格与模型可用性以站点实时计费页为准.</sub>
 
-### 形象库与日程联动
+### Agnes AI · 限时免费视频
 
-在 **形象库** 为 Bot 和其他人物分别建档, 每个人物可以保存多套形象, 并从资产库选取清晰的单人身份参考图. 为 Bot 指定账号, 为其他人物填写本人用户 ID, 将聊天里的“我”绑定到该人物. 用允许使用的用户 ID 和会话范围控制引用权限, 不依赖自动人脸识别或未知身份猜测.
+**推荐模型: `agnes-video-2.5-flash`**. 到 [platform.agnes-ai.com](https://platform.agnes-ai.com/) 注册并创建 API Key, 即可通过本插件调用. 截至 2026-09-16, [官方文档](https://wiki.agnes-ai.com/en/docs/agnes-video-25-flash) 标明限时免费, 当前价格为 **`$0/second`**.
 
-```text
-/形象
-/换形象 日常
-/人物
-```
+支持文生视频、首尾帧与图片/音频参考, **4 至 12 秒, 720P**. 插件按 `RPM=1` 设置至少 61 秒的请求间隔, 创建和查询共用限速. 同时配置一个支持改图的图片服务商, 就能完成“先自拍, 再转视频”.
 
-`/形象` 查看 Bot 形象, `/换形象 日常` 切换当前会话的形象, `/人物` 查看当前发言者有权引用的人物. 形象名称使用自己保存的名称, 切换不会改变已经排队的参考图.
+[注册 Agnes](https://platform.agnes-ai.com/) · [申请与视频配置](docs/video.md#agnes-注册与配置) · [配置 Bot 自拍转视频](docs/video.md#先自拍再转视频)
 
-聊天中可以说“我们在窗边合照一张”或“给穿黑色西装的我拍一张”. 图片工具通过 `character_ids` 选择出镜人物, 通过 `character_outfits` 分别绑定穿搭. `self` 表示 Bot, `me` 表示已绑定的当前发言者; 后一种请求只选择 `me`, 不会自动把 Bot 加进画面.
+<sub>免费活动并非永久或无限额度; 自拍底图仍由图片服务商计费. 平台注册地址不等于 API 地址, 配置时填写 `https://apihub.agnes-ai.com/v1`.</sub>
 
-Bot 没有明确穿搭要求时, 读取 `life_scheduler.get_life_context(allow_generate=False)` 的当天缓存; 用户明确要求优先. 不会把 Bot 的日程穿搭套给其他人物, 也不会为一次拍照请求额外生成新日程. 多人物要求后端支持有序多图输入; 不支持时明确失败, 不合并成单人或只取第一张. 身份与穿搭约束可以降低串脸、串衣概率, 不能保证生成模型永不出错.
+## 出图展示
 
-### 画廊与存储管理
+### 美年达 Gemini 自拍
 
-画廊保存新生成图片的最终提示词、模型、参数和人物绑定, 支持大图预览、原图下载、收藏和继续创作. 旧缓存没有可靠提示词记录时显示“旧缓存未保存提示词”, 不推测补写.
+**模型 `gemini-3.1-flash-image` · 美年达站点 · 本插件自拍模式**
 
-- 删除单张图片, 或进入批量管理后多选、收藏与删除. 收藏图片必须先取消收藏才能删除.
-- 人物身份参考、保存的工作流参考和正在使用的任务图片受到保护, 删除时会跳过. 删除普通图片会同步移除其工作区图层, 原图文件不可恢复.
-- 在存储设置中指定最大保留图片数量, `0` 为不限, 初始默认不限. 设置上限后立即应用, 此后每分钟检查一次, 按从旧到新的顺序清理可删除图片.
-- 新图片至少保留 5 分钟. 收藏和引用图片不因超限被清理, 因此受保护图片数量过多时实际数量可高于上限.
+以下为作者提供的 10 张 Bot 生成照片. 从日常穿搭、室内光线到不同视角, 展示固定形象参考下的实际创作结果. 展示图仅做等比缩小和体积优化, 不裁切、不修脸, 不携带原文件 EXIF; 点击图片查看较大预览.
 
-工作台原图和数据库保存在插件数据目录的 `studio/`, 只通过 AstrBot 鉴权接口读取, 不会随插件原有临时图片缓存策略删除. 备份时保留整个 `studio/` 目录, 不要只备份数据库而漏掉媒体文件.
+<table>
+  <tr>
+    <td width="50%"><a href="docs/assets/showcase/meinianda-selfie-04.jpg"><img src="docs/assets/showcase/meinianda-selfie-04.jpg" alt="Bot 自拍, 逆光与发丝细节" width="100%"></a></td>
+    <td width="50%"><a href="docs/assets/showcase/meinianda-selfie-05.jpg"><img src="docs/assets/showcase/meinianda-selfie-05.jpg" alt="Bot 自拍, 厨房中的日常穿搭" width="100%"></a></td>
+  </tr>
+  <tr><td align="center">逆光与细节</td><td align="center">日常与穿搭</td></tr>
+  <tr>
+    <td width="50%"><a href="docs/assets/showcase/meinianda-selfie-08.jpg"><img src="docs/assets/showcase/meinianda-selfie-08.jpg" alt="Bot 自拍, 礼帽与墨镜造型" width="100%"></a></td>
+    <td width="50%"><a href="docs/assets/showcase/meinianda-selfie-09.jpg"><img src="docs/assets/showcase/meinianda-selfie-09.jpg" alt="Bot 自拍, 车内通勤场景" width="100%"></a></td>
+  </tr>
+  <tr><td align="center">造型与表情</td><td align="center">场景与叙事</td></tr>
+</table>
 
-### 任务与手机操作
+<details>
+<summary><strong>展开其余 6 张自拍</strong></summary>
 
-在 **任务** 查看工作台图片任务状态. 刷新或关闭页面不会再次发送生成请求; 规划失败不发起生图, 重载后的未完成请求标记为中断, 不自动重试付费任务. 取消只能停止本地等待, 不保证上游停止计费.
+<table>
+  <tr>
+    <td width="50%"><a href="docs/assets/showcase/meinianda-selfie-03.jpg"><img src="docs/assets/showcase/meinianda-selfie-03.jpg" alt="Bot 自拍, 手持花束的俯拍视角" width="100%"></a></td>
+    <td width="50%"><a href="docs/assets/showcase/meinianda-selfie-06.jpg"><img src="docs/assets/showcase/meinianda-selfie-06.jpg" alt="Bot 自拍, 面部近景" width="100%"></a></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="docs/assets/showcase/meinianda-selfie-07.jpg"><img src="docs/assets/showcase/meinianda-selfie-07.jpg" alt="Bot 自拍, 戴帽阅读的侧面视角" width="100%"></a></td>
+    <td width="50%"><a href="docs/assets/showcase/meinianda-selfie-10.jpg"><img src="docs/assets/showcase/meinianda-selfie-10.jpg" alt="Bot 自拍, 窗边座位上的俯拍构图" width="100%"></a></td>
+  </tr>
+</table>
 
-电脑端可同时查看列表、画布和参数面板. 手机端进入独立服务商编辑页, 用上移、下移调整链路; 节点参数优先显示, 用步骤切换和输入来源选择完成配置. 不需要先熟悉自由画布, 也能直接完成生成、选片和下载.
+<p align="center"><a href="docs/assets/showcase/meinianda-selfie-01.jpg"><img src="docs/assets/showcase/meinianda-selfie-01.jpg" alt="Bot 自拍, 卧室日光中的纵向构图" width="48%"></a></p>
+<a href="docs/assets/showcase/meinianda-selfie-02.jpg"><img src="docs/assets/showcase/meinianda-selfie-02.jpg" alt="Bot 自拍, 窗边微笑的横向构图" width="100%"></a>
 
-## v5.3：群聊图片引用、批量合影与主体特征保留
+</details>
 
-配合 **ContextAware >=3.6.0 / AstrBot >=4.26.8**，`aiimg_generate` 可使用当前会话图片目录中的历史图片，而不要求用户重新发送或引用。
+[使用同款模型与配置](docs/providers.md#美年达香蕉配置) · [设置自己的 Bot 形象](docs/studio.md#形象库与日程联动)
 
-| 用户意图 | 工具模式及参考 |
-|---|---|
-| “把刚才 Alice 的猫图改成水彩” | `mode=edit`，猫图 `subject` |
-| “抱着上图的猫自拍” | `mode=selfie_ref`，猫图 `object`；固定人物参考自动保留在前 |
-| “穿这件衣服，抱着刚才的猫自拍” | `selfie_ref`，衣服 `clothing`、猫图 `object` |
-| “把你刚给我生成的背景换掉，其他不动” | `edit`，选对应生成结果 ID 为 `subject` |
-| “再拍一张新自拍” | `selfie_ref`，需要保留的额外参考应重新明确选择 |
+### Gitee Z-Image-Turbo 文生图
 
-工具增加两个可选参数：`reference_image_ids` 和同长度的 `reference_roles`。角色支持 `subject/style/clothing/object/pose/background`。没有历史引用时原有调用方式保持不变；指定了引用但图片不可用、角色缺失或模式不兼容时，任务明确失败，不会省略图片或降级纯文生图。传参由聊天模型完成，用户无需输入 ID；自然语言选择仍需在具体模型上验证。
+**模型 `z-image-turbo` · Gitee AI · 纯文字生成**
 
-输入按“固定自拍身份 → 明确选择的参考 → 当前/引用附件”排列，附件按内容去重；显式选择历史图时不会自动混入 @头像。固定身份与显式不同角色保持各自位置，不会替换永久自拍参考。合计最多 8 张、单张 20 MiB、合计 64 MiB，包含身份图与当前附件。输入来自 ContextAware 保留的数据，可能已经过 Core 规范化或压缩，不承诺是原始上传像素；4K 输出参数保持原有规则。
+保留早期 README 的三张实际出图. 这组展示说明的是 Gitee 的真人文生图效果, **不是参考图自拍**, 也不代表支持图像编辑或固定身份.
 
-多张带角色的输入只路由到已声明保留有序多参考的后端（Gemini native、Gitee edit、OpenAI chat image、GPT Image 原生 Images API、Vertex anonymous）。会静默只取首图、拼图或能力未知的后端不会用于这类任务；自动链路可继续尝试兼容后端，全部不支持时明确失败，不会少传一张图凑合生成。声明代表本地适配器完整传递图片；上游模型的数量限制和生成一致性仍由实际服务决定。
+<table>
+  <tr>
+    <td width="33%"><img src="https://github.com/user-attachments/assets/c2390320-6d55-4db4-b3ad-0dde7b447c87" alt="Gitee z-image-turbo 真人文生图示例 1" width="100%"></td>
+    <td width="33%"><img src="https://github.com/user-attachments/assets/3d8195e5-5d89-4a12-806e-8a81e348a96c" alt="Gitee z-image-turbo 真人文生图示例 2" width="100%"></td>
+    <td width="33%"><img src="https://github.com/user-attachments/assets/c270ae7f-25f6-4d96-bbed-0299c9e61877" alt="Gitee z-image-turbo 真人文生图示例 3" width="100%"></td>
+  </tr>
+</table>
 
-后台任务在接单时保存输入和哈希，后续不读取旧消息。**成功发送的单图和后台批量子图结果**会登记回 ContextAware，关联请求者、conversation、任务和父参考，供后续明确编辑。结果 ID 是短期索引；reset/new、插件重载或缓存过期后可能不可用。后台输入副本不受聊天缓存淘汰影响；进程重启/旧凭据失效后，不会恢复旧图片索引，任务元数据记录 `result_registration` 状态。
+[申请免费额度与 API Key](docs/providers.md#gitee-ai) · [文字伪自拍说明](docs/providers.md#gitee-文字伪自拍)
 
-本版联动覆盖 `aiimg_generate` 单图同步/后台路径和 `aiimg_batch_generate` 后台批量的 `edit` / `selfie_ref`。例如“抱着上图的猫拍几张”：批量工具使用 `selfie_ref`、猫图 ID 和 `object` 用途，未指定数量时默认 4 张；每张共用同一份接单时保存的参考输入，规划不同动作和构图，分别登记成功发送的结果。历史参考批量要求后台模式生效；模式不可用时明确失败，不会丢掉参考继续生成。普通直接命令仍按原消息附件规则工作。仅安装 Gitee、未安装兼容 ContextAware 时，原有功能仍可使用，历史引用不可用。
+## 申请与配置教程
 
-### 按需提取动物和物体特征
+**第一次使用**: 在 AstrBot 插件市场搜索 `astrbot_plugin_gitee_aiimg`, 或按仓库链接安装. 然后按以下顺序设置: **添加服务商 → 保存 Key 与模型 → 加入对应功能链路 → 测试出图**. 想让 Bot 保持固定形象, 再设置身份参考与自拍链路.
 
-仅对本次显式选择为 `object` 的参考图，插件可调用当前会话的视觉聊天模型，提取脸型、眼睛比例、花纹、材质和风格化特征，再连同参考图片交给生图模型。这样“抱着这只猫”可以保留具体主体的视觉特征，降低被替换成同类别普通动物的概率。人物身份、服装、画风等其它角色保持各自用途；用户明确要求改变的特征仍以用户要求为准。
+| 按需阅读                                               | 内容                                                                |
+| ------------------------------------------------------ | ------------------------------------------------------------------- |
+| [Gitee 图文申请教程](docs/providers.md#gitee-ai)       | 找回旧版 API Key 截图、免费额度截图, 配置 2K 文生图与文字伪自拍     |
+| [美年达申请与配置](docs/providers.md#美年达)           | 创建令牌、选择分组, 香蕉与 GPT Image 两套独立配置, 2.5 系列接口区别 |
+| [Agnes 免费活动与配置](docs/video.md#agnes-注册与配置) | 注册、API Key、模型 ID、完整配置片段及 `RPM=1`                      |
+| [Bot 自拍转视频](docs/video.md#先自拍再转视频)         | 自拍和视频双链路、日程穿搭、开关与工具参数                          |
+| [映像工作台指南](docs/studio.md)                       | WebUI、服务商、画廊、批量创作、自由画布与节点工作流                 |
+| [后台生图与历史图片](docs/background-and-context.md)   | 不阻塞对话、任务状态、ContextAware 图片引用与会话隔离               |
+| [配置与命令参考](docs/configuration.md)                | 中文指令、预设提示词、尺寸、quality、并发、编码、平台限制与常见问题 |
+| [其他接口配置](docs/providers.md#其他接口)             | OpenAI Images / Chat、Gemini 原生、即梦等模板                       |
+| [更新日志](CHANGELOG.md)                               | 版本变化与升级说明                                                  |
 
-- 后台任务先接单，再在后台识图；整批仅调用一次识图，全部子任务共享结果，不扫描群聊全部图片。
-- 识图只发送选中 `object` 的最长边 768 像素预览，不携带聊天历史或工具；生图仍使用已保存的参考图字节，输出尺寸不变。
-- 识图最长等待 45 秒；当前聊天模型明确不支持图片时跳过，超时或解析失败也保留原始参考图继续生成。任务元数据 `reference_vision` 记录 `described`、`vision_unavailable`、`vision_timeout`、`vision_failed` 或 `not_needed`。
-- 使用视觉聊天模型会增加一次模型调用和一定出图等待时间；后台正常对话不受阻塞。同步单图自拍会在调用内等待这一步。
-- Gemini native 为每张输入明确编号，并使用中性的编辑/合成指令。自拍模板避免把所有额外参考一概当作服装或场景。
+### 配套插件
 
-具体主体的一致性仍受上游生图模型影响；传图成功、特征提取成功均不等于逐像素复刻。复杂风格转换、遮挡或多个主体仍需检查实际成图。
+- [日程与穿搭 · astrbot_plugin_life_scheduler](https://github.com/muyouzhi6/astrbot_plugin_life_scheduler): 提供每天的穿搭、生活场景与日程. 本插件只读取已缓存的当天状态, 不会为了拍照擅自重新生成日程.
+- [聊天上下文 · astrbot_plugin_context_aware](https://github.com/muyouzhi6/astrbot_plugin_context_aware): 引用当前会话中的历史图片, 继续编辑或合影, 不必反复重新发图.
 
-## v5.0 核心升级：Bot 可以边聊天边拍照
+### 使用前了解
 
-传统 LLM Tool 生图会把整条对话管线卡到 Provider 返回，慢模型动辄等待几分钟。`v5.0` 将单图、自拍、改图和批量 planner/child 执行放入插件自己的持久化后台任务系统：Tool 接单后立即把真实任务事实交还给 LLM，对话可以继续，图片完成后再由 Bot 主动发送并自然接上话题。
+模型是否支持改图、多人物、有序参考图和目标分辨率, 以对应服务商为准. **Gitee `z-image-turbo` 只能文生图**, 不要放进自拍或改图链路. 工作台目前管理图片, 节点工作流不支持 ComfyUI 导入、第三方节点或视频节点. 视频通过指令或 LLM 工具调用.
 
-- **不阻塞聊天**：单图和 `aiimg_batch_generate` 从 planner 阶段后台执行，用户与 Bot 在等待期间可以继续正常对话
-- **Bot 知道自己在做什么**：临时上下文包含任务阶段、状态摘要和图片发送结果；完整 effective prompt 通过只读 Tool `aiimg_task_status` 按需查询
-- **像人一样回来交代**：图片完成、部分成功、失败、取消或重启中断后，Bot 会按当前人格主动回应，而不是悄悄发图或无声失败
-- **单图和多图都能并发后台跑**：SQLite 事务账本、全局有界并发和 parent round-robin 调度共同限制资源占用，batch 不会长期霸占 Provider
-- **会话边界清楚**：`/stop`、`/reset`、`/new`、conversation 漂移与 ContextAware session 清理都会收敛旧任务，避免图片和提示词串进新会话
-- **异常不乱重发**：发送超时或断线无法确认时记录为 `unknown`，禁止自动重发，避免 QQ / 微信收到重复图片
-- 输出参数统一支持精确尺寸、比例、分辨率和组合形式, 例如 `2048x1152`、`16:9`、`4K`、`16:9 4K`
-- 普通单图改图在没有显式比例时自动继承输入图比例, 自拍和多图改图不会被参考图比例锁定
-- fallback 到不同 provider 时会按各 backend 能力重新解析输出参数
-- 新增文生图预设：`/文生图 预设名 补充提示词`
-- 新增统一批量命令：`/批量n aiimg ...`、`/批量n aiedit ...`、`/批量n 自拍 ...`
-- 支持批量配合预设：`/批量n 文生图 预设名 补充提示词`、`/批量n 改图预设名 补充提示词`
-- 新增 `LLM` 批量工具 `aiimg_batch_generate`：先规划多条不重复提示词，再一次性批量执行
-- 文生图批量并发和改图 / 自拍批量并发拆开配置
-- Provider 级新增 `generate_request_mode` / `edit_request_mode`
-- 请求模式兼容旧配置：`auto` 不会再覆盖旧的 `enable_stream_*` 布尔配置
-- 个人微信 `weixin_oc` 发送图片前可自动优化 4K 大图，并把适配器上传超时调高到配置值
+`v5` 沿用 `v4` 配置结构, 从 `v3 / v2` 升级需重新核对配置. 3365 和 SD2.0 专用模板已移除, 请清理旧服务商及链路引用. 升级前备份插件配置与数据目录, 尤其是形象参考和 `studio/` 资产.
 
-## 功能概览
+## 交流与反馈
 
-本插件支持：
+**插件开发 QQ 群: `215532038`**. 欢迎交流配置、分享成片和反馈问题. 报错时附插件版本、所用模型、接口模板与脱敏日志, 不要公开 API Key 或未授权的人物参考图.
 
-- 文生图 `Text-to-Image`
-- 图生图 / 改图 `Image-to-Image/Edit`
-- 自拍参考照模式
-- 图生视频 / 文生视频（取决于所选后端能力）
-- Agnes Video 2.5 Flash, 以及 Bot 先自拍再图生视频
-- 映像工作台 WebUI, 模型列表获取与可拖动回退链路
-- 多人物、多套形象和日程穿搭联动
-- 画廊、提示词历史、收藏防删与存储上限
-- 批量创作、成片变体、严格仿拍和换装拍摄
-- 自由画布排版与可保存的节点工作流
-- 文生图预设、改图预设、视频预设
-- 指令批量出图
-- `LLM tool` 单图调用与批量调用
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/113ccf60-044a-47f3-ac8f-432ae05f89ee" alt="插件开发 QQ 群 215532038 二维码" width="260">
+</p>
 
-核心设计是把 **服务商实例 `providers`** 和 **功能链路 `features.*.chain`** 分开。你可以给同一类能力挂多个 provider，插件会按链路顺序兜底切换。
+<div align="center">
 
-## LLM 后台生图
+[提交问题](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/issues) · [查看源码](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg) · [回到顶部](#astrbot-gitee-ai-image)
 
-后台模式只作用于 `aiimg_generate`、`gitee_draw_image`、`gitee_edit_image` 和 `aiimg_batch_generate`。`/文生图`、`/改图`、`/自拍`、`/批量` 等直接命令仍保持原同步行为。
-
-```json
-{
-  "features": {
-    "background_llm_image": {
-      "enabled": true,
-      "max_running": 2,
-      "max_queued": 16
-    }
-  }
-}
-```
-
-- `max_running` 是所有单图和 batch child 共用的图片 Provider 并发数，可设置 `1-30`；一般建议从 `2` 开始，再根据机器资源和上游限流情况调整。
-- `max_queued` 按图片张数预留容量。例如一组 `4` 张批量任务会原子占用 `4` 个容量，容量不足时整组拒绝，不会只接一半。
-- Tool 完成参数校验、完整提示词构建和输入图片固化后立即返回，真正的 planner、图片 Provider 调用和发送在后台执行。
-- 用户继续聊天或询问照片时，Bot 能看到任务处于 `planning`、`queued`、`running`、`sending` 或终态，并能读取有界状态摘要；批量完整提示词可由只读 Tool `aiimg_task_status` 分页查询。
-- 图片先作为独立 image-only 消息发送；只有原 conversation 和 ContextAware session 仍安全可用时，Bot 才会进入 Agent pipeline，按当前人格自然说明完成、部分成功或失败。模型请求失败、超时、ContextAware session 已清空或 conversation 已切换时，完成通知会静默终结，不发送固定统计话术，也不影响普通对话。
-- 同一会话中多个任务同时完成时，终态回应会按 UMO 串行进入 Agent pipeline，避免抢写历史或乱序说话；普通用户消息不使用这把通知锁，仍可继续聊天。
-- `/stop` 会取消当前会话中该用户的后台图片任务；成功的 `/reset`、`/new` 会通过发送闸门阻止晚到图片污染新会话。权限不足而失败的 reset 不会误取消任务。
-- AstrBot 或插件重启后，尚未完成的 Provider 请求不会自动续跑或重复扣费，而是标记为 `interrupted`；恢复过程只收敛任务与通知账本，不重入旧会话或发送固定中断文案。
-- 非优雅重启后若旧进程的 owner lease 尚未过期，插件不会阻塞 AstrBot 启动；它会低频后台重试，lease 过期后自动接管并收敛账本。
-- 插件每 5 分钟输出不含提示词的后台健康摘要并执行 passive WAL checkpoint；账本异常、通知积压或健康检查连续失败时停止后台接单并保留同步路径。
-
-> [!IMPORTANT]
-> 后台模式默认关闭，只支持单 AstrBot 进程、单个有效 Gitee 插件 owner，以及 `aiocqhttp` / `weixin_oc`。AstrBot 开启 `provider_settings.streaming_response` 时会自动回退同步路径，因为流式回复无法可靠使用发送前后的确认 Hook。
-
-> [!NOTE]
-> QQ / 微信 adapter 当前没有暴露端到端 receipt 或幂等发送键。发送调用成功返回只代表 adapter transport accepted；发生 timeout、connection reset 或进程崩溃窗口时，任务会记录为 `unknown` 并禁止自动重发，避免重复图片。
-
-## 配置概念：providers 与 chain
-
-新用户最常见的卡点：只填了 `providers`，忘了填 `features.*.chain`，导致什么都没有生效。
-
-```
-providers（定义后端）          features.*.chain（选用哪个后端）
-┌──────────────────────┐       ┌──────────────────────────────────┐
-│ id: "my_gpt"         │◄──────│ provider_id: "my_gpt"            │
-│ model: "gpt-image-2" │       │ output: "4K"                     │
-│ api_keys: [...]      │       ├──────────────────────────────────┤
-│ base_url: "..."      │       │ provider_id: "my_gemini"  (兜底) │
-└──────────────────────┘       └──────────────────────────────────┘
-```
-
-**三步完成配置：**
-
-1. 在页面底部的 `providers` 里新增一个服务商，设置唯一 `id`，填写 `api_keys`、`model`、`base_url`
-2. 在 `features.draw.chain`（文生图）、`features.edit.chain`（改图）等对应功能里，填入刚才的 `provider_id`
-3. 重启/重载插件，发 `/aiimg 测试` 验证
-
-chain 里可以填多个 provider，第一个是主用，后面的是自动兜底，主用失败时无需手动干预。
-
-### 额外参数与生成质量
-
-所有服务商模板均提供 **额外请求体(高级)** 的键值编辑入口, 支持字符串, 数字, 布尔值和嵌套 JSON.
-OpenAI Images 模型支持自定义质量时, 添加 `quality` 并填写 `high`, `medium`, `low` 或 `auto` 等上游支持的值; 留空字典则沿用服务商默认行为.
-Chat 出图使用网关定义的字段和嵌套位置, 不应假定支持 OpenAI Images 的所有参数.
-Gemini 原生可填写 `{"generationConfig":{"temperature":0.6}}`, 嵌套合并会保留默认的比例, 分辨率和响应类型; Gemini 原生没有 OpenAI 的通用 `quality` 字段.
-额外参数覆盖同名默认项. Gitee 异步改图转换为表单字段 (图片与 task_types 由插件管理), 即梦 GET 接口转换为查询参数, Vertex 写入生成请求的 variables.
-
-## 快速上手
-
-### 第一步：选模板，配置 provider
-
-每个 provider 都需要一个唯一的 `id`。根据你的服务商接口类型选对模板：
-
-| 接口类型 | 选用模板 |
-| --- | --- |
-| 标准 `POST /v1/images/generations` 或 `/edits` | `openai_images` |
-| Chat 回复里包含图片 URL / base64 | `openai_chat` 或 `flow2api` |
-| 自定义完整路径（非标准 `/v1/...`） | `openai_full_url_images` |
-| 直连 Gemini 官方 / Meinianda 香蕉系列 | `gemini_native` |
-| 即梦 / 豆包 | `jimeng` |
-| Gitee AI 文生图 | `gitee_images` |
-| Gitee AI 异步改图 | `gitee_async` |
-| Grok / xAI | `grok_images` 或 `grok_chat` |
-| 视频生成 | `agnes_video` / `grok_video`（xAI 官方） / `flow2api_video` / `sora2_video`（通用 OpenAI Videos） |
-
-provider 模板中的通用 `timeout` 默认均为 `600` 秒。升级时会保留现有 provider 的 URL、Key、模型、超时和其它自定义值；旧配置缺少新字段时才使用新版运行时默认值。`gemini_native` 额外支持 `max_retries`，默认重试 `2` 次，设为 `0` 可关闭重试。
-
-### 第二步：在功能 chain 里引用 provider
-
-### 推荐渠道：云智 AI 中转站
-
-如果你主要用 `/画图` 做文生图，想快速接入 `gpt-image-2`，可以使用云智 AI 中转站。`gpt-image-2` 更适合文生图，也能走改图链路。
-
-- 注册链接：[云智 AI 中转站](https://ai.beimo.cc/register?aff=9FDGT62B49SM)
-- 当前 `gpt-image-2` 价格说明：`0.09 元/张`
-- 推荐模板：`OpenAI Images`，也就是 provider 模板里的 `openai_images`
-- 推荐模型：`gpt-image-2`
-- 推荐 Base URL：`https://www.yzcld.com`
-
-> [!NOTE]
-> 价格可能随渠道调整而变化，请以云智 AI 后台实际计费页为准。
-
-在 WebUI 的 `providers` 里新增一个 `OpenAI Images` 服务商，建议这样填：
-
-```json
-{
-  "id": "yzcld_gpt_image_2",
-  "__template_key": "openai_images",
-  "label": "云智 AI gpt-image-2",
-  "base_url": "https://www.yzcld.com",
-  "api_keys": [
-    "你的云智 AI API Key"
-  ],
-  "model": "gpt-image-2",
-  "supports_edit": true,
-  "timeout": 600,
-  "max_retries": 0,
-  "default_size": "",
-  "extra_body": {}
-}
-```
-
-然后在功能链路里引用同一个 provider：
-
-```json
-{
-  "features": {
-    "draw": {
-      "chain": [
-        {
-          "provider_id": "yzcld_gpt_image_2",
-          "output": ""
-        }
-      ]
-    },
-    "edit": {
-      "chain": [
-        {
-          "provider_id": "yzcld_gpt_image_2",
-          "output": ""
-        }
-      ]
-    },
-    "selfie": {
-      "chain": [
-        {
-          "provider_id": "yzcld_gpt_image_2",
-          "output": ""
-        }
-      ]
-    }
-  }
-}
-```
-
-### 即梦（豆包）配置
-
-即梦使用 Cookie 登录，不需要付费 API Key，适合低频个人使用。
-
-**获取 Cookie 和 conversation_id：**
-
-1. 浏览器登录 [即梦 AI](https://jimeng.jianying.com/)，打开任意对话
-2. 复制地址栏 URL 中的 conversation_id（格式类似 `7431xxxxxxxxxxxxxxxxxx`）
-3. 打开浏览器开发者工具 → Network 标签，找到任意请求，复制 `Cookie` 请求头的完整值
-
-**provider 配置示例：**
-
-```json
-{
-  "id": "jimeng_1",
-  "__template_key": "jimeng",
-  "label": "即梦",
-  "cookie_list": [
-    "7431xxxxxxxxxxxxxxxxxx:sessionid=xxx; passport_csrf_token=xxx; ..."
-  ],
-  "timeout": 600
-}
-```
-
-`cookie_list` 格式固定为 `conversation_id:完整Cookie字符串`，可配多条做轮询。
-
-### Meinianda 生图配置
-
-如果你需要稳定的 Gemini 生图中转，作者推荐 Meinianda。站内提供香蕉系列和 `GPT-Image-2` 系列；其中 `nano-banana-2` 生成一张 4K 大图的成本参考约为 `0.05 元`。
-
-- 推荐注册链接（AFF）：[Meinianda 生图中转站](https://meinianda.top/sign-up?aff=Qs4O)
-- 推荐模型：`nano-banana-2` 等香蕉系列
-- 可用系列：香蕉系列、`GPT-Image-2` 系列
-- 推荐模板：香蕉系列必须选择 `Gemini 原生`，也就是 provider 模板里的 `gemini_native`
-- 推荐 Base URL：`https://meinianda.top`
-- 成本参考：`nano-banana-2` 生成一张 4K 大图约 `0.05 元`
-
-> [!NOTE]
-> 上面的链接包含作者 AFF 推荐标识；价格和模型可用性是作者当前使用体验的参考，不是固定价格承诺，请以 Meinianda 后台实时计费为准。
-
-`meinianda.top` 的 Gemini 生图模型必须使用 Gemini 官方 `generateContent` 协议。不要选 `Gemini Chat图` 或 OpenAI Chat 模板，否则中转层会忽略比例并回退到 `1:1`。`GPT-Image-2` 系列请按对应接口协议选择 OpenAI Images 或 OpenAI Chat 模板，不要套用 Gemini 原生模板。
-
-`gpt-image-2` 使用 OpenAI Images 或 OpenAI Chat 模板时, 插件会把比例和分辨率转换为精确 `size`. 例如 `16:9 4K` 会请求 `3840x2160`, `9:16 1K` 会请求 `720x1280`; OpenAI Chat 模板会把该值放入请求顶层 `size` 字段. 该映射只对 `gpt-image-2` 生效, 不改变其他模型的参数行为.
-
-```json
-{
-  "id": "meinianda_gemini",
-  "__template_key": "gemini_native",
-  "label": "Meinianda Gemini",
-  "api_url": "https://meinianda.top",
-  "api_keys": [
-    "你的 Meinianda API Key"
-  ],
-  "model": "gemini-3.1-flash-image-preview",
-  "default_resolution": "1K",
-  "timeout": 600,
-  "max_retries": 2,
-  "use_proxy": false,
-  "proxy_url": "",
-  "output_format": "webp_lossless"
-}
-```
-
-LLM tool 会把 prompt 中的 `16:9` 等明确比例作为最高优先级参数，并通过 `generationConfig.imageConfig.aspectRatio` 发送。批量 LLM 任务在用户未指定比例时会为每张图独立规划比例；单张自拍在 LLM 未传比例时使用 `features.selfie.default_aspect_ratio`，默认 `3:4`，不会再把空比例交给中转站回退成 `1:1`。
-
-如果你专门把它用于自拍模式，可以优先把 `features.selfie.chain` 指向这个 provider：
-
-```json
-{
-  "features": {
-    "selfie": {
-      "chain": [
-        {
-          "provider_id": "meinianda_gemini",
-          "output": "4K"
-        }
-      ],
-      "use_edit_chain_when_empty": true
-    },
-    "edit": {
-      "chain": [
-        {
-          "provider_id": "meinianda_gemini",
-          "output": "4K"
-        }
-      ]
-    }
-  }
-}
-```
-
-## 命令速查
-
-| 功能 | 命令 |
-| --- | --- |
-| 普通文生图 | `/aiimg [@provider_id] <提示词> [输出]` |
-| 文生图预设 | `/文生图 [@provider_id] <预设名> [补充提示词] [输出]` |
-| 改图 | `发送或引用图片 + /aiedit [@provider_id] <提示词> [输出]` |
-| 改图预设 | `发送或引用图片 + /预设名 [@provider_id] [额外提示词] [输出]` |
-| 自拍 | `/自拍 [@provider_id] <提示词> [输出]` |
-| 自拍参考图管理 | `发送图片 + /自拍参考 设置`、`/自拍参考 查看`、`/自拍参考 删除` |
-| 批量文生图 | `/批量n aiimg [@provider_id] <提示词> [输出]` |
-| 批量改图 | `发送或引用图片 + /批量n aiedit [@provider_id] <提示词> [输出]` |
-| 批量自拍 | `/批量n 自拍 [@provider_id] <提示词> [输出]` |
-| 批量文生图预设 | `/批量n 文生图 [@provider_id] <预设名> [补充提示词] [输出]` |
-| 批量改图预设 | `发送或引用图片 + /批量n <改图预设名> [额外提示词] [输出]` |
-| 视频 | `发送或引用图片 + /视频 [@provider_id] <提示词或预设名>` |
-| 文生图预设列表 | `/文生图预设列表` |
-| 改图预设列表 | `/预设列表` |
-| 视频预设列表 | `/视频预设列表` |
-| 重发最近结果 | `/重发图片` |
-| 查看改图帮助 | `/改图帮助` |
-
-群聊中的图像命令必须带 AstrBot 当前配置的 `wake_prefix`. 即使其他插件提前把消息标记为已唤醒, 裸 `绘图` / `改图` / `自拍` 等普通聊天文本也不会触发本插件; 私聊仍遵循 AstrBot 原有的免前缀配置.
-
-## 输出尺寸与比例
-
-命令和 LLM 工具的 `output` 支持以下形式：
-
-- 精确尺寸：`2048x1152`
-- 自适应比例：`16:9`
-- 分辨率：`4K`
-- 自适应比例与分辨率：`16:9 4K`
-
-命令会识别提示词中的明确比例、分辨率和精确尺寸; 末尾控制 token 仍会从提示词中移除, LLM tool 直接传入的自然提示词也会自动提取参数。示例：
-
-```text
-/aiimg 电影感海边日落 16:9 4K
-/aiedit 保持人物不变，替换为夜景街道 4K
-/自拍 黑色外套，楼梯间，低头看镜头 9:16 2K
-/批量4 aiimg 同一主题的不同镜头 16:9 4K
-/aiimg 电影感海边日落, 画面比例 16:9, 输出 4K
-```
-
-输出优先级为：prompt 中明确写出的参数 > LLM tool 的 `aspect_ratio` / `resolution` > 兼容 `output` > 当前 provider 的 `chain.output` > 功能的 `default_output` > 普通单图改图的输入图比例 > provider 默认值。
-
-- Gemini Native 会传递自适应比例与分辨率; Vertex AI Anonymous 会传递自适应比例, 并在模型支持时传递分辨率。
-- `gpt-image-2` 在 OpenAI Images 和 OpenAI Chat 模板中会映射为精确像素尺寸, 并保留 LLM 指定的常规比例与分辨率.
-- 声明 `allowed_sizes` 的 OpenAI Images backend 会映射到最接近的合法像素尺寸。
-- 普通单图改图只有在更高优先级没有指定比例时才继承输入图比例。
-- 自拍和多图改图不会从参考图推断输出比例；自拍缺省使用 `features.selfie.default_aspect_ratio`，默认 `3:4`。
-- 批量 LLM 任务会为每个规划项保存独立比例；用户未固定整组比例时，planner 会按构图选取至少两种比例。
-- backend 不支持的输出维度会被忽略, 最终能力以对应服务商为准。
-
-## 文生图预设
-
-### 配置位置
-
-在 `features.draw.presets` 里配置，格式是：
-
-```text
-预设名:英文提示词
-```
-
-示例：
-
-```text
-手办:Transform into collectible figurine style
-胶片人像:Cinematic portrait, soft rim light, film grain, realistic skin texture
-```
-
-### 调用方式
-
-```text
-/文生图 手办 将这只猫做成高细节手办
-/文生图 @gemini_chat 胶片人像 黑色高领毛衣，窗边逆光，半身构图
-```
-
-规则说明：
-
-- `/文生图` 后面第一个 token 如果命中文生图预设名，就按“预设 + 补充提示词”处理
-- 预设名后面的**全部文本**都会作为补充提示词，可包含空格，也可写成多行消息
-- 如果第一个 token 没命中预设，就按普通 `/文生图` 文生图处理
-- 指定 provider 时，`@provider_id` 要放在预设名前面
-
-实际拼接方式是：
-
-```text
-预设提示词
-
-补充要求：
-你的补充提示词
-```
-
-## 改图预设
-
-### 配置位置
-
-在 `features.edit.presets` 里配置，格式同样是：
-
-```text
-预设名:英文提示词
-```
-
-示例：
-
-```text
-手办:Transform into figurine style
-Q版化:Convert to chibi illustration style
-```
-
-### 调用方式
-
-发送或引用图片后：
-
-```text
-/手办 加个透明亚克力底座
-/手办 @grok2api 换成偏暖色棚拍
-/Q版化
-```
-
-规则说明：
-
-- 每个改图预设都会动态注册成一个独立命令，例如 `/手办`
-- 预设命令后面的文本会作为额外提示词附加到预设后面
-- 预设命令也支持 `@provider_id` 覆盖，例如 `/手办 @provider_xxx 补充词`
-- `/预设列表` 可以查看当前所有改图预设
-
-## 批量出图
-
-### 基本语法
-
-批量命令统一使用：
-
-```text
-/批量n ...
-```
-
-其中 `n` 是数量，例如：
-
-```text
-/批量4 aiimg 一个粉发少女，4 个不同镜头角度 16:9 4K
-/批量6 aiedit 把这张照片分别改成不同灯光和情绪
-/批量8 自拍 同一套穿搭，不同姿势、表情和俯仰角
-/批量5 文生图 手办 将这辆车做成桌面手办
-/批量4 文生图 @gemini_chat 胶片人像 夜景路灯，表情和构图都不重复
-/批量3 手办 加不同底座和背景陈列
-```
-
-### 支持的批量入口
-
-- `/批量n aiimg ...`
-- `/批量n 文生图 ...`
-- `/批量n aiedit ...`
-- `/批量n 自拍 ...`
-- `/批量n 改图预设名 ...`
-
-### 同步批量命令行为
-
-- 单次数量上限由 `features.batch.max_count` 控制，默认 `8`，可设置 `1-32`
-- 文生图批量并发由 `features.draw.batch_concurrency` 控制，默认 `2`，最高 `30`
-- 改图 / 自拍批量并发由 `features.edit.batch_concurrency` 控制，默认 `2`，最高 `30`
-- 改图批量和自拍批量都要求当前消息里能读到输入图片；文生图批量不需要图片
-- 批量结果会按顺序直接发送单张图片
-- 除原插件自带表情反馈外，不额外发送标题、提示词、状态、失败摘要这类通知文本
-
-以上只描述 `/批量n ...` 直接命令。LLM 调用 `aiimg_batch_generate` 且后台模式生效时，Tool 会立即返回接单状态，图片在后台逐张发送，整组完成、部分成功、失败或取消后，Bot 还会按当前人格主动回应。
-
-### 同步批量命令结果展示
-
-- 批量任务成功的图片会一张一张直接发出
-- 不额外插入摘要、说明、失败提示等文本消息
-- 如果某几张失败，只保留原插件自己的表情反馈，不额外发通知
-
-## 自拍参考照
-
-### 设置参考照
-
-二选一即可：
-
-1. 发送图片后执行：
-
-```text
-/自拍参考 设置
-```
-
-2. 直接在 WebUI 的 `features.selfie.reference_images` 上传
-
-### 查看和删除
-
-```text
-/自拍参考 查看
-/自拍参考 删除
-```
-
-### 生成自拍
-
-```text
-/自拍 自然人像摄影，微笑，室内中性日光
-/自拍 @provider_xxx 黑色外套，楼梯间，低头看镜头
-```
-
-说明：
-
-- 如果 WebUI 里已经上传了参考照，优先使用 WebUI 配置
-- 如果同时没有 WebUI 参考照，也没有通过命令保存参考照，`/自拍` 会直接报错
-- 自拍链路为空时，可通过 `features.selfie.use_edit_chain_when_empty=true` 复用改图链路
-
-### 自拍提示词前缀
-
-`features.selfie.prompt_prefix` 可以设置一段固定的提示词前缀，在每次自拍时自动拼接到用户输入之前。适合把 Bot 的外貌描述、固定风格要求写死，不必每次都重复输入。
-
-示例值：`A young woman with long black hair, realistic style, high quality, `
-
-留空则使用插件内置的默认前缀。
-
-内置默认前缀只负责参考图身份保持、自然质感和基础画面质量，不会替用户指定摄影风格、白平衡、视角、动作或构图。无论使用内置默认还是自定义前缀，插件都会补充拍摄设备的逻辑一致性要求：普通手持自拍时拍摄设备保持在画面外；明确要求对镜自拍、手机入镜或展示设备时允许相应设备自然出现，但不会无故复制其它设备；他拍、定时拍摄、人物手势和手持物品均遵循用户要求。
-
-## 视频生成
-
-先添加视频服务商, 再加入 `features.video.chain`. 没有图片时使用文生视频; 发送或引用图片后, 同一指令使用图片作为参考. 视频预设可在 `features.video.presets` 中配置, 第一个词命中预设名时按“视频预设 + 额外提示词”处理.
-
-```text
-/视频 镜头缓慢推进，人物轻微转头
-/视频 @agnes_video 黄昏街景，镜头跟拍
-/视频 电影感 拉近镜头，轻微风吹头发
-/视频预设列表
-```
-
-### Agnes 注册与配置
-
-> [!TIP]
-> **Agnes Video 2.5 Flash 限时免费体验**: 直接到 [Agnes AI 平台](https://platform.agnes-ai.com/) 注册, 在平台创建 API Key 后即可接入本插件. 截至 2026-09-16, [官方模型文档](https://wiki.agnes-ai.com/en/docs/agnes-video-25-flash) 标明当前价格为 `$0/second`. 活动截止时间、可用额度、限流及后续价格以平台最新公告和账号页面为准, 不代表永久免费或无限量使用.
-
-**注册地址和 API 地址不同**, 不要把 `platform.agnes-ai.com` 填进 API 地址栏.
-
-| 配置项 | 填写值 |
-| --- | --- |
-| 平台注册与管理 | `https://platform.agnes-ai.com/` |
-| 插件模板 | **Agnes 视频**, `__template_key=agnes_video` |
-| API 地址 | `https://apihub.agnes-ai.com/v1` |
-| API Key | 在 Agnes 平台创建的 Key |
-| 模型 ID | `agnes-video-2.5-flash` |
-| 生成模式 | `auto` |
-| 时长 | 字符串 `"4"` 至 `"12"`, 模板默认 `"5"` |
-| 分辨率 | `720P`, Flash 不支持 `1080P` 或 `4K` |
-| 画幅 | `16:9`, `9:16`, `1:1`, `4:3`, `3:4`, `21:9` |
-| 最短 API 请求间隔 | `61` 秒, 创建与查询共用限速 |
-| 任务总超时 | `1800` 秒 |
-
-在工作台的 **服务商 > 模型连接** 中添加 **Agnes 视频**, 按表填写并保存, 再到 **回退链路 > 视频** 添加该服务商. 在 AstrBot 插件配置中开启视频和 LLM 视频调用; 若 AstrBot 工具管理页停用了 `grok_generate_video`, 也要启用该工具.
-
-以下是插件配置片段, **不是直接发给 Agnes 的请求体**. 将 provider 追加到现有 `providers`, 将视频设置合并到现有 `features.video`, 不要覆盖原有图片服务商、形象或其他功能配置. Key 使用自己的值, 不要提交到公开仓库.
-
-```json
-{
-  "providers": [
-    {
-      "__template_key": "agnes_video",
-      "id": "agnes_video",
-      "label": "Agnes Video 2.5 Flash",
-      "base_url": "https://apihub.agnes-ai.com/v1",
-      "api_key": "YOUR_AGNES_API_KEY",
-      "model": "agnes-video-2.5-flash",
-      "mode": "auto",
-      "seconds": "5",
-      "size": "720P",
-      "aspect_ratio": "16:9",
-      "request_interval_seconds": 61,
-      "timeout_seconds": 1800,
-      "request_timeout_seconds": 120,
-      "poll_interval_seconds": 61,
-      "max_retries": 3,
-      "extra_body": {}
-    }
-  ],
-  "features": {
-    "video": {
-      "enabled": true,
-      "llm_tool_enabled": true,
-      "chain": [
-        {
-          "__template_key": "provider",
-          "provider_id": "agnes_video"
-        }
-      ]
-    }
-  }
-}
-```
-
-先发送 `/视频 @agnes_video 日光穿过窗帘, 镜头缓慢向前移动` 测试文生视频. 再发送或引用一张图片, 使用 `/视频 @agnes_video 让画面自然动起来` 测试图生视频. `@agnes_video` 指向示例服务商 ID; 修改 ID 后, 指令与链路中的 ID 也要同步修改.
-
-### Agnes 参数与限流
-
-模板目前适配 **`agnes-video-2.5-flash`**, 不要将模型 ID 替换成 `agnes-video-2.5` 或其它名称. 每次只生成 1 个视频, 插件固定 `n=1`. `720P` 是分辨率档位, 实际成片像素、时长和首帧构图处理以上游返回文件为准.
-
-- `auto`: 没有图片时使用 `text`, 有消息图片时使用首帧 `keyframe`; 额外请求体配置了 `images` 或 `audios` 时可自动使用 `reference`.
-- `keyframe`: 使用首帧或尾帧控制. 消息图片自动编码为本次首帧, 不会上传到第三方图床; 已有消息图片时, 不要同时在额外请求体里固定另一个 `first_frame`.
-- `reference`: 使用图片或音频参考. 最多 5 张图片和 3 段音频, Flash 不接受 `videos` 视频参考.
-- **额外请求体**支持 `seed`, `mode`, `first_frame`, `last_frame`, `images`, `audios` 等模型字段. 例如固定随机种子填写 `{"seed":42}`, `seed` 为整数; 消息首帧图片需小于 15 MB, 手填媒体 URL 需能被 Agnes 访问且在任务完成前保持有效.
-- 不要混用不同模式的媒体字段, 例如 `keyframe` 不同时填写 `images` 或 `audios`. Flash 文档没有通用的 `quality=max` 档位, 不要照搬图片模型的质量参数.
-
-默认最短请求间隔为 **61 秒**, 创建任务和查询状态共用同一 Key 的持久化限速, 满足 `RPM=1`; 插件重载不会立即重置额度. 若同一 Key 还用于其它插件、服务或手动请求, 本插件无法代它们统一限速, 需合并计算额度. 不要在 `RPM=1` 的账号上照搬每 1 至 2 秒轮询的示例.
-
-默认总超时为 1800 秒, 查询临时网络错误和限流最多重试 3 次, 重试仍遵守请求间隔. 创建请求结果不明、轮询超时或查询中断时停止链路, 不重新创建任务; 日志保留已知的 `video_id`, 可到平台检查. 上游队列满时等待后再手动尝试, 不要连续提交同一任务.
-
-### 先自拍再转视频
-
-需要 Bot 本人出镜时, 直接说“拍个你跳舞的视频我看看”. 插件按以下顺序执行, 不需要手动先要一张照片再发第二条指令:
-
-```text
-当前 Bot 形象 + 接单时的日程穿搭
-  -> 自拍图片链路生成动作起始底图
-  -> 生成后的底图作为视频参考
-  -> 视频链路生成并发送最终视频
-```
-
-先完成以下配置:
-
-1. 在 **形象库** 保存 Bot 身份参考并选择当前形象, 或使用原有 `/自拍参考` 和插件配置中的参考图.
-2. 为 **自拍链路** 配置支持参考图编辑的图片服务商. 只配置 Agnes 视频服务商不够, 它不负责生成自拍底图.
-3. 开启 `features.selfie.enabled`、`features.selfie.llm_tool_enabled`、`features.video.enabled` 和 `features.video.llm_tool_enabled`.
-4. 需要日程穿搭时安装并配置 `astrbot_plugin_life_scheduler`, 确保有可读取的当天缓存. 没有日程缓存仍可用身份参考拍摄, 但不会虚构一份已读取的穿搭.
-
-自拍开关和链路示例如下. `my_image_editor` 必须替换成已经配置好的图片服务商 ID; 合并这些字段时保留原有自拍参考和其它设置.
-
-```json
-{
-  "features": {
-    "selfie": {
-      "enabled": true,
-      "llm_tool_enabled": true,
-      "chain": [
-        {
-          "__template_key": "provider",
-          "provider_id": "my_image_editor"
-        }
-      ],
-      "use_edit_chain_when_empty": false
-    }
-  }
-}
-```
-
-LLM 视频工具仍叫 `grok_generate_video`, 名字沿用旧版, 实际按视频链路选择服务商, 不限定 Grok. 它的 `mode=selfie` 是**插件复合任务模式**, 不是 Agnes provider 的 `mode`; Agnes provider 保持 `auto` 即可. 下面是聊天模型应调用的工具参数, 普通用户只需自然语言提出视频要求:
-
-```json
-{
-  "prompt": "参考人物自然跳舞, 摆动双臂并轻轻迈步, 保持面容和服装一致, 固定全身镜头",
-  "mode": "selfie",
-  "selfie_prompt": "全身站姿, 为跳舞留出活动空间, 穿今天日程中的衣服, 单人单张画面"
-}
-```
-
-`selfie_prompt` 描述静态起始画面, `prompt` 描述视频运动. 形象、参考图和缓存日程在接单时读取并固定; 用户明确指定穿搭或场景时优先采用用户要求. 中间底图进入图片画廊, 聊天只发送最终视频. 缺少身份参考或底图生成失败时结束任务, 不会改成无参考文生视频. 人物和运动效果仍取决于所选生成模型, 不承诺每个动作都能准确复现.
-
-自拍图片阶段和视频阶段使用各自服务商, **Agnes 视频限时免费不代表自拍图片阶段也免费**. 普通素材动画使用工具的 `mode=auto`; 不要为同一个自拍视频同时调用图片工具和视频工具, 避免重复生成.
-
-### 旧视频渠道升级
-
-3365 与 SD2.0 专用模板已移除, 升级时请移除旧服务商和链路引用. 美年达等 OpenAI Videos 渠道继续使用 `sora2_video`, xAI 官方继续使用 `grok_video`. 历史视频不会因模板移除而删除.
-
-## LLM 工具
-
-单图和批量图片使用以下两个核心工具; 视频使用 `grok_generate_video`, 其 `auto` / `selfie` 模式及参数见 [视频生成](#视频生成). 这些工具需要在 AstrBot 工具管理中保持启用, 并允许当前人格使用.
-
-### `aiimg_generate`
-
-适合单张图调用。
-
-主要参数：
-
-- `prompt`
-- `mode`: `auto` / `text` / `edit` / `selfie_ref`
-- `backend`: `auto` 或具体 `provider_id`
-- `aspect_ratio`: `auto` 或 `16:9`、`9:16`、`4:3` 等
-- `resolution`: `auto` 或 `1K`、`2K`、`4K`
-- `output`: 兼容旧调用；没有用户明确要求时应留空
-
-自动模式行为：
-
-- 如果语义明显是在要求 “Bot 自拍”，并且已经配置了自拍参考照，会优先走 `selfie_ref`
-- 如果当前消息里带图，会优先走改图
-- 否则走文生图
-
-### `aiimg_batch_generate`
-
-适合“同主题、多变化”的一组图，一次调用完成“规划提示词 + 批量执行”。
-
-主要参数：
-
-- `prompt`
-- `count`：默认 `4`，允许 `1-32`；用户明确指定数量时会以用户原话为准，最终不会超过 `features.batch.max_count`
-- `mode`: `auto` / `text` / `edit` / `selfie_ref`
-- `backend`
-- `output`: 与单图工具相同, 支持精确尺寸、比例、分辨率和组合形式
-
-工具行为：
-
-- 会先让 `LLM` 规划多条彼此不重复、但整体都符合要求的提示词
-- 每条规划项都必须包含 `title`、`prompt`、`variation_focus`
-- 规划结果会做去重和数量校验，不合格会重试规划
-- 图片生成完成后，插件会直接把结果发给用户；工具返回文本只做状态摘要，不需要二次帮用户“转述”
-- 后台模式生效时，Tool 在容量预留和输入固化后立即返回；图片完成、部分成功、失败或取消后，Bot 会主动发送人格化终态回应
-- 后台模式关闭、平台不受支持或 AstrBot 开启 streaming response 时，工具回退到原同步路径
-
-这正适合下面这种需求：
-
-- 同场景、同穿搭，不同姿势 / 角度 / 表情的写真集
-- 参考同一张自拍，批量改出不同构图版本
-- 同一文生图主题，快速出多个候选方案筛图
-
-## Provider 请求模式
-
-部分支持双路径的 provider 可分别配置：
-
-- `generate_request_mode`
-- `edit_request_mode`
-
-可选值：
-
-- `auto`：由后端自己决定
-- `stream`：强制优先走流式
-- `non_stream`：强制直接走非流式
-
-补充说明：
-
-- 显式设置 `stream` / `non_stream` 时，它们优先级最高
-- 如果你是从旧配置升级，且旧配置里还保留 `enable_stream_generate` / `enable_stream_edit`，当新的 `*_request_mode=auto` 时，插件会继续沿用旧布尔值，不会被 `auto` 覆盖
-- 单路径后端即使显示了这个配置项，也可能会忽略该设置；校验阶段会给出提示
-
-## 关键配置项
-
-### 批量相关
-
-- `features.batch.max_count`：单次批量最大张数，可设置 `1-32`
-- `features.draw.batch_concurrency`：文生图批量并发，可设置 `1-30`
-- `features.edit.batch_concurrency`：改图 / 自拍批量并发，可设置 `1-30`
-
-### 图片输出编码
-
-每个图片 provider 都可以通过 `output_format` 选择保存格式：
-
-- `webp_lossless`：逐像素无损 WebP。推荐用于 Meinianda Gemini 4K，通常比原始 PNG 小很多，同时不改变任何像素。
-- `webp`：高质量有损 WebP。默认质量 `97`，适合 Lossless WebP 仍超过平台限制时使用。
-- `jpeg`：高质量 JPEG。默认质量 `95`、`4:4:4` 色度采样，兼容性最好，彩色文字和细线质量优于旧版默认编码。
-- `png`：无损优化 PNG。不会改变像素，但 AI 生成的复杂 4K 图片通常只能减少少量体积。
-- `auto`：不转换，完整保留上游返回的原始字节和格式。
-
-`image_encoding` 可以统一调整编码参数：
-
-- `image_encoding.jpeg_quality`：JPEG 质量，默认 `95`。
-- `image_encoding.jpeg_subsampling`：JPEG 色度采样，默认 `4:4:4`。
-- `image_encoding.webp_quality`：有损 WebP 质量，默认 `97`。
-- `image_encoding.webp_lossless_effort`：无损 WebP 压缩强度，默认 `80`，只影响编码时间和体积，不影响像素。
-- `image_encoding.webp_method`：WebP 编码方法，默认 `4`，范围 `0-6`。
-- `image_encoding.png_compress_level`：PNG 无损压缩等级，默认 `9`。
-
-实测 Meinianda `gemini-3.1-flash-image` 的 `3584x4800` 4K PNG 为 `21.362MiB`。插件实际编码后，PNG 无损优化仍为 `21.091MiB`，Lossless WebP 为 `16.856MiB` 且逐像素一致；有损 WebP `quality=97` 为 `3.360MiB`。因此推荐优先使用 `webp_lossless`，少数仍超过 QQ 限制的图片再改用 `webp`。
-
-### 视频发送
-
-- `features.video.send_mode`：视频发送方式。`auto`=优先通过 URL 发送，URL 失败再下载本地；`url`=仅通过 URL 发送；`file`=下载后以本地文件发送
-- `features.video.send_timeout_seconds`：发送 Video 组件等待超时，默认 `90` 秒
-- `features.video.download_timeout_seconds`：`send_mode=file/auto` 触发下载时的超时，默认 `300` 秒
-
-### 并发与防抖
-
-- `debounce_interval`：防抖时间，防止同一用户短时间重复提交同类任务
-- `max_user_concurrency`：同一用户同时执行的图像任务上限
-- `max_user_video_concurrency`：同一用户同时执行的视频任务上限
-
-### 发送前处理
-
-- `send.weixin_compress_images`：个人微信发送前压缩图片，默认开启，仅对 `weixin_oc` 生效。
-- `send.weixin_image_max_side`：个人微信图片最长边，默认 `4096`。
-- `send.weixin_image_max_size_kb`：个人微信图片目标大小，默认 `10240KB`。
-- `send.weixin_api_timeout_seconds`：个人微信发送超时，默认 `60` 秒。
-
-这组配置只影响 `weixin_oc`。QQ / OneBot 会直接发送 provider `output_format` 生成的图片；文件超过 `20MiB` 时仍会回退为文件发送。若个人微信发送 4K 图片时出现 `upload_to_cdn TimeoutError`，优先调高 `send.weixin_api_timeout_seconds`，或降低 `send.weixin_image_max_size_kb`。
-
-### 存储与缓存
-
-- `storage.max_cached_images`：本地图片最大缓存数，默认 `50`；超出时自动清理一半旧缓存
-- `storage.max_cached_videos`：本地视频最大缓存数，默认 `20`；仅在 `send_mode=file/auto` 触发下载时生效（`0`=不清理）
-
-### 网络安全
-
-- `network.media_allow_private`：是否允许从私有/内网地址下载图片或视频，默认 **关闭**（防止 SSRF 攻击）。自建服务且服务端在内网时可开启
-- `network.max_image_bytes`：图片下载大小上限，默认 `50MB`（52428800 字节）
-- `network.max_video_bytes`：视频下载大小上限，默认 `50MB`
-- `network.max_redirects`：最大 HTTP 重定向次数，默认 `5`
-- `network.dns_resolve_timeout_seconds`：DNS 解析超时，默认 `2` 秒
-
-### 功能开关
-
-- `features.draw.enabled`
-- `features.edit.enabled`
-- `features.selfie.enabled`
-- `features.video.enabled`
-- `features.<mode>.llm_tool_enabled`
-
-## 平台与限制
-
-### 官方维护 / 推荐环境
-
-- 实际 AstrBot 运行环境：`Python >= 3.12`
-- `AstrBot >= 4.16.0, < 5`
-- 主要维护平台：`QQ / aiocqhttp`
-- 兼容平台：个人微信私聊 `weixin_oc`
-- GitHub CI：Ubuntu 上额外检查插件源码的 Python `3.10 / 3.11 / 3.12 / 3.13` 兼容性，并在 Windows、macOS 的 Python `3.12` 上回归；Python `3.10 / 3.11` 结果不代表对应 AstrBot 版本可在该解释器上部署
-
-### 已知平台限制
-
-- 批量结果默认就是普通消息逐张发送
-- 视频发送依赖适配器是否支持 `Video.fromFileSystem` 或 `Video.fromURL`
-- 某些需要 URL 回退输入的后端，依赖当前 AstrBot 环境具备文件服务能力
-- `weixin_oc` 官方适配器仅支持个人私聊，不支持微信群聊；大图发送受微信 CDN 上传耗时影响。
-- LLM 后台任务只正式支持 `aiocqhttp` 和 `weixin_oc`，并且只支持单 AstrBot 进程；多进程共享同一任务账本会 fail-closed，不会抢跑任务。
-- 后台任务数据库必须位于本机可写磁盘。只读目录或 NFS / SMB 共享目录不属于支持范围，初始化失败时会关闭后台模式，不影响原同步路径。
-- 不保证把正在运行的 spool 目录跨 Windows / Linux 搬迁后继续恢复；请在同一主机和数据目录内完成重启恢复。
-- AstrBot 开启 streaming response 时，LLM Tool 自动回退同步执行，不会假装后台接单。
-
-### 关于“其他平台能不能跑”
-
-单图文生图 / 改图这类能力，只要当前适配器支持普通文本和图片消息，很多时候都能工作；但本插件的主要测试和维护场景仍是 `QQ / aiocqhttp`。如果你跑在其他平台，建议先用小流量自测，尤其是：
-
-- 批量结果展示
-- 视频发送
-- 合并转发回退行为
-- 大图发送失败后的兜底链路
-
-## Gitee AI API Key 获取
-
-1. 访问 <https://ai.gitee.com/serverless-api?model=z-image-turbo>
-2. 在对应模型页面开通服务并创建 `API Key`
-3. 将 `API Key` 填到对应 provider 的 `api_keys`
-
-## Gitee 支持的图像尺寸
-
-> 仅对 Gitee 文生图能力生效。其他后端是否支持，取决于服务商本身。
-
-| 比例 | 可用尺寸 |
-| --- | --- |
-| `1:1` | `256x256`、`512x512`、`1024x1024`、`2048x2048` |
-| `4:3` | `1152x896`、`2048x1536` |
-| `3:4` | `768x1024`、`1536x2048` |
-| `3:2` | `2048x1360` |
-| `2:3` | `1360x2048` |
-| `16:9` | `1024x576`、`2048x1152` |
-| `9:16` | `576x1024`、`1152x2048` |
-
-## 常见问题
-
-### `/文生图` 预设没有生效
-
-先检查：
-
-- `features.draw.presets` 里是否真的配置了该预设名
-- 调用时预设名是否放在 `/文生图` 后面的第一个 token
-- 如果用了 `@provider_id`，它必须写在预设名前面
-
-### `/批量n aiedit ...` 没反应
-
-改图批量要求当前消息里能读到输入图片。最稳妥的发法是：
-
-- 先发图再跟命令
-- 或直接回复图片消息执行命令
-
-### 批量结果为什么没有额外说明文字
-
-这只适用于 `/批量n ...` 同步命令：结果默认只发图片本体，避免刷出机械通知。LLM 后台批量任务会在整组完成、部分成功、失败或取消后，由 Bot 按当前人格主动回应。
-
-### 为什么 `request_mode=stream` 没起作用
-
-并不是所有 provider 模板都支持“双路径请求模式”。单路径后端会忽略这个设置，插件会在校验时提示你。
-
-### 个人微信生成图为什么发送失败或超时
-
-个人微信 `weixin_oc` 发送图片会先上传到微信 CDN。即使图片低于 10MB，也可能因为网络或默认超时过短导致 `upload_to_cdn TimeoutError`。
-
-建议：
-
-- 保持 `send.weixin_compress_images=true`
-- 将 `send.weixin_api_timeout_seconds` 设置为 `60-120`
-- 如果仍超时，降低 `send.weixin_image_max_size_kb`
-- 视频发送能力取决于当前 `weixin_oc` 适配器是否支持对应 `Video` 组件
-
-## 原仓库展示内容（保留）
-
-这一节保留原仓库 README 里的推广与展示内容，方便插件市场页和仓库首页继续正常展示。
-
-### 出图展示区（原展示）
-
-![出图展示 1](https://github.com/user-attachments/assets/c2390320-6d55-4db4-b3ad-0dde7b447c87)
-
-![出图展示 2](https://github.com/user-attachments/assets/3d8195e5-5d89-4a12-806e-8a81e348a96c)
-
-![出图展示 3](https://github.com/user-attachments/assets/c270ae7f-25f6-4d96-bbed-0299c9e61877)
-
-插件开发 QQ 群：`215532038`
-
-![QQ群二维码](https://github.com/user-attachments/assets/113ccf60-044a-47f3-ac8f-432ae05f89ee)
+</div>
