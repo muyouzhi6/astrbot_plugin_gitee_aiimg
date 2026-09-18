@@ -3308,6 +3308,18 @@ class GiteeAIImagePlugin(Star):
             portraits.sources + (selection.sources if selection else ()),
         )
         validate_inputs(list(combined.images))
+        # Freeze Bot rules in the portrait contract so batch planning cannot
+        # drop them when it rewrites each shot's prompt.
+        bot_actors = [str(actor["actor"]) for actor in cast if actor["kind"] == "bot"]
+        if bot_actors:
+            prefix = str(self._get_selfie_conf().get("prompt_prefix", "") or "").strip()
+            if prefix:
+                note = (
+                    "Bot 自拍自定义要求 (用于人物 " + ", ".join(bot_actors) + "):"
+                    "\n其中的外貌、穿搭与身份描述仅用于 Bot, 不应用到其他人物; "
+                    "多人和多参考图的身份及编号以人物绑定清单为准.\n"
+                    f"{prefix}\n\n{note}"
+                )
         event.set_extra(REFERENCE_KEY, combined)
         event.set_extra("_gitee_portrait_contract", note)
         context = capture_context.get()

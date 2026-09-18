@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import io
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -10,7 +11,7 @@ from PIL import Image
 
 from core.studio_store import StudioConflict, StudioStore
 from test_main_initialize_request_mode import _load_module
-from test_background_pipeline_event import _Event, _plugin
+from test_background_pipeline_event import _Event, _plugin, _target
 
 
 def picture(color):
@@ -284,6 +285,142 @@ async def test_tool_character_preparation_keeps_reference_order(runtime):
     assert isinstance(selection, main.ReferenceSelection)
     assert len(selection.images) == 2
     assert "white dress" in prompt and "suit" in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("identity", ["self", "name", "id", "group"])
+async def test_tool_character_bot_portrait_keeps_custom_selfie_prefix(
+    runtime, identity
+):
+    _, _, _, plugin, studio = runtime
+    prefix = "自定义 Bot 自拍风格, 保持固定角色外观"
+    plugin.config["features"]["selfie"] = {"prompt_prefix": prefix}
+    bot = character(studio.store, "Bot", "red", "bot")
+    ids = [{"self": "self", "name": bot["name"], "id": bot["id"]}.get(identity, "self")]
+    if identity == "group":
+        character(studio.store, "User", "blue")
+        ids = ["me", "self"]
+    event = _Event()
+
+    prompt, selection = await plugin._prepare_character_portrait(
+        event, "窗边自然光自拍", ids, [""] * len(ids), None
+    )
+
+    assert prefix in prompt
+    assert prompt.index(prefix) < prompt.index("人物绑定清单 (数据")
+    actor_number = 2 if identity == "group" else 1
+    assert f"Bot 自拍自定义要求 (用于人物 {actor_number})" in prompt
+    assert prefix in event.get_extra("_gitee_portrait_contract")
+    assert len(selection.images) == len(ids)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix", ["", "   ", "Bot-only custom rules"])
+async def test_character_portraits_do_not_add_unrelated_selfie_rules(runtime, prefix):
+    _, _, _, plugin, studio = runtime
+    plugin.config["features"]["selfie"] = {"prompt_prefix": prefix}
+    character(studio.store, "Bot", "red", "bot")
+    character(studio.store, "User", "blue")
+    request = "window portrait"
+    event = _Event()
+    prompt, _ = await plugin._prepare_character_portrait(
+        event, request, ["me"], [""], None
+    )
+    assert prompt == request + "\n\n" + event.get_extra("_gitee_portrait_contract")
+    assert "Bot-only custom rules" not in prompt
+    assert "Bot 自拍自定义要求" not in prompt
+    if not prefix.strip():
+        prompt, _ = await plugin._prepare_character_portrait(
+            event, request, ["self"], [""], None
+        )
+        assert "Bot 自拍自定义要求" not in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("execution", ["sync", "single", "batch"])
+async def test_character_tools_deliver_custom_prefix_to_provider(
+    runtime, monkeypatch, execution
+):
+    main, _, _, plugin, studio = runtime
+    batch = execution == "batch"
+    prefix = "Bot selfie custom rules: no phones, watercolor style"
+    plugin.config["features"]["selfie"] = {"prompt_prefix": prefix}
+    bot = character(studio.store, "Bot", "red", "bot")
+    manager = main.BackgroundImageTaskManager(studio.store.root / "tool-test")
+    await manager.start()
+    captured, prompts = [], []
+    monkeypatch.setattr(
+        manager, "start_worker", lambda task_id, factory: captured.append(factory)
+    )
+    plugin._background_manager_for_event = lambda e: (
+        None if execution == "sync" else manager
+    )
+    plugin._build_background_delivery_target = AsyncMock(return_value=_target(main))
+    plugin.debouncer = SimpleNamespace(
+        llm_tool_is_duplicate=lambda *a: False, hit=lambda *a: False
+    )
+    monkeypatch.setattr(main, "get_images_from_event", AsyncMock(return_value=[]))
+    plugin._image_segs_to_bytes = AsyncMock(return_value=[])
+    plugin._plan_batch_prompt_items = AsyncMock(
+        return_value=[
+            main.PlannedPromptItem(
+                title=str(i),
+                prompt=f"planned pose {i}",
+                variation_focus=["pose"],
+                aspect_ratio="3:4",
+            )
+            for i in range(2)
+        ]
+    )
+    plugin._describe_spooled_objects = AsyncMock(return_value=("", "skipped"))
+    plugin._send_background_image_once = AsyncMock(return_value=_Event())
+    plugin._wait_for_background_ack = AsyncMock()
+    plugin._wait_background_send_gate = AsyncMock()
+    plugin._dispatch_background_completion = AsyncMock()
+    plugin._save_last_image_task_meta = AsyncMock()
+    plugin._signal_llm_tool_failure = AsyncMock()
+    plugin._begin_user_job = AsyncMock(return_value=True)
+    plugin._end_user_job = AsyncMock()
+    plugin._has_message_images = AsyncMock(return_value=False)
+    plugin._finalize_llm_tool_image = AsyncMock(return_value="delivered")
+    monkeypatch.setattr(main, "mark_processing", AsyncMock())
+
+    async def edit(prompt, images, **kwargs):
+        prompts.append(prompt)
+        assert images == [picture("red")]
+        return studio.store.asset_path(bot["looks"][0]["assets"][0])
+
+    plugin.edit = SimpleNamespace(edit=edit)
+    event = _Event()
+    try:
+        tool = plugin.aiimg_batch_generate if batch else plugin.aiimg_generate
+        result = await tool(
+            event,
+            prompt="window portrait",
+            mode="selfie_ref",
+            character_ids=[bot["id"]],
+            **({"count": 2} if batch else {}),
+        )
+        if execution == "sync":
+            assert result == "delivered"
+            assert captured == []
+            plugin._finalize_llm_tool_image.assert_awaited_once()
+        else:
+            task_id = json.loads(result.content[0].text)["task_id"]
+            assert len(captured) == 1
+            event._extras.clear()
+            # A queued request must retain its accepted prefix even after edits.
+            plugin.config["features"]["selfie"]["prompt_prefix"] = (
+                "changed after acceptance"
+            )
+            await captured[0]()
+            assert (await manager.get_task(task_id))["state"] == "completed"
+        assert len(prompts) == (2 if batch else 1)
+        assert all(prefix in prompt for prompt in prompts)
+        assert all("changed after acceptance" not in prompt for prompt in prompts)
+        plugin._signal_llm_tool_failure.assert_not_awaited()
+    finally:
+        await manager.close()
 
 
 @pytest.mark.asyncio
