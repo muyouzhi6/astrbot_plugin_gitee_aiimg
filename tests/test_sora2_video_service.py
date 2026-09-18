@@ -1,9 +1,13 @@
+import base64
+from functools import partial
 import importlib.util
+import json
 import os
 import sys
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -351,6 +355,152 @@ class Sora2VideoServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(filename, "input_reference.png")
         self.assertEqual(file_bytes, png_bytes)
         self.assertEqual(mime, "image/png")
+
+    async def test_happy_horse_wire_request_uses_json_and_polls(self):
+        mod = _load_module()
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+        for image_bytes in (None, png_bytes):
+            with self.subTest(with_image=bool(image_bytes)):
+                requests = []
+
+                def handle(request, requests=requests, image_bytes=image_bytes):
+                    requests.append(request)
+                    if request.method == "POST":
+                        self.assertEqual(request.url.path, "/v1/videos")
+                        self.assertEqual(
+                            request.headers["content-type"], "application/json"
+                        )
+                        body = json.loads(request.content)
+                        self.assertEqual(body["model"], "happy-horse-1.1")
+                        self.assertIs(type(body["seconds"]), str)
+                        self.assertEqual(body["seconds"], "15")
+                        self.assertTrue(body["audio"])
+                        self.assertNotIn("input_reference", body)
+                        if image_bytes:
+                            prefix, encoded = body["start_frame"].split(",", 1)
+                            self.assertEqual(prefix, "data:image/png;base64")
+                            self.assertEqual(base64.b64decode(encoded), image_bytes)
+                        else:
+                            self.assertNotIn("start_frame", body)
+                        return mod.httpx.Response(
+                            200, json={"id": "hh-task", "status": "queued"}
+                        )
+                    self.assertEqual(request.url.path, "/v1/videos/hh-task")
+                    return mod.httpx.Response(
+                        200,
+                        json={
+                            "status": "completed",
+                            "url": "https://cdn.example/video.mp4",
+                        },
+                    )
+
+                async def no_sleep(_seconds):
+                    pass
+
+                client_type = mod.httpx.AsyncClient
+                transport = mod.httpx.MockTransport(handle)
+                service = mod.Sora2VideoService(
+                    settings={
+                        "base_url": "https://ztyunjuan.com/v1",
+                        "api_keys": ["test-key"],
+                        "model": "happy-horse-1.1",
+                        "seconds": "15",
+                        "extra_body": {"audio": True},
+                    }
+                )
+                with (
+                    patch.object(
+                        mod.httpx,
+                        "AsyncClient",
+                        side_effect=partial(client_type, transport=transport),
+                    ),
+                    patch.object(mod, "asyncio", types.SimpleNamespace(sleep=no_sleep)),
+                ):
+                    result = await service.generate_video_url(
+                        "prompt", image_bytes=image_bytes
+                    )
+                self.assertEqual(result, "https://cdn.example/video.mp4")
+                self.assertEqual(len(requests), 2)
+
+    async def test_happy_horse_rejects_conflicting_references_before_http(self):
+        mod = _load_module()
+        for field in (
+            "start_frame",
+            "input_reference",
+            "inputReference",
+            "reference_images",
+            "reference_image",
+        ):
+            with self.subTest(field=field):
+                service = mod.Sora2VideoService(
+                    settings={
+                        "base_url": "https://ztyunjuan.com",
+                        "model": "happy-horse-1.1",
+                        "api_keys": ["test-key"],
+                        "extra_body": {field: "https://example.com/ref.png"},
+                    }
+                )
+                with patch.object(mod.httpx, "AsyncClient") as client:
+                    with self.assertRaisesRegex(ValueError, "reference"):
+                        await service.generate_video_url("prompt", image_bytes=b"image")
+                    client.assert_not_called()
+
+    async def test_happy_horse_json_is_scoped_to_documented_gateway_models(self):
+        mod = _load_module()
+        jpeg_bytes = b"\xff\xd8\xff" + b"0" * 32
+        for base_url, model, uses_json in (
+            ("https://www.ztyunjuan.com/v1/videos", "happy-horse", True),
+            ("https://other.example", "happy-horse-1.1", False),
+            ("https://ztyunjuan.com.evil.example", "happy-horse-1.1", False),
+            ("https://ztyunjuan.com", "sora-2", False),
+        ):
+            with self.subTest(base_url=base_url, model=model):
+                calls = []
+
+                class Service(mod.Sora2VideoService):
+                    async def _request_json_with_retries(
+                        self, *args, _calls=calls, **kwargs
+                    ):
+                        _calls.append(kwargs)
+                        return {"url": "https://cdn.example/video.mp4"}
+
+                service = Service(
+                    settings={
+                        "base_url": base_url,
+                        "model": model,
+                        "api_keys": ["test-key"],
+                    }
+                )
+                await service.generate_video_url("prompt", image_bytes=jpeg_bytes)
+                call = calls[0]
+                if uses_json:
+                    self.assertTrue(
+                        call["json_body"]["start_frame"].startswith(
+                            "data:image/jpeg;base64,"
+                        )
+                    )
+                    self.assertIsNone(call["files"])
+                    self.assertIsNone(call["data_fields"])
+                else:
+                    self.assertIsNone(call["json_body"])
+                    self.assertEqual(call["files"]["input_reference"][1], jpeg_bytes)
+
+    async def test_happy_horse_rejects_invalid_duration_before_http(self):
+        mod = _load_module()
+        for seconds in ("2", "16", "5.5", "invalid"):
+            with self.subTest(seconds=seconds):
+                service = mod.Sora2VideoService(
+                    settings={
+                        "base_url": "https://ztyunjuan.com",
+                        "model": "happy-horse-1.1",
+                        "api_keys": ["test-key"],
+                        "seconds": seconds,
+                    }
+                )
+                with patch.object(mod.httpx, "AsyncClient") as client:
+                    with self.assertRaisesRegex(ValueError, "3.*15"):
+                        await service.generate_video_url("prompt")
+                    client.assert_not_called()
 
     async def test_create_request_falls_back_to_next_key_on_auth_failure(self):
         mod = _load_module()

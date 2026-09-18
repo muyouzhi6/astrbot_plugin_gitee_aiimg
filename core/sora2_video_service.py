@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import email.utils
 import json
 import os
@@ -457,16 +458,49 @@ class Sora2VideoService:
                 "n": self.n,
             }
         )
+        # This gateway's Happy Horse adapter accepts JSON, not file uploads.
+        happy_horse_json = urlsplit(self.base_url).hostname in {
+            "ztyunjuan.com",
+            "www.ztyunjuan.com",
+        } and self.model in {"happy-horse", "happy-horse-1.1"}
+        if happy_horse_json:
+            try:
+                seconds = int(self.seconds)
+            except ValueError as exc:
+                raise ValueError(
+                    "Happy Horse seconds must be an integer from 3 to 15"
+                ) from exc
+            if not 3 <= seconds <= 15:
+                raise ValueError("Happy Horse seconds must be an integer from 3 to 15")
+            # The public gateway requires a string despite its integer examples.
+            payload["seconds"] = str(seconds)
         request_json_body: dict[str, Any] | None = payload
         request_data_fields: dict[str, str] | None = None
         request_files: dict[str, tuple[str, bytes, str]] | None = None
         if image_bytes:
             mime, ext = guess_image_mime_and_ext(image_bytes)
-            request_json_body = None
-            request_data_fields = _to_form_fields(payload)
-            request_files = {
-                "input_reference": (f"input_reference.{ext}", image_bytes, mime)
-            }
+            if happy_horse_json:
+                if any(
+                    payload.get(field)
+                    for field in (
+                        "start_frame",
+                        "input_reference",
+                        "inputReference",
+                        "reference_images",
+                        "reference_image",
+                    )
+                ):
+                    raise ValueError(
+                        "Happy Horse message image conflicts with extra_body reference fields"
+                    )
+                encoded = base64.b64encode(image_bytes).decode("ascii")
+                payload["start_frame"] = f"data:{mime};base64,{encoded}"
+            else:
+                request_json_body = None
+                request_data_fields = _to_form_fields(payload)
+                request_files = {
+                    "input_reference": (f"input_reference.{ext}", image_bytes, mime)
+                }
 
         timeout = httpx.Timeout(
             connect=10.0,

@@ -13,6 +13,16 @@
 /视频预设列表
 ```
 
+### Happy Horse 1.1
+
+在 `https://ztyunjuan.com` 使用 `happy-horse-1.1` 时, 选择 **OpenAI 视频**模板 (`sora2_video`), API 地址填写 `https://ztyunjuan.com`, 然后将该服务商加入视频链路. 插件对该站点的 Happy Horse 模型使用 JSON 请求, 将消息中的单张图片编码为 `start_frame` Data URI, 无需上传第三方图床. 其它 OpenAI 视频渠道仍按原协议上传 `input_reference` 文件.
+
+按服务方文档, 时长为 3-15 的整数秒, 清晰度支持 720p / 1080p, 不支持 360p. 当前模板的 `size` 是像素尺寸, 不是清晰度名称: 720p 横屏填 `1280x720`, 竖屏填 `720x1280`; 1080p 横屏填 `1920x1080`, 竖屏填 `1080x1920`. 其它画幅使用服务方模型文档列出的精确尺寸, 不按短边自行推算. `extra_body` 可填写 `{"audio":true}` 启用结果音轨.
+
+普通多图参考可按服务方文档在 `extra_body.reference_images` 配置 URL 或 Data URI, 最多 9 张; 聊天消息自动取图仍只传单张首帧. 已发送消息图片时, 不要在 `extra_body` 同时配置 `start_frame`, `input_reference` 或普通图片参考, 插件会拒绝冲突输入. 1.1 不支持上传音频参考或参考视频.
+
+网关的 `seconds` 实际要求字符串, 插件保留字符串传输并校验整数范围. 模型清单列出 Happy Horse 不代表当前账号分组的上游渠道可用; 若 JSON 请求返回上游只支持 Seedance / Kling / Veo, 请让服务方检查 Happy Horse 的模型映射和渠道, 不要反复创建任务或修改分辨率来重试.
+
 ### Agnes 注册与配置
 
 > [!TIP]
