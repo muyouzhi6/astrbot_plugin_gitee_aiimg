@@ -157,6 +157,13 @@ def compose_inputs(selection, message_images, *, identity_images=()):
             f"参考图 1 至 {len(identities)} 是固定人物身份参考，不能被后面的动物、物体或服装图替换。"
         )
     for index, source in enumerate(sources, len(identities) + 1):
+        if source.get("character_id"):
+            notes.append(
+                f"参考图 {index}: 人物 {source.get('actor', '')} "
+                f"({source.get('character_name') or source['character_id']}) 的专属身份图, "
+                "只绑定此人的脸与身份, 不用作其他人的身份、构图或服装模板。"
+            )
+            continue
         notes.append(f"参考图 {index}：{ROLE_TEXT[source['role']]}。")
     if sources:
         notes.append(

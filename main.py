@@ -3198,6 +3198,13 @@ class GiteeAIImagePlugin(Star):
                 "name": c["name"],
                 "kind": c["kind"],
                 "is_requester": c.get("owner_sender") == str(event.get_sender_id()),
+                "call_as": (
+                    "self"
+                    if c["kind"] == "bot"
+                    else "me"
+                    if c.get("owner_sender") == str(event.get_sender_id())
+                    else c["id"]
+                ),
                 "looks": [x["name"] for x in c["looks"]],
                 "active_look": c["active_look"],
             }
@@ -3230,6 +3237,10 @@ class GiteeAIImagePlugin(Star):
             "明确指定其他人物则使用对应ID. character_outfits按人物分别填写用户要求的服装, "
             "未指定用空字符串. 只有Bot空值读取日程穿搭. 人物缺失或同名歧义时先澄清, 不冒用身份. "
             "不要仅在prompt写人名而省略人物ID. 不得向用户展示照片路径或其他人的未授权身份."
+            "call_as 是推荐调用值; 只有 is_requester=true 的人物能用 me. "
+            "给我拍照指发言者出镜, 不是 Bot 自拍; 我给你拍照指 Bot 出镜, 发言者是摄影者. "
+            "selfie_ref 只代表 Bot 单人, 不是任意人物或合照; 人物请求优先使用 character_ids 和 edit. "
+            "只写动作、场景与明确要求, 不根据聊天人设为已绑定人物猜测性别、年龄或五官."
             "</image_character_catalog>"
         )
         req.system_prompt = str(getattr(req, "system_prompt", "") or "") + block
@@ -3328,15 +3339,17 @@ class GiteeAIImagePlugin(Star):
             context["user_prompt"] = prompt
         return prompt + "\n\n" + note, combined
 
-    def _needs_character_binding(self, event, prompt):
-        catalog = self._character_catalog(event)
-        if not catalog:
-            return False
-        text = str(getattr(event, "message_str", "") or "") + " " + prompt
-        return any(
-            word in text
-            for word in ("合照", "合影", "同框", "给我拍", "拍我", "我们俩")
-        ) or any(c["kind"] == "person" and c["name"] in text for c in catalog)
+    def _character_binding_error(self, event, prompt, ids, mode, reference_roles):
+        from .core.studio_characters import character_request_error
+
+        return character_request_error(
+            self._character_catalog(event),
+            ids,
+            message=str(getattr(event, "message_str", "") or ""),
+            prompt=prompt,
+            mode=mode,
+            reference_roles=reference_roles,
+        )
 
     @filter.llm_tool(name="aiimg_generate")
     @single_event_image_call
@@ -3363,7 +3376,8 @@ class GiteeAIImagePlugin(Star):
         - character_outfits逐人填写用户明确的衣服要求; 空字符串让Bot读取日程, 他人按语义搭配. 不得将Bot穿搭复制给其他人.
         - 用户要求“几张/多张/一组”或数量大于1时，调用 aiimg_batch_generate 并保留相同的人物与参考图，不可缩成单张。
         - 用户发送/引用了图片，并要求"改图/换背景/换风格/修图/换衣服"等：用 mode=edit（或 mode=auto）
-        - 用户要求"看看你/来一张你自己的生活照"，且已设置自拍参考照：用 mode=selfie_ref（或 mode=auto）
+        - selfie_ref只代表Bot单人. 拍用户/其他人物/合照必须用character_ids和edit, 不能仅传参考图ID或把人物写在prompt里.
+        - 用户要求"看看你/来一张你自己的生活照"，没有形象库人物且已设置自拍参考照：用 mode=selfie_ref（或 mode=auto）
         - 纯文生图（用户没有给图片）：用 mode=text（或 mode=auto）
 
         当前 LLM tool 行为：
@@ -3378,7 +3392,7 @@ class GiteeAIImagePlugin(Star):
 
         Args:
             prompt(string): 提示词
-            mode(string): auto=自动判断, text=文生图, edit=改图, selfie_ref=参考照
+            mode(string): auto=自动判断, text=文生图, edit=改图/人物拍摄, selfie_ref=仅Bot单人参考照
             backend(string): auto=自动选择；也可填 provider_id（你在 WebUI providers 里配置的 id）
             output(string): 兼容输出参数。只有用户明确指定时才传；不得自行填入 1:1 或正方形默认值
             aspect_ratio(string): 图片比例。用户明确要求时照办；未指定时根据构图主动选择 16:9、9:16、4:3、3:4 等
@@ -3400,14 +3414,11 @@ class GiteeAIImagePlugin(Star):
                 "[aiimg_generate] recovered prompt from compatibility reason argument"
             )
         m = (mode or "auto").strip().lower()
-        if (
-            not character_ids
-            and not reference_image_ids
-            and self._needs_character_binding(event, prompt)
-        ):
-            return self._llm_tool_text_result(
-                "本次请求涉及已登记人物. 尚未开始生成, 请补充character_ids后重新调用: 合照[self,me], 仅拍发言者[me], 指定他人用其人物ID. character_outfits逐人绑定, 未指定填空字符串."
-            )
+        binding_error = self._character_binding_error(
+            event, prompt, character_ids, m, reference_roles
+        )
+        if binding_error:
+            return self._llm_tool_text_result(binding_error)
         # === TTL 去重检查（防止 ToolLoop 重复调用）===
         message_id = (
             getattr(getattr(event, "message_obj", None), "message_id", "") or ""
@@ -3767,6 +3778,7 @@ class GiteeAIImagePlugin(Star):
         """规划并批量生成一组图片。
 
         使用建议（给 LLM 的决策规则）：
+        - 人物拍摄必须传全部character_ids并使用edit: 仅拍用户[me], Bot与用户合照[self,me]; selfie_ref仅代表Bot单人. 摄影者不自动入镜.
         - 支持 ContextAware 历史图片ID：整组共享明确选定的参考图及用途。抱着上图动物拍几张用selfie_ref和object；批量改原图用edit和subject。
         - 不得遗漏历史参考或把多张请求缩成单张；几张未指定数量时默认4张。
         - 当用户明确想要一组不重复但同主题的图片时，优先调用这个工具。
@@ -3789,14 +3801,15 @@ class GiteeAIImagePlugin(Star):
             reference_character_ids(array[string]): 与reference_image_ids对应, 为多人服装/姿态参考指定所属人物; 其他用途填空.
         """
         prompt = str(prompt or "").strip()
-        if (
-            not character_ids
-            and not reference_image_ids
-            and self._needs_character_binding(event, prompt)
-        ):
-            return self._llm_tool_text_result(
-                "尚未开始批量生成. 请补充全部出镜人物的character_ids和逐人character_outfits后重新调用, 不要省略人物身份."
-            )
+        binding_error = self._character_binding_error(
+            event,
+            prompt,
+            character_ids,
+            str(mode or "auto").strip().lower(),
+            reference_roles,
+        )
+        if binding_error:
+            return self._llm_tool_text_result(binding_error)
         if not prompt:
             await self._signal_llm_tool_failure(event)
             return self._llm_tool_text_result(
