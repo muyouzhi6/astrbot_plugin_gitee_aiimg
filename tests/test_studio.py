@@ -3,7 +3,7 @@ import importlib
 import io
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -423,6 +423,107 @@ async def test_character_tools_deliver_custom_prefix_to_provider(
         assert len(prompts) == (2 if batch else 1)
         assert all(prefix in prompt for prompt in prompts)
         assert all("changed after acceptance" not in prompt for prompt in prompts)
+        plugin._signal_llm_tool_failure.assert_not_awaited()
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("execution", ["sync", "single", "batch"])
+@pytest.mark.parametrize("mode", ["reminder", "edit", "img2img", "aiedit", "auto"])
+async def test_character_tools_preserve_reminder_and_existing_photo_subjects(
+    runtime, monkeypatch, execution, mode
+):
+    from test_context_image_bridge import Peer
+
+    main, _, _, plugin, studio = runtime
+    character(studio.store, "Bot", "red", "bot")
+    requester = character(studio.store, "User", "blue")
+    output_path = studio.store.asset_path(requester["looks"][0]["assets"][0])
+    peer = Peer()
+    peer.rows = {"ca_pair": picture("green")}
+    plugin.context.context_aware = peer
+    batch = execution == "batch"
+    reminder = mode == "reminder"
+    original = "别忘了给我拍照" if reminder else "把这张我们俩的合照换成夜景"
+    expected_input = picture("blue" if reminder else "green")
+    manager = main.BackgroundImageTaskManager(studio.store.root / "review-requests")
+    await manager.start()
+    workers = []
+    monkeypatch.setattr(
+        manager, "start_worker", lambda task_id, factory: workers.append(factory)
+    )
+    plugin._background_manager_for_event = lambda e: (
+        None if execution == "sync" else manager
+    )
+    plugin._build_background_delivery_target = AsyncMock(return_value=_target(main))
+    plugin.debouncer = SimpleNamespace(
+        llm_tool_is_duplicate=Mock(return_value=False), hit=Mock(return_value=False)
+    )
+    monkeypatch.setattr(main, "get_images_from_event", AsyncMock(return_value=[]))
+    monkeypatch.setattr(main, "mark_processing", AsyncMock())
+    plugin._image_segs_to_bytes = AsyncMock(return_value=[])
+    plugin._has_message_images = AsyncMock(return_value=False)
+    plugin._should_auto_selfie_ref = AsyncMock(return_value=False)
+    plugin._plan_batch_prompt_items = AsyncMock(
+        return_value=[
+            main.PlannedPromptItem(
+                title=str(i), prompt="night portrait", variation_focus=["pose"]
+            )
+            for i in range(2)
+        ]
+    )
+    plugin._describe_spooled_objects = AsyncMock(return_value=("", "skipped"))
+    plugin._send_background_image_once = AsyncMock(return_value=_Event())
+    plugin._wait_for_background_ack = AsyncMock()
+    plugin._wait_background_send_gate = AsyncMock()
+    plugin._dispatch_background_completion = AsyncMock()
+    plugin._save_last_image_task_meta = AsyncMock()
+    plugin._signal_llm_tool_failure = AsyncMock()
+    plugin._begin_user_job = AsyncMock(return_value=True)
+    plugin._end_user_job = AsyncMock()
+    plugin._finalize_llm_tool_image = AsyncMock(return_value="delivered")
+    plugin.edit.edit = AsyncMock(return_value=output_path)
+    event = _Event()
+    event.message_str = original
+    tool = plugin.aiimg_batch_generate if batch else plugin.aiimg_generate
+    args = {
+        # Rewritten LLM text must not override the original request's subject.
+        "prompt": "Bot portrait" if reminder else "换成夜景",
+        "mode": "auto" if reminder else mode,
+        **({"count": 2} if batch else {}),
+    }
+    try:
+        if reminder:
+            for wrong_ids in ([], ["self"], ["self", "me"]):
+                rejected = await tool(event, **args, character_ids=wrong_ids)
+                assert workers == []
+                plugin.draw.generate.assert_not_awaited()
+                plugin.edit.edit.assert_not_awaited()
+                plugin.debouncer.llm_tool_is_duplicate.assert_not_called()
+                plugin.debouncer.hit.assert_not_called()
+                assert "尚未开始" in rejected.content[0].text
+            args["character_ids"] = ["me"]
+        else:
+            args.update(reference_image_ids=["ca_pair"], reference_roles=["subject"])
+        accepted = await tool(event, **args)
+        if execution == "sync":
+            assert accepted == "delivered"
+            assert workers == []
+        else:
+            assert "character_ids" not in accepted.content[0].text
+            receipt = json.loads(accepted.content[0].text)
+            assert receipt["status"] == "accepted"
+            assert len(workers) == 1
+            peer.rows.clear()
+            event._extras.clear()
+            await workers[0]()
+            assert (await manager.get_task(receipt["task_id"]))["state"] == "completed"
+        assert plugin.edit.edit.await_count == (2 if batch else 1)
+        for call in plugin.edit.edit.await_args_list:
+            assert call.kwargs["images"] == [expected_input]
+            assert call.kwargs["require_ordered_references"] is True
+        plugin.draw.generate.assert_not_awaited()
         plugin._signal_llm_tool_failure.assert_not_awaited()
     finally:
         await manager.close()
