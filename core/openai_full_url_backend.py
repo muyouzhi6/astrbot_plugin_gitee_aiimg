@@ -29,6 +29,37 @@ def _origin(url: str) -> str:
     return ""
 
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+
+
+def _rewrite_loopback_ref(ref: str, endpoint_url: str) -> str:
+    """Replace a loopback host in a returned media URL with the endpoint host.
+
+    Some reverse proxies return ``http://127.0.0.1:8000/...`` which is only
+    reachable from the proxy itself. The media port of the returned URL is kept.
+    """
+    try:
+        r = urlsplit(ref)
+        e = urlsplit(endpoint_url)
+    except Exception:
+        return ref
+    if (r.hostname or "").lower() not in _LOOPBACK_HOSTS:
+        return ref
+    host = e.hostname or ""
+    if not host or host.lower() in _LOOPBACK_HOSTS:
+        return ref
+    if ":" in host:
+        host = f"[{host}]"
+    netloc = f"{host}:{r.port}" if r.port else host
+    return r._replace(netloc=netloc).geturl()
+
+
+def _is_size_error(resp: httpx.Response) -> bool:
+    if resp.status_code not in {400, 422}:
+        return False
+    return "size" in (resp.text or "").lower()
+
+
 def _is_http_url(url: str) -> bool:
     s = str(url or "").strip().lower()
     return s.startswith("http://") or s.startswith("https://")
@@ -231,12 +262,14 @@ class OpenAIFullURLBackend:
         supports_edit: bool = True,
         extra_body: dict | None = None,
         output_format: str = "jpeg",
+        default_edit_model: str = "",
     ):
         self.imgr = imgr
         self.full_generate_url = str(full_generate_url or "").strip()
         self.full_edit_url = str(full_edit_url or "").strip()
         self.api_keys = [str(k).strip() for k in (api_keys or []) if str(k).strip()]
         self.default_model = str(default_model or "").strip()
+        self.default_edit_model = str(default_edit_model or "").strip()
         self.timeout = max(1, int(timeout or 600))
         self.max_retries = max(0, int(max_retries or 0))
         self.default_size = normalize_size_text(
@@ -334,6 +367,22 @@ class OpenAIFullURLBackend:
             f"请求失败（已重试 {self.max_retries} 次）: {last_exc}"
         ) from last_exc
 
+    async def _post_json_size_fallback(
+        self, url: str, api_key: str, payload: dict[str, Any]
+    ) -> httpx.Response:
+        resp = await self._post_json(url, api_key, payload)
+        if (
+            _is_size_error(resp)
+            and payload.get("size")
+            and str(payload.get("size")).lower() != "auto"
+        ):
+            logger.info(
+                "[OpenAIFullURL] 上游拒绝 size=%s，改用 size=auto 重试",
+                payload.get("size"),
+            )
+            resp = await self._post_json(url, api_key, dict(payload, size="auto"))
+        return resp
+
     async def _post_multipart(
         self,
         url: str,
@@ -400,6 +449,7 @@ class OpenAIFullURLBackend:
             )
 
         if _is_http_url(ref):
+            ref = _rewrite_loopback_ref(ref, endpoint_url)
             return await self.imgr.download_image(ref, output_format=self.output_format)
 
         origin = _origin(endpoint_url)
@@ -473,7 +523,7 @@ class OpenAIFullURLBackend:
 
         key = self._next_key()
         t0 = time.perf_counter()
-        resp = await self._post_json(self.full_generate_url, key, payload)
+        resp = await self._post_json_size_fallback(self.full_generate_url, key, payload)
         out = await self._save_response(resp, endpoint_url=self.full_generate_url)
         logger.info("[OpenAIFullURL][generate] 耗时: %.2fs", time.perf_counter() - t0)
         return out
@@ -497,7 +547,9 @@ class OpenAIFullURLBackend:
         if not endpoint:
             raise RuntimeError("未配置 full_edit_url 或 full_generate_url")
 
-        final_model = str(model or self.default_model or "").strip()
+        final_model = str(
+            model or self.default_edit_model or self.default_model or ""
+        ).strip()
         if not final_model:
             raise RuntimeError("未配置 model")
 
@@ -524,8 +576,10 @@ class OpenAIFullURLBackend:
             dict(base_payload, image=data_url),
             dict(base_payload, images=[data_url]),
             dict(base_payload, image_url=data_url),
+            dict(base_payload, image={"url": data_url, "type": "image_url"}),
+            dict(base_payload, images=[{"url": data_url, "type": "image_url"}]),
         ):
-            resp = await self._post_json(endpoint, key, json_payload)
+            resp = await self._post_json_size_fallback(endpoint, key, json_payload)
             response = resp
             if resp.status_code == 200:
                 break

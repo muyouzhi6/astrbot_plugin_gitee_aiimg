@@ -1228,6 +1228,12 @@
             "description": "支持改图 (images.edit)",
             "default": true
           },
+          "edit_model": {
+            "type": "string",
+            "description": "改图模型（可选）",
+            "hint": "文生图与改图使用不同模型名时填写；留空则复用上方模型",
+            "default": ""
+          },
           "generate_request_mode": {
             "type": "string",
             "description": "文生图请求模式",

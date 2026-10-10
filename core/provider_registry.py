@@ -550,6 +550,7 @@ class ProviderRegistry:
                 supports_edit=bool(conf.get("supports_edit", True)),
                 extra_body=_as_dict(conf.get("extra_body")) or None,
                 output_format=str(conf.get("output_format") or "jpeg"),
+                default_edit_model=str(conf.get("edit_model") or "").strip(),
             )
 
         if template_key == "modelscope_openai_images":
