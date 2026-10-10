@@ -338,8 +338,9 @@ async def test_character_portraits_do_not_add_unrelated_selfie_rules(runtime, pr
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("execution", ["sync", "single", "batch"])
+@pytest.mark.parametrize("scene", ["window portrait", "你和猫一起拍"])
 async def test_character_tools_deliver_custom_prefix_to_provider(
-    runtime, monkeypatch, execution
+    runtime, monkeypatch, execution, scene
 ):
     main, _, _, plugin, studio = runtime
     batch = execution == "batch"
@@ -392,11 +393,14 @@ async def test_character_tools_deliver_custom_prefix_to_provider(
 
     plugin.edit = SimpleNamespace(edit=edit)
     event = _Event()
+    event.message_str = (
+        scene + ("2张" if batch else "一张") if scene != "window portrait" else scene
+    )
     try:
         tool = plugin.aiimg_batch_generate if batch else plugin.aiimg_generate
         result = await tool(
             event,
-            prompt="window portrait",
+            prompt=event.message_str,
             mode="selfie_ref",
             character_ids=[bot["id"]],
             **({"count": 2} if batch else {}),
@@ -406,6 +410,7 @@ async def test_character_tools_deliver_custom_prefix_to_provider(
             assert captured == []
             plugin._finalize_llm_tool_image.assert_awaited_once()
         else:
+            assert "至少需要两位" not in result.content[0].text
             task_id = json.loads(result.content[0].text)["task_id"]
             assert len(captured) == 1
             event._extras.clear()

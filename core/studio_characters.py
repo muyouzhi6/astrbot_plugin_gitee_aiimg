@@ -24,7 +24,8 @@ def character_request_error(catalog, ids, *, message, prompt, mode, reference_ro
             r"(?:不要|别(?!忘)|不用|不需要|不想).*(?:拍|照|同框|入镜)", clause
         )
     )
-    group = bool(re.search(r"合照|合影|同框|一起拍|我们俩|我俩|咱俩", text))
+    group_pattern = r"合照|合影|同框|一起拍|我们俩|我俩|咱俩"
+    group = bool(re.search(group_pattern, text))
     named = {
         c["id"]
         for c in catalog
@@ -62,7 +63,29 @@ def character_request_error(catalog, ids, *, message, prompt, mode, reference_ro
         required.add("me")
     if pair and not named:
         required.add("self")
-    people_group = group and (bool(required) or "object" not in (reference_roles or []))
+    # A single person posing with a pet is not a two-person portrait. Match
+    # complete clauses so another requested human group still gets checked;
+    # registered people take precedence over an animal's common name.
+    actor_names = "|".join(re.escape(c["name"]) for c in catalog)
+    pet_group_pattern = (
+        rf"(?:请)?(?P<actor>你|我|{actor_names})\s*(?:和|跟|与)\s*"
+        r"(?P<pet>(?:这只|那只|一只)?(?:猫咪|小猫|猫|狗狗|小狗|狗|宠物))\s*"
+        r"(?:一起拍(?:[一两几\d]+张)?(?:照片|照)?"
+        r"|(?:拍(?:[一两几\d]+张)?)?(?:合照|合影)|同框)"
+    )
+    human_group_clauses = []
+    for clause in text.split("，"):
+        pet_group = re.fullmatch(pet_group_pattern, clause.strip())
+        if pet_group and not any(
+            c["kind"] == "person" and c["name"] in pet_group["pet"] for c in catalog
+        ):
+            if pet_group["actor"] == "我":
+                required.add("me")
+            continue
+        human_group_clauses.append(clause)
+    people_group = bool(re.search(group_pattern, "，".join(human_group_clauses))) and (
+        bool(required) or "object" not in (reference_roles or [])
+    )
 
     # Editing an existing group image does not require recasting its people.
     image_edit = (

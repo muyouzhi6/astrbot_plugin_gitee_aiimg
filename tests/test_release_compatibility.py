@@ -9,7 +9,8 @@ import pytest
 from packaging.specifiers import SpecifierSet
 
 
-def test_metadata_allows_deployment_astrbot_version():
+@pytest.mark.parametrize("version", ["4.26.8", "4.27.3", "4.28.2"])
+def test_metadata_allows_deployment_astrbot_version(version):
     metadata = (Path(__file__).parents[1] / "metadata.yaml").read_text()
     declaration = next(
         line.split(":", 1)[1].strip().strip("\"'")
@@ -17,17 +18,19 @@ def test_metadata_allows_deployment_astrbot_version():
         if line.startswith("astrbot_version:")
     )
     supported = SpecifierSet(declaration)
-    assert supported.contains("4.26.8", prereleases=True)
+    assert supported.contains(version, prereleases=True)
     assert not supported.contains("5.0.0")
 
 
-def test_real_astrbot_4268_load_and_studio_api(tmp_path):
+def test_real_astrbot_load_and_studio_api(tmp_path):
     try:
         version = importlib.metadata.version("AstrBot")
     except importlib.metadata.PackageNotFoundError:
-        pytest.skip("Install AstrBot 4.26.8 to run the target runtime smoke test")
-    if version != "4.26.8":
-        pytest.skip("Target runtime smoke test requires AstrBot 4.26.8")
+        pytest.skip(
+            "Install AstrBot 4.26.8, 4.27.3 or 4.28.2 for the runtime smoke test"
+        )
+    if version not in {"4.26.8", "4.27.3", "4.28.2"}:
+        pytest.skip("Runtime smoke test requires AstrBot 4.26.8, 4.27.3 or 4.28.2")
     root = Path(__file__).parents[1].resolve()
     script = textwrap.dedent("""\
         import asyncio
@@ -49,7 +52,7 @@ def test_real_astrbot_4268_load_and_studio_api(tmp_path):
         root = Path(sys.argv[1])
         sys.path.insert(0, str(root.parent))
         main = importlib.import_module(root.name + ".main")
-        assert astrbot.__version__ == "4.26.8"
+        assert astrbot.__version__ == sys.argv[2]
         assert TextPart(text="test").mark_as_temp()._no_save
         spec = next(line.split(":", 1)[1].strip().strip('"')
                     for line in (root / "metadata.yaml").read_text().splitlines()
@@ -82,10 +85,10 @@ def test_real_astrbot_4268_load_and_studio_api(tmp_path):
         asyncio.run(check())
         supported, reason = PluginManager._validate_astrbot_version_specifier(spec)
         assert supported, reason
-        print("AstrBot 4.26.8: import, initialize, Web API, shutdown, version gate passed")
+        print(f"AstrBot {astrbot.__version__}: import, initialize, Web API, shutdown, version gate passed")
     """)
     result = subprocess.run(
-        [sys.executable, "-c", script, str(root)],
+        [sys.executable, "-c", script, str(root), version],
         cwd=tmp_path,
         env={**os.environ, "ASTRBOT_ROOT": str(tmp_path)},
         capture_output=True,
