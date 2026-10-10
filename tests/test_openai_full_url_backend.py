@@ -250,7 +250,10 @@ async def test_39_router_preserves_separate_ordered_references(
             assert payload["model"] == "image-model"
             assert payload["size"] == "1024x1024"
             assert [
-                base64.b64decode(ref.split(",", 1)[1]) for ref in payload["images"]
+                base64.b64decode(
+                    (ref["url"] if isinstance(ref, dict) else ref).split(",", 1)[1]
+                )
+                for ref in payload["images"]
             ] == inputs
             assert "image" not in payload and "image_url" not in payload
             if multipart:
@@ -270,12 +273,234 @@ async def test_39_router_preserves_separate_ordered_references(
             require_ordered_references=True,
         )
         assert result == Path("saved.png")
-        assert len(requests) == (2 if multipart else 1)
+        assert len(requests) == (3 if multipart else 1)
         backend.imgr.download_image.assert_awaited_once_with(
             "https://images.example/output/result.png", output_format="jpeg"
         )
     finally:
         await backend.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("count", "ordered", "field", "expected_requests"),
+    [(1, False, "image", 4), (1, False, "images", 5), (3, True, "images", 2)],
+)
+async def test_39_json_only_gateway_accepts_object_images(
+    backend, count, ordered, field, expected_requests
+):
+    inputs = [png((index * 40, 20, 30)) for index in range(count)]
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if not request.headers["content-type"].startswith("application/json"):
+            return httpx.Response(415, json={"error": "JSON only"})
+        payload = json.loads(request.content)
+        refs = payload.get(field)
+        if field == "image" and isinstance(refs, dict):
+            refs = [refs]
+        if not isinstance(refs, list) or not all(isinstance(ref, dict) for ref in refs):
+            return httpx.Response(400, json={"error": "image must be an object"})
+        assert [ref["type"] for ref in refs] == ["image_url"] * count
+        assert [base64.b64decode(ref["url"].split(",", 1)[1]) for ref in refs] == inputs
+        assert "image_url" not in payload
+        return httpx.Response(200, json={"data": [{"url": "/output/result.png"}]})
+
+    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    try:
+        assert await backend.edit(
+            "ordered edit", inputs, require_ordered_references=ordered
+        ) == Path("saved.png")
+        assert len(requests) == expected_requests
+        assert all(
+            "application/json" in req.headers["content-type"] for req in requests
+        )
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_39_edit_model_is_separate_from_generate_model(backend):
+    backend.default_edit_model = "edit-model"
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(
+            200, content=png("white"), headers={"content-type": "image/png"}
+        )
+
+    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    try:
+        assert await backend.generate("generate") == Path("saved.png")
+        assert await backend.edit("edit", [png("red")]) == Path("saved.png")
+        assert await backend.edit("edit", [png("red")], model="explicit-model") == Path(
+            "saved.png"
+        )
+        assert [json.loads(req.content)["model"] for req in requests] == [
+            "image-model",
+            "edit-model",
+            "explicit-model",
+        ]
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["generate", "edit"])
+@pytest.mark.parametrize("status", [400, 422])
+@pytest.mark.parametrize(
+    "size_error",
+    [
+        {"error": {"message": "unsupported size"}},
+        {"error": {"code": "invalid_resolution"}},
+        {"error": "4096x4096 is unsupported"},
+    ],
+)
+async def test_39_size_rejection_retries_same_json_payload_with_auto(
+    backend, mode, status, size_error
+):
+    requests = []
+
+    def respond(request):
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if payload["size"] != "auto":
+            return httpx.Response(status, json=size_error)
+        return httpx.Response(
+            200, content=png("white"), headers={"content-type": "image/png"}
+        )
+
+    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    try:
+        result = (
+            await backend.generate("generate")
+            if mode == "generate"
+            else await backend.edit("edit", [png("red")])
+        )
+        assert result == Path("saved.png")
+        assert [req["size"] for req in requests] == ["4096x4096", "auto"]
+        assert {k: v for k, v in requests[0].items() if k != "size"} == {
+            k: v for k, v in requests[1].items() if k != "size"
+        }
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_39_auto_size_persists_through_json_formats_and_multipart(backend):
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if "application/json" in request.headers["content-type"]:
+            payload = json.loads(request.content)
+            if payload["size"] != "auto":
+                return httpx.Response(
+                    400, json={"error": {"message": "size unsupported"}}
+                )
+            return httpx.Response(415, json={"error": "multipart required"})
+        if b'name="size"\r\n\r\nauto' not in request.content:
+            return httpx.Response(422, json={"error": {"message": "invalid size"}})
+        return httpx.Response(
+            200, content=png("white"), headers={"content-type": "image/png"}
+        )
+
+    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    try:
+        assert await backend.edit("edit", [png("red")]) == Path("saved.png")
+        json_sizes = [
+            json.loads(req.content)["size"]
+            for req in requests
+            if "application/json" in req.headers["content-type"]
+        ]
+        assert json_sizes == ["4096x4096"] + ["auto"] * 5
+        assert len(requests) == 7
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_39_multipart_size_rejection_retries_once_with_auto(backend):
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if "application/json" in request.headers["content-type"]:
+            return httpx.Response(415, json={"error": "multipart required"})
+        if b'name="size"\r\n\r\nauto' not in request.content:
+            return httpx.Response(422, json={"error": {"param": "size"}})
+        return httpx.Response(
+            200, content=png("white"), headers={"content-type": "image/png"}
+        )
+
+    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    try:
+        assert await backend.edit("edit", [png("red")]) == Path("saved.png")
+        assert len(requests) == 7
+        assert all(
+            "application/json" in req.headers["content-type"] for req in requests[:5]
+        )
+        assert b'name="size"\r\n\r\n4096x4096' in requests[5].content
+        assert b'name="size"\r\n\r\nauto' in requests[6].content
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 429, 500, 503])
+async def test_39_non_protocol_errors_do_not_resubmit_as_multipart(backend, status):
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(status, json={"error": "upstream failure"})
+
+    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    try:
+        with pytest.raises(RuntimeError, match=f"HTTP {status}"):
+            await backend.edit("edit", [png("red")])
+        assert len(requests) == 1
+        assert "application/json" in requests[0].headers["content-type"]
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_39_retryable_server_error_stays_on_json_transport(backend):
+    backend.max_retries = 1
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(500, json={"error": "upstream failure"})
+
+    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    try:
+        with pytest.raises(RuntimeError, match="HTTP 500"):
+            await backend.edit("edit", [png("red")])
+        assert len(requests) == 2
+        assert all(
+            "application/json" in req.headers["content-type"] for req in requests
+        )
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
+async def test_39_loopback_media_url_uses_endpoint_host_and_media_port(backend, host):
+    backend.full_edit_url = "https://images.example:3000/v1/images/edits"
+    ref = f"http://{host}:8000/v1/media/images/result.png?v=1"
+    response = httpx.Response(200, json={"data": [{"url": ref}]})
+    assert await backend._save_response(
+        response, endpoint_url=backend.full_edit_url
+    ) == Path("saved.png")
+    backend.imgr.download_image.assert_awaited_once_with(
+        "http://images.example:8000/v1/media/images/result.png?v=1",
+        output_format="jpeg",
+    )
 
 
 @pytest.mark.asyncio
@@ -328,7 +553,7 @@ async def test_39_failed_ordered_upload_never_collages_or_drops_references(
             await router(modules, backend).edit(
                 "edit", inputs, require_ordered_references=True
             )
-        assert len(requests) == 2
+        assert len(requests) == (3 if status in {400, 415, 422} else 1)
         backend.imgr.save_image.assert_not_awaited()
         backend.imgr.download_image.assert_not_awaited()
     finally:
@@ -442,7 +667,10 @@ async def test_39_llm_entry_routes_explicit_references_in_order(
         if "json" in request.headers["content-type"]:
             payload = json.loads(request.content)
             assert [
-                base64.b64decode(ref.split(",", 1)[1]) for ref in payload["images"]
+                base64.b64decode(
+                    (ref["url"] if isinstance(ref, dict) else ref).split(",", 1)[1]
+                )
+                for ref in payload["images"]
             ] == inputs
             assert not {"image", "image_url", "image[]"}.intersection(payload)
             assert payload["quality"] == "high"
@@ -473,7 +701,7 @@ async def test_39_llm_entry_routes_explicit_references_in_order(
             reference_image_ids=[f"ca_{index}" for index in range(count)],
             reference_roles=["subject"] * count,
         )
-        assert len(requests) == (2 if outcome in {"multipart", "rejected"} else 1)
+        assert len(requests) == (3 if outcome == "multipart" else 1)
         if outcome in {"json", "multipart"}:
             assert result == "delivered"
             plugin._finalize_llm_tool_image.assert_awaited_once()
@@ -503,10 +731,13 @@ async def test_legacy_single_edit_json_and_multipart_fallbacks(backend, ordered)
     def respond(request):
         requests.append(request)
         index = len(requests) - 1
-        if index < 3:
+        if index < 5:
             payload = json.loads(request.content)
-            key = ("image", "images", "image_url")[index]
+            key = ("image", "images", "image_url", "image", "images")[index]
             value = payload[key][0] if key == "images" else payload[key]
+            if isinstance(value, dict):
+                assert value["type"] == "image_url"
+                value = value["url"]
             assert base64.b64decode(value.split(",", 1)[1]) == inputs[0]
             return httpx.Response(422, json={"error": "multipart required"})
         assert b'name="image";' in request.content
@@ -520,7 +751,7 @@ async def test_legacy_single_edit_json_and_multipart_fallbacks(backend, ordered)
         assert await backend.edit(
             "edit", inputs, require_ordered_references=ordered
         ) == Path("saved.png")
-        assert len(requests) == 4
+        assert len(requests) == 6
         backend.imgr.save_image.assert_awaited_once_with(
             png("white"), output_format="jpeg"
         )

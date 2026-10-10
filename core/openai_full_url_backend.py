@@ -54,10 +54,15 @@ def _rewrite_loopback_ref(ref: str, endpoint_url: str) -> str:
     return r._replace(netloc=netloc).geturl()
 
 
-def _is_size_error(resp: httpx.Response) -> bool:
-    if resp.status_code not in {400, 422}:
+def _is_size_error(resp: httpx.Response, payload: dict[str, Any]) -> bool:
+    size = str(payload.get("size") or "").strip()
+    if resp.status_code not in {400, 422} or not size or size.lower() == "auto":
         return False
-    return "size" in (resp.text or "").lower()
+    detail = (resp.text or "")[:1000].lower()
+    return any(
+        term in detail
+        for term in ("size", "resolution", "dimension", "尺寸", "分辨率", size.lower())
+    )
 
 
 def _is_http_url(url: str) -> bool:
@@ -374,16 +379,13 @@ class OpenAIFullURLBackend:
         self, url: str, api_key: str, payload: dict[str, Any]
     ) -> httpx.Response:
         resp = await self._post_json(url, api_key, payload)
-        if (
-            _is_size_error(resp)
-            and payload.get("size")
-            and str(payload.get("size")).lower() != "auto"
-        ):
+        if _is_size_error(resp, payload):
             logger.info(
                 "[OpenAIFullURL] 上游拒绝 size=%s，改用 size=auto 重试",
                 payload.get("size"),
             )
-            resp = await self._post_json(url, api_key, dict(payload, size="auto"))
+            payload["size"] = "auto"
+            resp = await self._post_json(url, api_key, payload)
         return resp
 
     async def _post_multipart(
@@ -589,22 +591,23 @@ class OpenAIFullURLBackend:
 
         # Prefer JSON first (some gateways accept data:image), then fallback to multipart.
         response: httpx.Response | None = None
-        json_payloads = (
-            (dict(base_payload, images=data_urls),)
+        object_refs = [{"url": ref, "type": "image_url"} for ref in data_urls]
+        json_fields = (
+            ({"images": data_urls}, {"images": object_refs})
             if separate
             else (
-                dict(base_payload, image=data_urls[0]),
-                dict(base_payload, images=data_urls),
-                dict(base_payload, image_url=data_urls[0]),
-                dict(base_payload, image={"url": data_urls[0], "type": "image_url"}),
-                dict(
-                    base_payload,
-                    images=[{"url": data_urls[0], "type": "image_url"}],
-                ),
+                {"image": data_urls[0]},
+                {"images": data_urls},
+                {"image_url": data_urls[0]},
+                {"image": object_refs[0]},
+                {"images": object_refs},
             )
         )
-        for json_payload in json_payloads:
+        for fields in json_fields:
+            json_payload = dict(base_payload, **fields)
             resp = await self._post_json_size_fallback(endpoint, key, json_payload)
+            if json_payload.get("size") == "auto":
+                base_payload["size"] = "auto"
             response = resp
             if resp.status_code == 200:
                 break
@@ -614,7 +617,7 @@ class OpenAIFullURLBackend:
         if response is None:
             raise RuntimeError("改图请求未得到有效响应")
 
-        if response.status_code != 200:
+        if response.status_code in {400, 415, 422}:
             form_data = {
                 str(k): self._coerce_form_value(v) for k, v in base_payload.items()
             }
@@ -624,6 +627,14 @@ class OpenAIFullURLBackend:
                 data=form_data,
                 files=upload_files if separate else dict(upload_files),
             )
+            if _is_size_error(response, form_data):
+                form_data["size"] = "auto"
+                response = await self._post_multipart(
+                    endpoint,
+                    key,
+                    data=form_data,
+                    files=upload_files if separate else dict(upload_files),
+                )
 
         out = await self._save_response(response, endpoint_url=endpoint)
         logger.info("[OpenAIFullURL][edit] 耗时: %.2fs", time.perf_counter() - t0)

@@ -148,6 +148,34 @@ def _load_module():
 
 
 class ProviderRegistryRequestModeTests(unittest.TestCase):
+    def test_full_url_edit_model_schema_and_registry_wiring(self):
+        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+        items = schema["providers"]["templates"]["openai_full_url_images"]["items"]
+        self.assertEqual(items["edit_model"]["type"], "string")
+        self.assertEqual(items["edit_model"]["default"], "")
+        self.assertEqual(
+            list(items).index("edit_model"), list(items).index("supports_edit") + 1
+        )
+
+        mod = _load_module()
+        for edit_model in ("image-edit-model", ""):
+            with self.subTest(edit_model=edit_model):
+                conf = {
+                    "id": "images",
+                    "__template_key": "openai_full_url_images",
+                    "full_generate_url": "https://images.example/generate",
+                    "api_keys": ["offline-test"],
+                    "model": "image-model",
+                }
+                if edit_model:
+                    conf["edit_model"] = edit_model
+                registry = mod.ProviderRegistry(
+                    {"providers": [conf]}, imgr=object(), data_dir=ROOT
+                )
+                kwargs = registry.get_backend("images").kwargs
+                self.assertEqual(kwargs["default_model"], "image-model")
+                self.assertEqual(kwargs["default_edit_model"], edit_model)
+
     def test_provider_options_are_editable_and_common_protocols_come_first(self):
         schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
         templates = schema["providers"]["templates"]
