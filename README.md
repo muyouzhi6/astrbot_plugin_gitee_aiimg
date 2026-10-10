@@ -6,7 +6,7 @@
 
 自拍 · 合影 · 后台生图 · 视频 · 映像工作台
 
-[![Version](https://img.shields.io/badge/version-v5.7.3-287c78?style=flat-square)](CHANGELOG.md) [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.28.0%20%3C5-52646f?style=flat-square)](https://github.com/AstrBotDevs/AstrBot) [![CI](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml/badge.svg)](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml) [![QQ Group](https://img.shields.io/badge/QQ%E4%BA%A4%E6%B5%81%E7%BE%A4-215532038-267ac3?style=flat-square)](#交流与反馈)
+[![Version](https://img.shields.io/badge/version-v5.7.3-287c78?style=flat-square)](CHANGELOG.md) [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.8%20%3C5-52646f?style=flat-square)](https://github.com/AstrBotDevs/AstrBot) [![CI](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml/badge.svg)](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml) [![QQ Group](https://img.shields.io/badge/QQ%E4%BA%A4%E6%B5%81%E7%BE%A4-215532038-267ac3?style=flat-square)](#交流与反馈)
 
 [新手图解](docs/quickstart.md) · [特色功能](#特色功能) · [推荐服务商](#推荐服务商) · [出图展示](#出图展示) · [申请与配置教程](#申请与配置教程) · [更新日志](CHANGELOG.md)
 
@@ -16,7 +16,7 @@
 
 > **插件开发与交流 QQ 群: `215532038`** · [查看群二维码](#交流与反馈)
 >
-> 支持 `QQ / aiocqhttp` 和个人微信 `weixin_oc`. 需要 **AstrBot >=4.28.0 且 <5**.
+> 支持 `QQ / aiocqhttp` 和个人微信 `weixin_oc`. 需要 **AstrBot >=4.26.8 且 <5**.
 
 ## 特色功能
 

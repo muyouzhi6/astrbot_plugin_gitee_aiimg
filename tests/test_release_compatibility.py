@@ -1,9 +1,11 @@
 import importlib.metadata
 import os
+import re
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from urllib.parse import unquote
 
 import pytest
 from packaging.specifiers import SpecifierSet
@@ -20,6 +22,24 @@ def test_metadata_allows_deployment_astrbot_version(version):
     supported = SpecifierSet(declaration)
     assert supported.contains(version, prereleases=True)
     assert not supported.contains("5.0.0")
+
+
+def test_readme_astrbot_requirement_matches_metadata():
+    root = Path(__file__).parents[1]
+    metadata = (root / "metadata.yaml").read_text()
+    declaration = next(
+        line.split(":", 1)[1].strip().strip("\"'")
+        for line in metadata.splitlines()
+        if line.startswith("astrbot_version:")
+    )
+    minimum = next(
+        spec.version for spec in SpecifierSet(declaration) if spec.operator == ">="
+    )
+    readme = (root / "README.md").read_text()
+    badge = re.search(r"\[!\[AstrBot\]\(([^)]+)\)", readme)
+    assert badge is not None
+    assert f"AstrBot->={minimum} <5" in unquote(badge.group(1))
+    assert f"AstrBot >={minimum} 且 <5" in readme
 
 
 def test_real_astrbot_load_and_studio_api(tmp_path):

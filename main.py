@@ -1438,6 +1438,26 @@ class GiteeAIImagePlugin(Star):
             return f"{prefix}:{origin}:{mid}"
         return f"{prefix}:{user_id}"
 
+    def _is_duplicate_llm_image_call(self, event: AstrMessageEvent) -> bool:
+        """Keep one image tool event terminal after a slow or failed request."""
+        key = "_gitee_llm_image_request_handled"
+        getter = getattr(event, "get_extra", None)
+        setter = getattr(event, "set_extra", None)
+        if callable(getter) and getter(key, False):
+            return True
+        if callable(setter):
+            setter(key, True)
+
+        message_id = (
+            getattr(getattr(event, "message_obj", None), "message_id", "") or ""
+        )
+        origin = getattr(event, "unified_msg_origin", "") or ""
+        return bool(
+            message_id
+            and origin
+            and self.debouncer.llm_tool_is_duplicate(message_id, origin)
+        )
+
     async def _begin_user_job(self, user_id: str, *, kind: str) -> bool:
         user_id = str(user_id or "").strip()
         if not user_id:
@@ -3419,18 +3439,10 @@ class GiteeAIImagePlugin(Star):
         )
         if binding_error:
             return self._llm_tool_text_result(binding_error)
-        # === TTL 去重检查（防止 ToolLoop 重复调用）===
-        message_id = (
-            getattr(getattr(event, "message_obj", None), "message_id", "") or ""
-        )
-        origin = getattr(event, "unified_msg_origin", "") or ""
-        if message_id and origin:
-            if self.debouncer.llm_tool_is_duplicate(message_id, origin):
-                logger.debug(f"[aiimg_generate] 重复调用已拦截: msg_id={message_id}")
-                await mark_success(event)
-                return self._llm_tool_text_result(
-                    "This image request was already handled for the same message. Do not run it again."
-                )
+        if self._is_duplicate_llm_image_call(event):
+            return self._llm_tool_text_result(
+                "This image request was already handled for the same message. Do not run it again."
+            )
 
         user_id = str(event.get_sender_id() or "")
         request_id = self._debounce_key(event, "aiimg", user_id)
@@ -3890,16 +3902,7 @@ class GiteeAIImagePlugin(Star):
                     "The requested batch selfie image tool is disabled by plugin configuration."
                 )
 
-        message_id = (
-            getattr(getattr(event, "message_obj", None), "message_id", "") or ""
-        )
-        origin = getattr(event, "unified_msg_origin", "") or ""
-        if (
-            message_id
-            and origin
-            and self.debouncer.llm_tool_is_duplicate(message_id, origin)
-        ):
-            await mark_success(event)
+        if self._is_duplicate_llm_image_call(event):
             return self._llm_tool_text_result(
                 "This batch image request was already handled for the same message. Do not run it again."
             )
