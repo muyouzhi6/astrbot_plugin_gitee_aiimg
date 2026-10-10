@@ -248,6 +248,9 @@ def _extract_image_ref(data: Any) -> str | None:
 class OpenAIFullURLBackend:
     """OpenAI-compatible image backend using user-provided full endpoint URLs."""
 
+    # The router opts into separate images when reference roles require ordering.
+    supports_ordered_references = True
+
     def __init__(
         self,
         *,
@@ -388,7 +391,8 @@ class OpenAIFullURLBackend:
         url: str,
         api_key: str,
         data: dict[str, str],
-        files: dict[str, tuple[str, bytes, str]],
+        files: dict[str, tuple[str, bytes, str]]
+        | list[tuple[str, tuple[str, bytes, str]]],
     ) -> httpx.Response:
         client = self._get_client()
         attempts = self.max_retries + 1
@@ -537,6 +541,7 @@ class OpenAIFullURLBackend:
         size: str | None = None,
         resolution: str | None = None,
         extra_body: dict | None = None,
+        require_ordered_references: bool = False,
     ) -> Path:
         if not self.supports_edit:
             raise RuntimeError("该后端不支持改图/图生图")
@@ -554,10 +559,18 @@ class OpenAIFullURLBackend:
             raise RuntimeError("未配置 model")
 
         final_size = self._resolve_size(size, resolution)
-        merged_img = _build_collage(images)
-        mime, ext = guess_image_mime_and_ext(merged_img)
-        b64 = base64.b64encode(merged_img).decode("utf-8")
-        data_url = f"data:{mime};base64,{b64}"
+        separate = require_ordered_references and len(images) > 1
+        upload_images = images if separate else [_build_collage(images)]
+        data_urls = []
+        upload_files = []
+        for index, image in enumerate(upload_images):
+            mime, ext = guess_image_mime_and_ext(image)
+            b64 = base64.b64encode(image).decode("utf-8")
+            data_urls.append(f"data:{mime};base64,{b64}")
+            filename = f"image_{index}.{ext}" if separate else f"image.{ext}"
+            upload_files.append(
+                ("image[]" if separate else "image", (filename, image, mime))
+            )
 
         base_payload: dict[str, Any] = {
             "model": final_model,
@@ -566,19 +579,31 @@ class OpenAIFullURLBackend:
         if final_size:
             base_payload["size"] = final_size
         base_payload = self._merge_payload(base_payload, extra_body)
+        if separate:
+            # Reference inputs come from the request, never from extra_body.
+            for field in ("image", "images", "image_url", "image[]"):
+                base_payload.pop(field, None)
 
         key = self._next_key()
         t0 = time.perf_counter()
 
         # Prefer JSON first (some gateways accept data:image), then fallback to multipart.
         response: httpx.Response | None = None
-        for json_payload in (
-            dict(base_payload, image=data_url),
-            dict(base_payload, images=[data_url]),
-            dict(base_payload, image_url=data_url),
-            dict(base_payload, image={"url": data_url, "type": "image_url"}),
-            dict(base_payload, images=[{"url": data_url, "type": "image_url"}]),
-        ):
+        json_payloads = (
+            (dict(base_payload, images=data_urls),)
+            if separate
+            else (
+                dict(base_payload, image=data_urls[0]),
+                dict(base_payload, images=data_urls),
+                dict(base_payload, image_url=data_urls[0]),
+                dict(base_payload, image={"url": data_urls[0], "type": "image_url"}),
+                dict(
+                    base_payload,
+                    images=[{"url": data_urls[0], "type": "image_url"}],
+                ),
+            )
+        )
+        for json_payload in json_payloads:
             resp = await self._post_json_size_fallback(endpoint, key, json_payload)
             response = resp
             if resp.status_code == 200:
@@ -597,7 +622,7 @@ class OpenAIFullURLBackend:
                 endpoint,
                 key,
                 data=form_data,
-                files={"image": (f"image.{ext}", merged_img, mime)},
+                files=upload_files if separate else dict(upload_files),
             )
 
         out = await self._save_response(response, endpoint_url=endpoint)

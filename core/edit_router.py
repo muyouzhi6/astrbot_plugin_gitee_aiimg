@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from collections.abc import Iterable
 from pathlib import Path
@@ -214,6 +215,12 @@ class EditRouter:
                     edit_fn = getattr(backend_obj, "edit", None)
                     if not callable(edit_fn):
                         raise RuntimeError("Provider does not support edit()")
+                    if (
+                        require_ordered_references
+                        and "require_ordered_references"
+                        in inspect.signature(edit_fn).parameters
+                    ):
+                        output_kwargs["require_ordered_references"] = True
                     if isinstance(backend_obj, GiteeEditBackend):
                         result = await backend_obj.edit(
                             prompt, images, task_types=final_task_types

@@ -1,8 +1,24 @@
+"""Images URL compatibility through the real router and HTTP serialization."""
+
+import asyncio
+import base64
+import importlib.util
+import io
 import json
 import logging
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import httpx
+import pytest
+from PIL import Image
+
+from test_main_initialize_request_mode import _load_module as _load_main
+from test_output_routing import _load_module, _Registry
+from test_output_routing import modules as modules
 
 if "astrbot.api" not in sys.modules:
     _astrbot = sys.modules.setdefault("astrbot", types.ModuleType("astrbot"))
@@ -10,9 +26,6 @@ if "astrbot.api" not in sys.modules:
     _api.logger = logging.getLogger("test")
     _astrbot.api = _api
     sys.modules["astrbot.api"] = _api
-
-import httpx
-import pytest
 
 from core.openai_full_url_backend import OpenAIFullURLBackend, _rewrite_loopback_ref
 
@@ -158,3 +171,385 @@ def test_rewrite_loopback_ref(ref, endpoint, expected):
 def test_registry_passes_edit_model():
     src = (Path(__file__).parents[1] / "core" / "provider_registry.py").read_text()
     assert 'default_edit_model=str(conf.get("edit_model") or "").strip()' in src
+
+
+@pytest.fixture
+def runtime(monkeypatch, tmp_path):
+    main, _ = _load_main()
+    spec = importlib.util.spec_from_file_location(
+        "issue_debouncer", Path(__file__).resolve().parents[1] / "core/debouncer.py"
+    )
+    debouncer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(debouncer)
+    plugin = main.GiteeAIImagePlugin(
+        SimpleNamespace(),
+        {"features": {"draw": {"enabled": True, "llm_tool_enabled": True}}},
+    )
+    plugin.data_dir = tmp_path
+    plugin.debouncer = debouncer.Debouncer(plugin.config)
+    plugin.registry = SimpleNamespace(provider_ids=lambda: ["images"])
+    plugin._concurrency_lock = asyncio.Lock()
+    plugin._image_inflight = {}
+    plugin._video_inflight = {}
+    plugin.draw = SimpleNamespace(
+        generate=AsyncMock(side_effect=RuntimeError("HTTP 503"))
+    )
+    plugin._signal_llm_tool_failure = AsyncMock()
+    plugin._has_message_images = AsyncMock(return_value=False)
+    plugin._save_last_image_task_meta = AsyncMock()
+    for name in ("mark_processing", "mark_success", "mark_failed"):
+        monkeypatch.setattr(main, name, AsyncMock())
+    return main, plugin, debouncer
+
+
+def png(color):
+    output = io.BytesIO()
+    Image.new("RGB", (4, 3), color).save(output, format="PNG")
+    return output.getvalue()
+
+
+@pytest.fixture
+def backend(modules):
+    mod = _load_module("openai_full_url_backend")
+    imgr = SimpleNamespace(
+        save_image=AsyncMock(return_value=Path("saved.png")),
+        download_image=AsyncMock(return_value=Path("saved.png")),
+    )
+    return mod.OpenAIFullURLBackend(
+        imgr=imgr,
+        full_generate_url="https://images.example/custom/generate",
+        full_edit_url="https://images.example/custom/edit",
+        api_keys=["offline-test"],
+        default_model="image-model",
+        max_retries=0,
+    )
+
+
+def router(modules, backend):
+    return modules[2].EditRouter(
+        {"features": {"edit": {"chain": ["images"]}}},
+        imgr=backend.imgr,
+        data_dir=Path("."),
+        registry=_Registry({"images": backend}),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("multipart", [False, True])
+async def test_39_router_preserves_separate_ordered_references(
+    modules, backend, multipart
+):
+    inputs = [png("red"), png("blue"), png("green")]
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        assert request.url.path == "/custom/edit"
+        if request.headers["content-type"].startswith("application/json"):
+            payload = json.loads(request.content)
+            assert payload["model"] == "image-model"
+            assert payload["size"] == "1024x1024"
+            assert [
+                base64.b64decode(ref.split(",", 1)[1]) for ref in payload["images"]
+            ] == inputs
+            assert "image" not in payload and "image_url" not in payload
+            if multipart:
+                return httpx.Response(415, json={"error": "multipart required"})
+        else:
+            assert request.content.count(b'name="image[]";') == 3
+            offsets = [request.content.index(raw) for raw in inputs]
+            assert offsets == sorted(offsets)
+        return httpx.Response(200, json={"data": [{"url": "/output/result.png"}]})
+
+    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    try:
+        result = await router(modules, backend).edit(
+            "图一人物穿图二服装，图三背景",
+            inputs,
+            size="1024x1024",
+            require_ordered_references=True,
+        )
+        assert result == Path("saved.png")
+        assert len(requests) == (2 if multipart else 1)
+        backend.imgr.download_image.assert_awaited_once_with(
+            "https://images.example/output/result.png", output_format="jpeg"
+        )
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [1, 3])
+async def test_legacy_edit_keeps_existing_single_image_payload(backend, count):
+    inputs = [png("red")] * count
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        payload = json.loads(request.content)
+        assert "image" in payload and "images" not in payload
+        data = base64.b64decode(payload["image"].split(",", 1)[1])
+        with Image.open(io.BytesIO(data)) as decoded:
+            assert decoded.width > 0
+        if count == 1:
+            assert data == inputs[0]
+        return httpx.Response(
+            200, content=png("white"), headers={"content-type": "image/png"}
+        )
+
+    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    try:
+        assert await backend.edit("edit", inputs) == Path("saved.png")
+        assert len(requests) == 1
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 415, 422, 401, 429, 500])
+async def test_39_failed_ordered_upload_never_collages_or_drops_references(
+    modules, backend, status
+):
+    inputs = [png("red"), png("blue")]
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if "json" in request.headers["content-type"]:
+            assert len(json.loads(request.content)["images"]) == 2
+        else:
+            assert request.content.count(b'name="image[]";') == 2
+            assert all(raw in request.content for raw in inputs)
+        return httpx.Response(status, json={"error": "offline rejection"})
+
+    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    try:
+        with pytest.raises(RuntimeError, match=f"HTTP {status}"):
+            await router(modules, backend).edit(
+                "edit", inputs, require_ordered_references=True
+            )
+        assert len(requests) == 2
+        backend.imgr.save_image.assert_not_awaited()
+        backend.imgr.download_image.assert_not_awaited()
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case", ["empty", "disabled", "missing_endpoint", "missing_model", "missing_key"]
+)
+async def test_39_invalid_edit_inputs_stop_before_http(backend, case):
+    inputs = [png("red"), png("blue")]
+    if case == "empty":
+        inputs = []
+    elif case == "disabled":
+        backend.supports_edit = False
+    elif case == "missing_endpoint":
+        backend.full_edit_url = backend.full_generate_url = ""
+    elif case == "missing_model":
+        backend.default_model = ""
+    else:
+        backend.api_keys = []
+    with pytest.raises((ValueError, RuntimeError)):
+        await backend.edit("edit", inputs, require_ordered_references=True)
+    assert backend._client is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "https://cdn.example/result.png",
+        "http://cdn.example/result.png",
+        "/output/result.png",
+        "data:image/png;base64," + base64.b64encode(png("red")).decode(),
+    ],
+)
+async def test_21_full_url_response_schemes_are_saved_locally(backend, ref):
+    response = httpx.Response(200, json={"data": [{"url": ref}]})
+    result = await backend._save_response(
+        response, endpoint_url=backend.full_generate_url
+    )
+    assert result == Path("saved.png")
+    if ref.startswith("data:"):
+        backend.imgr.save_image.assert_awaited_once_with(
+            png("red"), output_format="jpeg"
+        )
+        backend.imgr.download_image.assert_not_awaited()
+    else:
+        expected = "https://images.example" + ref if ref.startswith("/") else ref
+        backend.imgr.download_image.assert_awaited_once_with(
+            expected, output_format="jpeg"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "",
+        "ftp://cdn.example/result.png",
+        "file:///missing.png",
+        "data:image/png;base64,???",
+    ],
+)
+async def test_21_invalid_response_references_fail_without_download(backend, ref):
+    with pytest.raises(RuntimeError):
+        await backend._save_response(
+            httpx.Response(200, json={"data": [{"url": ref}]}),
+            endpoint_url=backend.full_generate_url,
+        )
+    backend.imgr.download_image.assert_not_awaited()
+    backend.imgr.save_image.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [2, 8])
+@pytest.mark.parametrize(
+    "outcome", ["json", "multipart", "rejected", "timeout", "malformed"]
+)
+async def test_39_llm_entry_routes_explicit_references_in_order(
+    runtime, modules, backend, monkeypatch, count, outcome
+):
+    from test_background_pipeline_event import _Event
+
+    main, plugin, _ = runtime
+    inputs = [png((index * 20, 30, 40)) for index in range(count)]
+    selection = main.ReferenceSelection(
+        images=tuple(inputs),
+        sources=tuple(
+            {"id": f"ca_{index}", "role": "subject"} for index in range(count)
+        ),
+    )
+    plugin._prepare_context_reference_request = AsyncMock(return_value=selection)
+    plugin._image_segs_to_bytes = AsyncMock(return_value=[])
+    monkeypatch.setattr(main, "get_images_from_event", AsyncMock(return_value=[]))
+    plugin.edit = router(modules, backend)
+    plugin._finalize_llm_tool_image = AsyncMock(return_value="delivered")
+    backend.extra_body = {
+        "image": "stale",
+        "images": ["stale"],
+        "image_url": "stale",
+        "image[]": "stale",
+        "quality": "high",
+    }
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        assert b"stale" not in request.content
+        if "json" in request.headers["content-type"]:
+            payload = json.loads(request.content)
+            assert [
+                base64.b64decode(ref.split(",", 1)[1]) for ref in payload["images"]
+            ] == inputs
+            assert not {"image", "image_url", "image[]"}.intersection(payload)
+            assert payload["quality"] == "high"
+            if outcome == "multipart":
+                return httpx.Response(415, json={"error": "multipart required"})
+        else:
+            assert request.content.count(b'name="image[]";') == count
+            offsets = [request.content.index(raw) for raw in inputs]
+            assert offsets == sorted(offsets)
+            assert b'name="quality"\r\n\r\nhigh' in request.content
+        if outcome == "rejected":
+            return httpx.Response(500, json={"error": "offline rejection"})
+        if outcome == "timeout":
+            raise httpx.ReadTimeout("offline timeout", request=request)
+        if outcome == "malformed":
+            return httpx.Response(200, json={"data": []})
+        return httpx.Response(
+            200, content=png("white"), headers={"content-type": "image/png"}
+        )
+
+    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    try:
+        event = _Event()
+        result = await plugin.aiimg_generate(
+            event,
+            "按参考图次序合成",
+            mode="edit",
+            reference_image_ids=[f"ca_{index}" for index in range(count)],
+            reference_roles=["subject"] * count,
+        )
+        assert len(requests) == (2 if outcome in {"multipart", "rejected"} else 1)
+        if outcome in {"json", "multipart"}:
+            assert result == "delivered"
+            plugin._finalize_llm_tool_image.assert_awaited_once()
+            assert plugin._finalize_llm_tool_image.call_args.args[1] == Path(
+                "saved.png"
+            )
+            plugin._signal_llm_tool_failure.assert_not_awaited()
+        else:
+            assert result.content
+            plugin._finalize_llm_tool_image.assert_not_awaited()
+            plugin._signal_llm_tool_failure.assert_awaited_once()
+            backend.imgr.save_image.assert_not_awaited()
+            backend.imgr.download_image.assert_not_awaited()
+        plugin.draw.generate.assert_not_awaited()
+        assert plugin._image_inflight == {}
+        assert not event.get_extra("_gitee_image_reference_call_active")
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ordered", [False, True])
+async def test_legacy_single_edit_json_and_multipart_fallbacks(backend, ordered):
+    inputs = [png("red")]
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        index = len(requests) - 1
+        if index < 3:
+            payload = json.loads(request.content)
+            key = ("image", "images", "image_url")[index]
+            value = payload[key][0] if key == "images" else payload[key]
+            assert base64.b64decode(value.split(",", 1)[1]) == inputs[0]
+            return httpx.Response(422, json={"error": "multipart required"})
+        assert b'name="image";' in request.content
+        assert inputs[0] in request.content
+        return httpx.Response(
+            200, json={"data": [{"b64_json": base64.b64encode(png("white")).decode()}]}
+        )
+
+    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    try:
+        assert await backend.edit(
+            "edit", inputs, require_ordered_references=ordered
+        ) == Path("saved.png")
+        assert len(requests) == 4
+        backend.imgr.save_image.assert_awaited_once_with(
+            png("white"), output_format="jpeg"
+        )
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_generate_keeps_custom_endpoint_size_and_extra_body(backend):
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        assert request.url.path == "/custom/generate"
+        assert json.loads(request.content) == {
+            "model": "image-model",
+            "prompt": "a cat",
+            "size": "2048x2048",
+            "quality": "high",
+        }
+        return httpx.Response(
+            200, json={"data": [{"url": "https://cdn.example/result.png"}]}
+        )
+
+    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    try:
+        assert await backend.generate(
+            "a cat", resolution="2K", extra_body={"quality": "high"}
+        ) == Path("saved.png")
+        assert len(requests) == 1
+    finally:
+        await backend.close()

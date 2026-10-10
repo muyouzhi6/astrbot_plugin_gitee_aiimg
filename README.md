@@ -6,7 +6,7 @@
 
 自拍 · 合影 · 后台生图 · 视频 · 映像工作台
 
-[![Version](https://img.shields.io/badge/version-v5.7.0-287c78?style=flat-square)](CHANGELOG.md) [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.28.0%20%3C5-52646f?style=flat-square)](https://github.com/AstrBotDevs/AstrBot) [![CI](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml/badge.svg)](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml) [![QQ Group](https://img.shields.io/badge/QQ%E4%BA%A4%E6%B5%81%E7%BE%A4-215532038-267ac3?style=flat-square)](#交流与反馈)
+[![Version](https://img.shields.io/badge/version-v5.7.3-287c78?style=flat-square)](CHANGELOG.md) [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.28.0%20%3C5-52646f?style=flat-square)](https://github.com/AstrBotDevs/AstrBot) [![CI](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml/badge.svg)](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml) [![QQ Group](https://img.shields.io/badge/QQ%E4%BA%A4%E6%B5%81%E7%BE%A4-215532038-267ac3?style=flat-square)](#交流与反馈)
 
 [新手图解](docs/quickstart.md) · [特色功能](#特色功能) · [推荐服务商](#推荐服务商) · [出图展示](#出图展示) · [申请与配置教程](#申请与配置教程) · [更新日志](CHANGELOG.md)
 
@@ -78,6 +78,8 @@
 | 二次元、插画、文生图与改图   | GPT Image 全系列, 包括 `gpt-image-2`、`gpt-image-2.5-flare` 和 `gpt-image-2.5-sunburst`, **统一使用 OpenAI Images 模板**. |
 
 教程提供 **美年达香蕉** 与 **美年达 GPT Image** 两套配置示例, 可分别加入自拍、改图和文生图链路.
+
+使用完整接口地址时, 可选择 **Images URL** 模板. 多人合影或按用途选定多张参考图时, 按顺序逐张传输身份、服装等参考图; 支持 JSON 数组和 multipart 协议. 普通多图改图继续使用拼图, 单图沿用原有协议探测.
 
 [注册美年达](https://meinianda.top/sign-up?aff=Qs4O) · [查看 Bot 自拍成片](#美年达-gemini-自拍) · [原生配置图解](docs/quickstart.md) · [申请 Key 与两套配置示例](docs/providers.md#美年达)
 
