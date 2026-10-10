@@ -723,6 +723,132 @@ async def test_39_llm_entry_routes_explicit_references_in_order(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("background", [False, True])
+@pytest.mark.parametrize("reference_count,extra_count", [(2, 0), (8, 0), (1, 1)])
+@pytest.mark.parametrize("protocol", ["json", "object", "multipart", "rejected"])
+async def test_39_fixed_selfie_references_without_history_keep_order(
+    runtime,
+    modules,
+    backend,
+    monkeypatch,
+    tmp_path,
+    background,
+    reference_count,
+    extra_count,
+    protocol,
+):
+    from test_background_pipeline_event import _Event, _target
+
+    main, plugin, _ = runtime
+    inputs = [
+        png((index * 20, 30, 40)) for index in range(reference_count + extra_count)
+    ]
+    references = []
+    for index, data in enumerate(inputs[:reference_count]):
+        path = tmp_path / f"reference-{index}.png"
+        path.write_bytes(data)
+        references.append(path)
+    plugin.config["features"]["selfie"] = {"enabled": True, "llm_tool_enabled": True}
+    plugin._get_selfie_reference_paths = AsyncMock(return_value=(references, "webui"))
+    plugin._get_life_context_without_llm = AsyncMock(return_value={})
+    plugin._image_segs_to_bytes = AsyncMock(return_value=inputs[reference_count:])
+    monkeypatch.setattr(main, "get_images_from_event", AsyncMock(return_value=[]))
+    plugin.edit = router(modules, backend)
+    requests = []
+    validated_requests = []
+
+    def respond(request):
+        requests.append(request)
+        if "json" in request.headers["content-type"]:
+            payload = json.loads(request.content)
+            assert "images" in payload, "selfie references were collapsed to one image"
+            refs = payload["images"]
+            assert [
+                base64.b64decode(
+                    (ref["url"] if isinstance(ref, dict) else ref).split(",", 1)[1]
+                )
+                for ref in refs
+            ] == inputs
+            validated_requests.append(request)
+            if protocol == "multipart" or (
+                protocol == "object" and not isinstance(refs[0], dict)
+            ):
+                return httpx.Response(415, json={"error": "unsupported image format"})
+        else:
+            assert protocol == "multipart"
+            assert request.content.count(b'name="image[]";') == len(inputs)
+            offsets = [request.content.index(raw) for raw in inputs]
+            assert offsets == sorted(offsets)
+            validated_requests.append(request)
+        if protocol == "rejected":
+            return httpx.Response(500, json={"error": "offline rejection"})
+        return httpx.Response(
+            200, content=png("white"), headers={"content-type": "image/png"}
+        )
+
+    backend._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    manager = None
+    try:
+        event = _Event()
+        assert plugin._context_selection(event) is None
+        if background:
+            manager = main.BackgroundImageTaskManager(
+                tmp_path / "queue", heartbeat_seconds=60
+            )
+            await manager.start()
+            plugin._background_manager_for_event = lambda event: manager
+            plugin._build_background_delivery_target = AsyncMock(
+                return_value=_target(main)
+            )
+            factories, jobs = [], []
+            manager.start_worker = lambda task_id, factory: factories.append(factory)
+
+            async def capture_job(manager, task_id, job, target, **kwargs):
+                jobs.append(job)
+
+            plugin._run_background_single = capture_job
+            receipt = await plugin._accept_background_single(
+                event,
+                prompt="自然自拍",
+                mode="selfie_ref",
+                backend="auto",
+                output="",
+                aspect_ratio="",
+                resolution="",
+            )
+            assert json.loads(receipt.content[0].text)["status"] == "accepted"
+            await factories[0]()
+            # The queued task must use the frozen references without an old event.
+            for path in references:
+                path.unlink()
+            event._extras.clear()
+            assert not jobs[0].task_meta.get("reference_sources")
+            generate = plugin._execute_prepared_image_job(manager, jobs[0])
+        else:
+            generate = plugin._generate_selfie_image_with_meta(event, "自然自拍", None)
+        if protocol == "rejected":
+            with pytest.raises(RuntimeError):
+                await generate
+            backend.imgr.save_image.assert_not_awaited()
+            backend.imgr.download_image.assert_not_awaited()
+        else:
+            result, meta = await generate
+            assert result == Path("saved.png")
+            assert meta["reference_count"] == reference_count
+            assert meta["extra_reference_count"] == extra_count
+        assert (
+            len(requests)
+            == {"json": 1, "object": 2, "multipart": 3, "rejected": 1}[protocol]
+        )
+        assert validated_requests == requests
+        plugin.draw.generate.assert_not_awaited()
+    finally:
+        await backend.close()
+        if manager:
+            await manager.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("ordered", [False, True])
 async def test_legacy_single_edit_json_and_multipart_fallbacks(backend, ordered):
     inputs = [png("red")]

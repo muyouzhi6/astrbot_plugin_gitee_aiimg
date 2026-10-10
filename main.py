@@ -4839,7 +4839,7 @@ class GiteeAIImagePlugin(Star):
                 images=images,
                 **(
                     {"require_ordered_references": True}
-                    if job.task_meta.get("reference_sources")
+                    if job.task_meta.get("reference_sources") or len(images) > 1
                     else {}
                 ),
                 backend=job.backend,
@@ -7421,7 +7421,11 @@ class GiteeAIImagePlugin(Star):
         image_path = await self.edit.edit(
             prompt=final_prompt,
             images=images,
-            **({"require_ordered_references": True} if selection else {}),
+            **(
+                {"require_ordered_references": True}
+                if selection or len(images) > 1
+                else {}
+            ),
             backend=backend,
             task_types=gitee_task_types,
             size=size,

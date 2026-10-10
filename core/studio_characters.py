@@ -20,7 +20,9 @@ def character_request_error(catalog, ids, *, message, prompt, mode, reference_ro
     text = "，".join(
         clause
         for clause in re.split(r"[,，。;；!?！？\n]", text)
-        if not re.search(r"(?:不要|别|不用|不需要|不想).*(?:拍|照|同框|入镜)", clause)
+        if not re.search(
+            r"(?:不要|别(?!忘)|不用|不需要|不想).*(?:拍|照|同框|入镜)", clause
+        )
     )
     group = bool(re.search(r"合照|合影|同框|一起拍|我们俩|我俩|咱俩", text))
     named = {
@@ -70,7 +72,7 @@ def character_request_error(catalog, ids, *, message, prompt, mode, reference_ro
         and bool(re.search(r"改|换|修|调整|编辑", text))
     )
     if not ids:
-        if required or (people_group and not image_edit):
+        if not image_edit and (required or people_group):
             return (
                 "尚未开始生成. 请补充全部出镜人物的 character_ids 后重新调用: "
                 "仅拍发言者用 [me], Bot 与发言者合照用 [self,me], 指定他人用人物 ID. "
