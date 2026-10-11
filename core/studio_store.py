@@ -117,7 +117,71 @@ class StudioStore:
 
     @staticmethod
     def public_asset(data):
-        return {k: v for k, v in data.items() if k != "file"}
+        return {k: v for k, v in data.items() if k not in {"file", "reference_origin"}}
+
+    def sync_references(self, sources):
+        """Project live sources into the gallery; keep displaced snapshots intact."""
+        with self.media_lock:
+            with self.connect() as db:
+                previous = [
+                    json.loads(row[0])
+                    for row in db.execute(
+                        "SELECT data FROM assets WHERE kind='reference'"
+                    )
+                    if not json.loads(row[0]).get("deleted_at")
+                ]
+            active = []
+            used = set()
+            for origin, path, label in sources:
+                try:
+                    if path.stat().st_size > 20 * 1024 * 1024:
+                        continue
+                    blob = path.read_bytes()
+                    digest = hashlib.sha256(blob).hexdigest()
+                    asset = next(
+                        (
+                            a
+                            for a in previous
+                            if a["id"] not in used
+                            and a["sha256"] == digest
+                            and (
+                                a.get("reference_origin") == origin
+                                or not a.get("reference_origin")
+                            )
+                        ),
+                        None,
+                    )
+                    if asset is None:
+                        created = self.add_image(blob, kind="reference")
+                        asset = self.asset(created["id"])
+                except (ValueError, OSError, Image.DecompressionBombError):
+                    continue
+                asset.update(
+                    reference_origin=origin,
+                    reference_label=label,
+                    name=path.name,
+                    version=digest,
+                )
+                active.append(asset)
+                used.add(asset["id"])
+            with self.connect() as db:
+                for asset in previous:
+                    if asset["id"] not in used:
+                        # Existing canvases, characters and jobs keep their snapshot.
+                        asset.update(kind="upload", reference_archive=True)
+                        db.execute(
+                            "UPDATE assets SET kind=?,data=? WHERE id=?",
+                            (
+                                "upload",
+                                json.dumps(asset, ensure_ascii=False),
+                                asset["id"],
+                            ),
+                        )
+                db.executemany(
+                    "UPDATE assets SET data=? WHERE id=?",
+                    [(json.dumps(a, ensure_ascii=False), a["id"]) for a in active],
+                )
+            return active
 
     def asset(self, asset_id, *, include_deleted=False):
         with self.connect() as db:
@@ -212,6 +276,7 @@ class StudioStore:
                 bool(
                     a.get("favorite")
                     or a["kind"] == "reference"
+                    or a.get("reference_archive")
                     or a["id"] in protected
                 )
                 for a in assets
@@ -341,6 +406,7 @@ class StudioStore:
             for a in assets
             if not a.get("favorite")
             and a["kind"] != "reference"
+            and not a.get("reference_archive")
             and a["id"] not in protected
             and a["created"] <= time.time() - 300
         ][:excess]
@@ -486,24 +552,8 @@ class StudioStore:
         if self.document("migration", "legacy-v1"):
             return
         root = Path(data_dir).resolve()
-        ref_paths = set()
-        for value in configured_refs:
-            path = (root / str(value)).resolve()
-            if path.is_relative_to(root) and path.is_file():
-                ref_paths.add(path)
-        index = root / "refs/index.json"
-        if index.is_file():
-            for files in json.loads(index.read_text(encoding="utf-8-sig")).values():
-                for filename in files:
-                    path = (root / "refs" / filename).resolve()
-                    if path.is_relative_to(root / "refs") and path.is_file():
-                        ref_paths.add(path)
-        for path in sorted(ref_paths):
-            self.add_image(
-                path.read_bytes(),
-                kind="reference",
-                metadata={"name": path.stem, "source": "legacy"},
-            )
+        # References are reconciled by StudioReferences from live configuration
+        # and refs/index.json, including installations with legacy-v1 already set.
         # Old caches have no trustworthy prompt-to-file index. Label them honestly.
         for path in sorted(
             (root / "images").glob("*"), key=lambda p: p.stat().st_mtime, reverse=True

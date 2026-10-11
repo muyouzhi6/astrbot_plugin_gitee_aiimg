@@ -28,6 +28,7 @@ from .studio_characters import (
 from .studio_store import StudioConflict, StudioStore
 from .studio_workflows import StudioWorkflows, request_key
 from .studio_graph import StudioGraph, NODE_TYPES
+from .studio_references import StudioReferences, MAX_REFERENCE_BYTES
 
 MASK = "******** (已保存)"
 SECRET = re.compile(r"api.?key|token|password|secret|cookie|authorization", re.I)
@@ -77,6 +78,7 @@ class Studio:
         self.workflows = StudioWorkflows(self)
         self.graphs = StudioGraph(self)
         self.retention_task = None
+        self.references = StudioReferences(self)
 
     async def start(self):
         self.workflows.recover()
@@ -87,6 +89,7 @@ class Studio:
             self.plugin.data_dir,
             self.plugin._get_selfie_conf().get("reference_images", []),
         )
+        await self.references.sync()
         if self.plugin.background_tasks is None and not self.plugin._get_feature(
             "background_llm_image"
         ).get("enabled", False):
@@ -101,6 +104,8 @@ class Studio:
             "library",
             "asset",
             "upload",
+            "reference-upload",
+            "reference-delete",
             "character",
             "appearance",
             "workspace",
@@ -717,11 +722,14 @@ class Studio:
             body = (
                 await request.json()
                 if request.method == "POST"
+                and action not in {"upload", "reference-upload"}
                 else dict(request.query.items())
             )
             body = body or {}
             writes = {
                 "upload",
+                "reference-upload",
+                "reference-delete",
                 "character",
                 "appearance",
                 "workspace",
@@ -761,19 +769,47 @@ class Studio:
             elif action == "models":
                 result = await self.models(body)
             elif action == "library":
-                result = self.store.list_assets(
-                    kind=body.get("kind", ""), offset=body.get("offset", 0)
-                )
+                async with self.lock:
+                    await self.references.sync()
+                    result = self.store.list_assets(
+                        kind=body.get("kind", ""), offset=body.get("offset", 0)
+                    )
+            elif action == "reference-upload":
+                files = await request.files()
+                upload = files.get("file")
+                if not upload:
+                    raise ValueError("请选择图片")
+                blob = await upload.read(MAX_REFERENCE_BYTES + 1)
+                async with self.lock:
+                    result = await self.references.change(
+                        [body["id"]] if body.get("id") else [], blob=blob
+                    )
+            elif action == "reference-delete":
+                async with self.lock:
+                    self.store.validate_asset_ids(body["ids"])
+                    result = await self.references.change(body["ids"])
             elif action == "favorite":
                 async with self.lock:
                     result = self.store.favorite(body["ids"], body["value"])
             elif action == "delete-assets":
                 async with self.lock:
-                    result = await asyncio.to_thread(
-                        self.store.delete_assets,
-                        body["ids"],
-                        extra=await self.protected_assets(),
+                    self.store.validate_asset_ids(body["ids"])
+                    active = {a["id"] for a in await self.references.sync()}
+                    refs = [key for key in body["ids"] if key in active]
+                    others = [key for key in body["ids"] if key not in active]
+                    result = (
+                        await self.references.change(refs)
+                        if refs
+                        else {"deleted": [], "skipped": []}
                     )
+                    if others:
+                        removed = await asyncio.to_thread(
+                            self.store.delete_assets,
+                            others,
+                            extra=await self.protected_assets(),
+                        )
+                        result["deleted"].extend(removed["deleted"])
+                        result["skipped"].extend(removed["skipped"])
             elif action == "storage":
                 async with self.lock:
                     if request.method == "POST":
@@ -978,7 +1014,12 @@ class Studio:
                 result = await self.manager.cancel_task(
                     body["task_id"], "工作台取消任务", suppress_future_injection=True
                 )
-            return json_response({"status": "ok", "data": {"ok": True, "data": result}})
+            response = json_response(
+                {"status": "ok", "data": {"ok": True, "data": result}}
+            )
+            if action in {"library", "asset", "reference-upload", "reference-delete"}:
+                response.headers["Cache-Control"] = "no-store"
+            return response
         except (ValueError, KeyError) as exc:
             return json_response(
                 {

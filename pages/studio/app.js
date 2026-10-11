@@ -666,7 +666,9 @@ async function act(action, el) {
     pickCallback = null;
   }
   if (action === "upload") {
-    document.querySelector("#upload").click();
+    if (state.page === "gallery" && state.kind === "reference" && !pickCallback)
+      await library.action("lib-upload", el);
+    else document.querySelector("#upload").click();
   }
   if (action === "gallery-kind") {
     state.kind = el.dataset.kind;
@@ -1355,6 +1357,22 @@ document.addEventListener("keydown", (e) => {
   }
   if (state.page === "workspace" && e.key === "Delete") canvas.mutate("remove");
 });
+let refreshingReferences = false;
+async function refreshReferencesOnReturn() {
+  if (state.page !== "gallery" || state.kind !== "reference" ||
+      document.visibilityState === "hidden" || refreshingReferences) return;
+  refreshingReferences = true;
+  try {
+    await getAssets();
+    renderPage();
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    refreshingReferences = false;
+  }
+}
+window.addEventListener("focus", refreshReferencesOnReturn);
+document.addEventListener("visibilitychange", refreshReferencesOnReturn);
 window.addEventListener("beforeunload", (e) => {
   if (state.dirty || graph.dirty) {
     e.preventDefault();

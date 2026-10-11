@@ -1,4 +1,4 @@
-import { api, query, loadImages } from "./api.js";
+import { api, query, loadImages, uploadReference } from "./api.js";
 import { esc, icon, button, ib, dialog, close, toast } from "./ui.js";
 
 export function createLibrary({
@@ -11,8 +11,13 @@ export function createLibrary({
 }) {
   const selected = new Set();
   let selecting = false;
+  function referenceActions(a) {
+    return a.kind === "reference"
+      ? ib("替换参考图", "lib-replace", "upload", `data-id="${a.id}"`)
+      : "";
+  }
   function assetActions(a) {
-    return `${button(a.favorite ? "取消收藏" : "收藏防删", "lib-favorite", "star", `data-id="${a.id}" data-value="${!a.favorite}" class="${a.favorite ? "favorited" : ""}"`)}${ib("删除图片", "lib-delete", "trash", `data-id="${a.id}" ${a.favorite ? "disabled" : ""}`)}`;
+    return `${referenceActions(a)}${button(a.favorite ? "取消收藏" : "收藏防删", "lib-favorite", "star", `data-id="${a.id}" data-value="${!a.favorite}" class="${a.favorite ? "favorited" : ""}"`)}${ib("删除图片", "lib-delete", "trash", `data-id="${a.id}" data-reference="${a.kind === "reference"}" ${a.favorite ? "disabled" : ""}`)}`;
   }
   function renderLibrary(el) {
     const storage = state.storage || {};
@@ -36,7 +41,7 @@ export function createLibrary({
       )}</div><div>${button(selecting ? "完成选择" : "批量管理", "lib-select", selecting ? "check" : "gallery")}${ib("存储设置", "lib-storage", "settings")}</div></div>
       <div class="library-count"><span>${storage.count ?? state.assets.length} 张图片 · ${storage.favorites || 0} 张收藏</span>${storage.max_count ? `<span>上限 ${storage.max_count} 张${storage.count > storage.max_count ? " · 受保护或新图片暂超上限" : ""}</span>` : ""}</div>
       ${selecting ? `<div class="selection-bar"><span>已选 ${selected.size} 张</span>${button("全选本页", "lib-all")}${button("收藏所选", "lib-favorite-all", "star")}${button("删除所选", "lib-delete-all", "trash", selected.size ? "" : "disabled")}</div>` : ""}
-      <div class="asset-grid">${state.assets.map((a) => `<article class="library-card ${selected.has(a.id) ? "selected" : ""}"><button class="asset-card" data-action="${selecting ? "lib-toggle" : "view-asset"}" data-id="${a.id}"><div><img data-asset="${a.id}" alt="${esc(a.title || a.name || a.model || "图片")}" loading="lazy"></div><span>${esc(a.title || a.model || a.name || "图片")}<small>${a.width} × ${a.height}</small></span></button>${selecting ? `<input type="checkbox" aria-label="选择图片" data-lib-check="${a.id}" ${selected.has(a.id) ? "checked" : ""}>` : ""}<div class="library-card-actions">${ib(a.favorite ? "取消收藏" : "收藏防删", "lib-favorite", "star", `data-id="${a.id}" data-value="${!a.favorite}" class="icon-button ${a.favorite ? "favorited" : ""}"`)}${ib("删除图片", "lib-delete", "trash", `data-id="${a.id}" ${a.favorite ? "disabled" : ""}`)}</div></article>`).join("")}</div>${state.more ? button("加载更多", "more-assets", "", 'class="load-more"') : ""}${!state.assets.length ? '<p class="library-empty">这里还没有图片.</p>' : ""}`;
+      <div class="asset-grid">${state.assets.map((a) => `<article class="library-card ${selected.has(a.id) ? "selected" : ""}"><button class="asset-card" data-action="${selecting ? "lib-toggle" : "view-asset"}" data-id="${a.id}"><div><img data-asset="${a.id}" alt="${esc(a.title || a.name || a.model || "图片")}" loading="lazy"></div><span>${esc(a.title || a.model || a.name || "图片")}<small>${a.width} × ${a.height}${a.reference_label && a.kind === "reference" ? " · " + esc(a.reference_label) : ""}</small></span></button>${selecting ? `<input type="checkbox" aria-label="选择图片" data-lib-check="${a.id}" ${selected.has(a.id) ? "checked" : ""}>` : ""}<div class="library-card-actions">${referenceActions(a)}${ib(a.favorite ? "取消收藏" : "收藏防删", "lib-favorite", "star", `data-id="${a.id}" data-value="${!a.favorite}" class="icon-button ${a.favorite ? "favorited" : ""}"`)}${ib("删除图片", "lib-delete", "trash", `data-id="${a.id}" data-reference="${a.kind === "reference"}" ${a.favorite ? "disabled" : ""}`)}</div></article>`).join("")}</div>${state.more ? button("加载更多", "more-assets", "", 'class="load-more"') : ""}${!state.assets.length ? '<p class="library-empty">点击上传添加图片.</p>' : ""}`;
     el.querySelectorAll("[data-lib-check]").forEach(
       (input) =>
         (input.onchange = () => {
@@ -55,15 +60,15 @@ export function createLibrary({
     state.storage = await query("storage", {});
     render();
   }
-  function deletion(ids) {
+  function deletion(ids, references = false) {
     dialog(
-      "删除图片",
-      `<p>删除所选 ${ids.length} 张图片及原图文件? 画布中的对应图片会一并移除.</p><p class="field-help">收藏、人物身份参考和工作流引用会跳过. 此操作不可撤销.</p>`,
+      references ? "删除参考图" : "删除图片",
+      references ? `<p>移除所选 ${ids.length} 张参考图的设置。原图与已有作品保留。</p>` : `<p>删除所选 ${ids.length} 张图片及原图文件? 画布中的对应图片会一并移除.</p><p class="field-help">收藏、人物身份参考和工作流引用会跳过. 此操作不可撤销.</p>`,
       button(
         "确认删除",
         "lib-confirm-delete",
         "trash",
-        `data-ids="${esc(JSON.stringify(ids))}"`,
+        `data-ids="${esc(JSON.stringify(ids))}" data-reference="${references}"`,
       ),
     );
   }
@@ -92,13 +97,32 @@ export function createLibrary({
       else await reload();
       toast(value ? "已收藏, 删除与自动清理都会跳过" : "已取消收藏");
     }
-    if (action === "lib-delete") deletion([el.dataset.id]);
-    if (action === "lib-delete-all") deletion([...selected]);
+    if (action === "lib-upload" || action === "lib-replace") {
+      const id = action === "lib-replace" ? el.dataset.id : "";
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/png,image/jpeg,image/webp,image/gif";
+      input.multiple = !id;
+      input.onchange = async () => {
+        try {
+          for (const file of input.files) await uploadReference(file, id);
+          close();
+          await refresh();
+          await reload();
+          toast("参考图已保存");
+        } catch (error) {
+          toast(error.message);
+        }
+      };
+      input.click();
+    }
+    if (action === "lib-delete") deletion([el.dataset.id], el.dataset.reference === "true");
+    if (action === "lib-delete-all") deletion([...selected], state.kind === "reference");
     if (action === "lib-confirm-delete") {
       el.disabled = true;
       try {
         if (state.canvasDirty) await saveCanvas();
-        const r = await api("delete-assets", {
+        const r = await api(el.dataset.reference === "true" ? "reference-delete" : "delete-assets", {
           ids: JSON.parse(el.dataset.ids),
         });
         selected.clear();

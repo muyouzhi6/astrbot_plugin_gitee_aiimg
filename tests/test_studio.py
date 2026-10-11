@@ -10,6 +10,7 @@ import pytest
 from PIL import Image
 
 from core.studio_store import StudioConflict, StudioStore
+from core.ref_store import ReferenceStore
 from test_main_initialize_request_mode import _load_module
 from test_background_pipeline_event import _Event, _plugin, _target
 
@@ -70,6 +71,7 @@ def runtime(tmp_path, monkeypatch):
     )
     plugin = _plugin(main, None)
     plugin.data_dir = tmp_path
+    plugin.refs = ReferenceStore(tmp_path)
     plugin.config = conf
     plugin.imgr = SimpleNamespace()
     plugin.draw = SimpleNamespace(generate=AsyncMock())

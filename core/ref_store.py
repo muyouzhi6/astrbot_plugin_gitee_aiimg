@@ -23,6 +23,21 @@ class ReferenceStore:
         self.index_path = self.refs_dir / "index.json"
         self._lock = asyncio.Lock()
 
+    def resolve_path(self, filename: str) -> Path | None:
+        """Reject stale/malicious index paths outside the reference directory."""
+        if (
+            not isinstance(filename, str)
+            or not filename
+            or any(
+                part in {".", ".."} for part in filename.replace("\\", "/").split("/")
+            )
+        ):
+            return None
+        path = (self.refs_dir / filename).resolve()
+        if not path.is_relative_to(self.refs_dir.resolve()):
+            return None
+        return path
+
     async def _read_index(self) -> dict[str, list[str]]:
         if not self.index_path.exists():
             return {}
@@ -58,8 +73,8 @@ class ReferenceStore:
         async with self._lock:
             index = await self._read_index()
             files = index.get(name, [])
-        paths = [self.refs_dir / f for f in files]
-        return [p for p in paths if p.exists()]
+        paths = [self.resolve_path(f) for f in files]
+        return [p for p in paths if p is not None and p.is_file()]
 
     async def set(self, name: str, images: list[bytes]) -> int:
         name = _sanitize_name(name)
@@ -73,8 +88,8 @@ class ReferenceStore:
 
             old_files = index.get(name, [])
             for f in old_files:
-                p = self.refs_dir / f
-                if p.exists():
+                p = self.resolve_path(f)
+                if p is not None and p.exists():
                     try:
                         await asyncio.to_thread(p.unlink)
                     except Exception:
@@ -103,8 +118,8 @@ class ReferenceStore:
             files = index.pop(name, None)
             if files:
                 for f in files:
-                    p = self.refs_dir / f
-                    if p.exists():
+                    p = self.resolve_path(f)
+                    if p is not None and p.exists():
                         try:
                             await asyncio.to_thread(p.unlink)
                         except Exception:

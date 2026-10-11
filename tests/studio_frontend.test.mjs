@@ -161,3 +161,71 @@ test("workflow saving preserves edits made while the server responds", async (t)
   await editor.action("flow-add", { dataset: { type: "text" } });
   assert.equal(state.graphs[0].nodes.length, 2);
 });
+
+test("reference gallery offers replacement and detaches references through their API", async (t) => {
+  const { createLibrary } = await import("../pages/studio/library.js");
+  const previousWindow = globalThis.window, previousDocument = globalThis.document;
+  let request, fileInput, refreshed = 0;
+  const toast = { classList: { add() {}, remove() {} } };
+  const overlay = { classList: { add() {}, remove() {} }, innerHTML: "", querySelector: () => null };
+  globalThis.document = {
+    querySelector: (selector) => selector === "#toast" ? toast : selector === "#overlay" ? overlay : null,
+    createElement: () => (fileInput = { click() {} }),
+  };
+  t.mock.method(globalThis, "setTimeout", () => 0);
+  globalThis.window = { AstrBotPluginPage: {
+    ready: async () => ({}),
+    apiPost: async (path, body) => {
+      request = { path, body };
+      return { ok: true, data: { deleted: body.ids, skipped: [] } };
+    },
+    apiGet: async () => ({ ok: true, data: {} }),
+    upload: async (path, file) => {
+      request = { path, file };
+      return { ok: true, data: { id: "updated" } };
+    },
+  }};
+  t.after(() => { globalThis.window = previousWindow; globalThis.document = previousDocument; });
+  await ready();
+  const state = { kind: "reference", assets: [{ id: "asset_old", kind: "reference", width: 30, height: 40 }] };
+  const library = createLibrary({ state, render() {}, getAssets: async () => {},
+    viewAsset() {}, refresh: async () => { refreshed++; }, saveCanvas() {} });
+  const container = { innerHTML: "", querySelectorAll: () => [] };
+  library.render(container);
+  assert.match(container.innerHTML, /data-action="lib-replace"/);
+  assert.match(container.innerHTML, /data-reference="true"/);
+  assert.match(library.assetActions(state.assets[0]), /lib-replace/);
+  await library.action("lib-replace", { dataset: { id: "asset_old" } });
+  assert.equal(fileInput.multiple, false);
+  fileInput.files = [{ name: "new.png" }];
+  await fileInput.onchange();
+  assert.equal(request.path, "studio/reference-upload?id=asset_old");
+  assert.equal(refreshed, 1);
+  await library.action("lib-upload", { dataset: {} });
+  assert.equal(fileInput.multiple, true);
+  fileInput.files = [{ name: "new.png" }];
+  await fileInput.onchange();
+  assert.equal(request.path, "studio/reference-upload");
+  await library.action("lib-confirm-delete", { dataset: { ids: '["asset_old"]', reference: "true" } });
+  assert.equal(request.path, "studio/reference-delete");
+  assert.deepEqual(request.body.ids, ["asset_old"]);
+});
+
+test("new reference content uses a new asset cache entry", async (t) => {
+  const { assetURL } = await import("../pages/studio/api.js");
+  const previous = globalThis.window;
+  const seen = [];
+  globalThis.window = { AstrBotPluginPage: {
+    ready: async () => ({}),
+    apiGet: async (_, params) => {
+      seen.push(params.id);
+      return { ok: true, data: { data_url: "data:" + params.id } };
+    },
+  }};
+  t.after(() => { globalThis.window = previous; });
+  await ready();
+  assert.equal(await assetURL("ref_old_content"), "data:ref_old_content");
+  assert.equal(await assetURL("ref_old_content"), "data:ref_old_content");
+  assert.equal(await assetURL("ref_new_content"), "data:ref_new_content");
+  assert.deepEqual(seen, ["ref_old_content", "ref_new_content"]);
+});
