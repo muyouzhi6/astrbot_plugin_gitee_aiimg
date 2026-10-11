@@ -14,6 +14,7 @@ from PIL import Image, UnidentifiedImageError
 from .studio_store import StudioConflict
 
 MAX_REFERENCE_BYTES = 20 * 1024 * 1024
+CONFIG_REFERENCE_DIR = Path("files/features/selfie/reference_images")
 
 
 class StudioReferences:
@@ -53,8 +54,71 @@ class StudioReferences:
 
     async def sync(self):
         async with self.plugin.refs._lock:
+            self._migrate_config_paths()
             index = await self.plugin.refs._read_index()
             return self.store.sync_references(self.sources(index))
+
+    def _config_image_path(self, ext):
+        relative = CONFIG_REFERENCE_DIR / f"{uuid.uuid4().hex}.{ext}"
+        path = self.plugin._resolve_data_rel_path(relative.as_posix())
+        if path is None:
+            raise ValueError("参考图保存目录无效")
+        return path, relative.as_posix()
+
+    def _migrate_config_paths(self):
+        """Copy the earlier gallery's misplaced files into the native file field."""
+        original = self.plugin._get_selfie_conf().get("reference_images", [])
+        if not isinstance(original, list):
+            return
+        replacements, created = {}, []
+        saved = False
+        try:
+            for value in original:
+                if not isinstance(value, str) or value in replacements:
+                    continue
+                parts = value.replace("\\", "/").split("/")
+                if len(parts) != 3 or parts[:2] != ["files", "selfie"]:
+                    continue
+                source = self.plugin._resolve_data_rel_path(value)
+                if not source or not source.is_file():
+                    continue
+                if source.stat().st_size > MAX_REFERENCE_BYTES:
+                    continue
+                blob = source.read_bytes()
+                try:
+                    ext = self.validate_image(blob)
+                except ValueError:
+                    continue
+                destination, relative = self._config_image_path(ext)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.touch(mode=0o600, exist_ok=False)
+                created.append(destination)
+                destination.write_bytes(blob)
+                replacements[value] = relative
+            if not replacements:
+                return
+            values = [replacements.get(value, value) for value in original]
+            # Keep each existing asset ID, favorite and canvas binding. A failed
+            # config save rolls back both its in-memory values and this transaction.
+            with self.store.connect() as db:
+                for before, after in replacements.items():
+                    db.execute(
+                        "UPDATE assets SET data=json_set(data,'$.reference_origin.path',?) "
+                        "WHERE kind='reference' "
+                        "AND json_extract(data,'$.reference_origin.kind')='config' "
+                        "AND json_extract(data,'$.reference_origin.path')=?",
+                        (after, before),
+                    )
+                self._save_config(values)
+                saved = True
+        except Exception:
+            if saved:
+                # A database commit failure must not leave the config referencing
+                # files we are about to remove. Retain copies if restoration fails.
+                self._save_config(original)
+            for path in created:
+                path.unlink(missing_ok=True)
+            raise
 
     def _save_config(self, values):
         original = copy.deepcopy(dict(self.plugin.config))
@@ -99,6 +163,7 @@ class StudioReferences:
             raise ValueError("每次替换一张参考图")
         ext = self.validate_image(blob) if blob is not None else None
         async with self.plugin.refs._lock:
+            self._migrate_config_paths()
             index = await self.plugin.refs._read_index()
             previous_index = copy.deepcopy(index)
             active = self.store.sync_references(self.sources(index))
@@ -119,24 +184,18 @@ class StudioReferences:
             new_path = None
             origin = selected[0]["reference_origin"] if selected else {"kind": "config"}
             if blob is not None:
-                directory = (
-                    self.plugin.refs.refs_dir
-                    if origin["kind"] == "store"
-                    else Path(self.plugin.data_dir) / "files" / "selfie"
-                )
-                directory.mkdir(parents=True, exist_ok=True)
-                new_path = directory / f"{uuid.uuid4().hex}.{ext}"
+                if origin["kind"] == "store":
+                    new_path = self.plugin.refs.refs_dir / f"{uuid.uuid4().hex}.{ext}"
+                    new_value = new_path.name
+                else:
+                    new_path, new_value = self._config_image_path(ext)
+                new_path.parent.mkdir(parents=True, exist_ok=True)
                 try:
                     new_path.touch(mode=0o600)
                     new_path.write_bytes(blob)
                 except Exception:
                     new_path.unlink(missing_ok=True)
                     raise
-                new_value = (
-                    new_path.name
-                    if origin["kind"] == "store"
-                    else new_path.relative_to(self.plugin.data_dir).as_posix()
-                )
                 if not ids:
                     values.append(new_value)
             for asset in selected:

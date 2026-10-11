@@ -133,6 +133,16 @@ class Studio:
                 ["GET", "POST"],
                 "Image studio",
             )
+
+        async def replace_reference(asset_id):
+            return await self.handle("reference-upload", reference_id=asset_id)
+
+        self.plugin.context.register_web_api(
+            "/astrbot_plugin_gitee_aiimg/studio/reference-upload/<asset_id>",
+            replace_reference,
+            ["POST"],
+            "Replace studio reference",
+        )
         self.retention_task = asyncio.create_task(self.retention_loop())
 
     @property
@@ -715,7 +725,7 @@ class Studio:
                 task.add_done_callback(self.tasks.discard)
         return {"task_id": task_id}
 
-    async def handle(self, action):
+    async def handle(self, action, *, reference_id=None):
         from astrbot.api.web import request, json_response, file_response
 
         try:
@@ -726,6 +736,8 @@ class Studio:
                 else dict(request.query.items())
             )
             body = body or {}
+            if reference_id is not None:
+                body["id"] = reference_id
             writes = {
                 "upload",
                 "reference-upload",

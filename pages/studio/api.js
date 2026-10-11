@@ -50,7 +50,7 @@ export const query = (action, params) =>
   response(bridge.apiGet("studio/" + action, params));
 export const upload = (file) => response(bridge.upload("studio/upload", file));
 export const uploadReference = (file, id = "") =>
-  response(bridge.upload("studio/reference-upload" + (id ? "?id=" + encodeURIComponent(id) : ""), file));
+  response(bridge.upload("studio/reference-upload" + (id ? "/" + encodeURIComponent(id) : ""), file));
 export const download = (id) => bridge.download("studio/download", { id });
 const thumbs = new Map();
 export async function assetURL(id, thumbnail = true) {

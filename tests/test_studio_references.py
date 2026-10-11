@@ -66,11 +66,11 @@ async def http_studio(runtime, monkeypatch):
         async def endpoint(request):
             token = current.set(request)
             try:
-                return await handler()
+                return await handler(**request.match_info)
             finally:
                 current.reset(token)
 
-        app.router.add_route("*", path, endpoint)
+        app.router.add_route("*", path.replace("<asset_id>", "{asset_id}"), endpoint)
 
     plugin.context.register_web_api = register
     await studio.start()
@@ -125,9 +125,12 @@ async def test_config_change_replaces_legacy_snapshot(http_studio):
 async def upload(client, base, blob, asset_id="", filename="photo.png"):
     form = aiohttp.FormData()
     form.add_field("file", blob, filename=filename, content_type="image/png")
-    async with client.post(
-        base + "reference-upload", params={"id": asset_id}, data=form
-    ) as response:
+    # Invalid IDs still exercise the legacy query route's validation.
+    endpoint = "reference-upload" + (
+        "/" + asset_id if asset_id and "/" not in asset_id else ""
+    )
+    params = {"id": asset_id} if "/" in asset_id else {}
+    async with client.post(base + endpoint, params=params, data=form) as response:
         return response.status, await response.json()
 
 
@@ -285,7 +288,8 @@ async def test_failed_config_save_rolls_back_files_and_index(http_studio, monkey
     status, result = await upload(client, base, picture("red"))
     assert status == 200
     original = list(plugin._get_selfie_conf()["reference_images"])
-    files = set((plugin.data_dir / "files" / "selfie").iterdir())
+    directory = plugin.data_dir / "files/features/selfie/reference_images"
+    files = set(directory.iterdir())
     await plugin.refs.set("bot_selfie", [picture("blue")])
     previous_index = await plugin.refs._read_index()
 
@@ -296,7 +300,7 @@ async def test_failed_config_save_rolls_back_files_and_index(http_studio, monkey
     assert (await upload(client, base, picture("green"), result["data"]["data"]["id"]))[
         0
     ] == 500
-    assert set((plugin.data_dir / "files" / "selfie").iterdir()) == files
+    assert set(directory.iterdir()) == files
     assert plugin._get_selfie_conf()["reference_images"] == original
     ids = [a["id"] for a in (await listing(client, base))["items"]]
     assert (await remove(client, base, ids))[0] == 500

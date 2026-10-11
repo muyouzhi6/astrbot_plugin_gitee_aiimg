@@ -199,7 +199,7 @@ test("reference gallery offers replacement and detaches references through their
   assert.equal(fileInput.multiple, false);
   fileInput.files = [{ name: "new.png" }];
   await fileInput.onchange();
-  assert.equal(request.path, "studio/reference-upload?id=asset_old");
+  assert.equal(request.path, "studio/reference-upload/asset_old");
   assert.equal(refreshed, 1);
   await library.action("lib-upload", { dataset: {} });
   assert.equal(fileInput.multiple, true);
