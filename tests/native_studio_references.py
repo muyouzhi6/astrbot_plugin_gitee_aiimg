@@ -219,6 +219,47 @@ class NativeRuntime(unittest.IsolatedAsyncioTestCase):
             picture("blue"),
         )
 
+    async def test_mixed_batch_skips_favorites_and_persists_other_deletions(self):
+        favorite = await self.upload("red")
+        removable = await self.upload("blue")
+        store = self.plugin.studio.store
+        store.favorite([favorite["id"]], True)
+        ordinary = store.add_image(picture("green"))
+        ordinary_path = store.asset_path(ordinary["id"])
+        response = await self.client.post(
+            "delete-assets",
+            json={"ids": [favorite["id"], removable["id"], ordinary["id"]]},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["data"]["data"],
+            {
+                "deleted": [removable["id"], ordinary["id"]],
+                "skipped": [{"id": favorite["id"], "reason": "已收藏, 请先取消收藏"}],
+            },
+        )
+        self.assertEqual(
+            [item["id"] for item in await self.listing()], [favorite["id"]]
+        )
+        self.assertEqual(
+            [
+                path.read_bytes()
+                for path in self.plugin._get_config_selfie_reference_paths()
+            ],
+            [picture("red")],
+        )
+        saved = json.loads(
+            Path(self.config.config_path).read_text(encoding="utf-8-sig")
+        )
+        self.assertEqual(
+            saved["features"]["selfie"]["reference_images"],
+            self.config["features"]["selfie"]["reference_images"],
+        )
+        self.assertFalse(ordinary_path.exists())
+        self.assertEqual(
+            store.asset_path(removable["id"]).read_bytes(), picture("blue")
+        )
+
     async def test_gallery_upload_must_allow_native_config_save(self):
         before, _ = validate_config(
             copy.deepcopy(dict(self.config)), SCHEMA, is_core=False

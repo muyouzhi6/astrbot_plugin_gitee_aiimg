@@ -140,6 +140,73 @@ async def remove(client, base, ids, action="reference-delete"):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["reference-delete", "delete-assets"])
+@pytest.mark.parametrize("source", ["config", "store"])
+async def test_batch_delete_skips_favorite_references(http_studio, action, source):
+    plugin, studio, client, base = http_studio
+    if source == "config":
+        for color in ["red", "blue"]:
+            assert (await upload(client, base, picture(color)))[0] == 200
+        paths = plugin._get_config_selfie_reference_paths()
+    else:
+        await plugin.refs.set("bot_selfie", [picture("red"), picture("blue")])
+        paths = await plugin.refs.get_paths("bot_selfie")
+    items = (await listing(client, base))["items"]
+    favorite = next(
+        item
+        for item in items
+        if item["sha256"] == hashlib.sha256(picture("red")).hexdigest()
+    )
+    removable = next(item for item in items if item["id"] != favorite["id"])
+    studio.store.favorite([favorite["id"]], True)
+    ids = [favorite["id"], removable["id"]]
+    deleted = [removable["id"]]
+    skipped = [{"id": favorite["id"], "reason": "已收藏, 请先取消收藏"}]
+    ordinary = studio.store.add_image(picture("green"))
+    ordinary_path = studio.store.asset_path(ordinary["id"])
+    if action == "delete-assets":
+        protected = studio.store.add_image(picture("yellow"))
+        studio.store.favorite([protected["id"]], True)
+        ids.extend([ordinary["id"], protected["id"]])
+        deleted.append(ordinary["id"])
+        skipped.append({"id": protected["id"], "reason": "已收藏, 请先取消收藏"})
+    status, response = await remove(client, base, ids, action)
+    assert status == 200
+    assert response["data"]["data"] == {"deleted": deleted, "skipped": skipped}
+    assert [item["id"] for item in (await listing(client, base))["items"]] == [
+        favorite["id"]
+    ]
+    remaining_paths = (
+        plugin._get_config_selfie_reference_paths()
+        if source == "config"
+        else await plugin.refs.get_paths("bot_selfie")
+    )
+    assert [path.read_bytes() for path in remaining_paths] == [picture("red")]
+    assert [path.read_bytes() for path in paths] == [picture("red"), picture("blue")]
+    assert studio.store.asset_path(removable["id"]).read_bytes() == picture("blue")
+    assert ordinary_path.exists() == (action == "reference-delete")
+    if action == "delete-assets":
+        assert studio.store.asset_path(protected["id"]).read_bytes() == picture(
+            "yellow"
+        )
+
+    # An all-favorite batch succeeds without persisting new bindings or backups.
+    before_config = list(plugin._get_selfie_conf().get("reference_images", []))
+    before_index = await plugin.refs._read_index()
+    before_backups = list((studio.store.root / "config-backups").glob("*"))
+    status, response = await remove(client, base, [favorite["id"]], action)
+    assert status == 200
+    assert response["data"]["data"] == {"deleted": [], "skipped": skipped[:1]}
+    assert (await upload(client, base, picture("black"), favorite["id"]))[0] == 400
+    assert plugin._get_selfie_conf().get("reference_images", []) == before_config
+    assert await plugin.refs._read_index() == before_index
+    assert list((studio.store.root / "config-backups").glob("*")) == before_backups
+    assert [item["id"] for item in (await listing(client, base))["items"]] == [
+        favorite["id"]
+    ]
+
+
+@pytest.mark.asyncio
 async def test_http_upload_replace_delete_and_external_config_reload(
     http_studio, monkeypatch
 ):

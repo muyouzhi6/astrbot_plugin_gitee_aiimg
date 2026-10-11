@@ -170,9 +170,14 @@ class StudioReferences:
             by_id = {a["id"]: a for a in active}
             if any(key not in by_id for key in ids):
                 raise StudioConflict("参考图已更改或删除, 请刷新后重试")
-            if any(by_id[key].get("favorite") for key in ids):
+            skipped = [
+                {"id": key, "reason": "已收藏, 请先取消收藏"}
+                for key in ids
+                if by_id[key].get("favorite")
+            ]
+            if blob is not None and skipped:
                 raise ValueError("请先取消收藏再更改参考图")
-            selected = [by_id[key] for key in ids]
+            selected = [by_id[key] for key in ids if not by_id[key].get("favorite")]
             values = copy.deepcopy(
                 self.plugin._get_selfie_conf().get("reference_images", [])
             )
@@ -238,4 +243,4 @@ class StudioReferences:
                     and a["reference_origin"]["kind"] == origin["kind"]
                 )
                 return self.store.public_asset(result)
-            return {"deleted": ids, "skipped": []}
+            return {"deleted": [asset["id"] for asset in selected], "skipped": skipped}

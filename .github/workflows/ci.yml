@@ -64,3 +64,37 @@ jobs:
 
       - name: Verify studio browser logic
         run: node --test tests/studio_frontend.test.mjs
+
+  native-runtime:
+    name: AstrBot 4.26.8 / Python 3.12
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository with migration baseline
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install native runtime and test dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt AstrBot==4.26.8
+
+      - name: Verify native plugin lifecycle and reference HTTP APIs
+        run: python -m pytest -q tests/test_release_compatibility.py
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Verify studio browser logic and native page bridge
+        env:
+          PYTHON: python
+        run: node --test tests/*.test.mjs
