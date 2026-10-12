@@ -20,6 +20,8 @@ import aiohttp
 
 from astrbot.api import logger
 
+from .retry_config import parse_max_retries
+
 from .image_format import guess_image_mime_and_ext
 from .request_body import merge_request_body
 from .output_spec import (
@@ -48,7 +50,7 @@ class GeminiEditBackend:
         self.model = conf.get("model", "gemini-3-pro-image-preview")
         self.resolution = conf.get("resolution", "4K")
         self.timeout = max(1, min(int(conf.get("timeout", 600) or 600), 3600))
-        self.max_retries = max(0, min(int(conf.get("max_retries", 2) or 0), 10))
+        self.max_retries = min(parse_max_retries(conf.get("max_retries")), 10)
         self.use_proxy = conf.get("use_proxy", False)
         self.proxy_url = conf.get("proxy_url", "")
         self.output_format = (

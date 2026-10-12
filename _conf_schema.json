@@ -729,7 +729,7 @@
           },
           "max_retries": {
             "type": "int",
-            "description": "最大重试次数",
+            "description": "最大重试次数（非负整数，0 禁用失败重试；协议兼容请求和多服务商回退仍会执行）",
             "default": 2
           },
           "proxy_url": {
@@ -846,7 +846,7 @@
           },
           "max_retries": {
             "type": "int",
-            "description": "最大重试次数",
+            "description": "最大重试次数（非负整数，0 禁用失败重试；协议兼容请求和多服务商回退仍会执行）",
             "hint": "请求超时、网络错误、限流或服务端错误时的重试次数；设为 0 可禁用重试。",
             "default": 2
           },
@@ -949,7 +949,7 @@
           },
           "max_retries": {
             "type": "int",
-            "description": "最大重试次数",
+            "description": "最大重试次数（非负整数，0 禁用失败重试；协议兼容请求和多服务商回退仍会执行）",
             "default": 2
           },
           "proxy_url": {
@@ -1123,7 +1123,7 @@
           },
           "max_retries": {
             "type": "int",
-            "description": "最大重试次数",
+            "description": "最大重试次数（非负整数，0 禁用失败重试；协议兼容请求和多服务商回退仍会执行）",
             "default": 10
           },
           "proxy_url": {
@@ -1263,7 +1263,7 @@
           },
           "max_retries": {
             "type": "int",
-            "description": "最大重试次数",
+            "description": "最大重试次数（非负整数，0 禁用失败重试；协议兼容请求和多服务商回退仍会执行）",
             "default": 2
           },
           "default_size": {
@@ -1368,7 +1368,7 @@
           },
           "max_retries": {
             "type": "int",
-            "description": "最大重试次数",
+            "description": "最大重试次数（非负整数，0 禁用失败重试；协议兼容请求和多服务商回退仍会执行）",
             "default": 2
           },
           "proxy_url": {
@@ -1478,7 +1478,7 @@
           },
           "max_retries": {
             "type": "int",
-            "description": "最大重试次数",
+            "description": "最大重试次数（非负整数，0 禁用失败重试；协议兼容请求和多服务商回退仍会执行）",
             "default": 2
           },
           "proxy_url": {
@@ -1670,7 +1670,7 @@
           },
           "max_retries": {
             "type": "int",
-            "description": "最大重试次数",
+            "description": "最大重试次数（非负整数，0 禁用失败重试；协议兼容请求和多服务商回退仍会执行）",
             "default": 2
           },
           "proxy_url": {
@@ -1780,7 +1780,7 @@
           },
           "max_retries": {
             "type": "int",
-            "description": "最大重试次数",
+            "description": "最大重试次数（非负整数，0 禁用失败重试；协议兼容请求和多服务商回退仍会执行）",
             "default": 2
           },
           "proxy_url": {
@@ -1871,7 +1871,7 @@
           },
           "max_retries": {
             "type": "int",
-            "description": "最大重试次数",
+            "description": "最大重试次数（非负整数，0 禁用失败重试；协议兼容请求和多服务商回退仍会执行）",
             "default": 2
           },
           "default_size": {
@@ -2699,7 +2699,7 @@
           },
           "max_retries": {
             "type": "int",
-            "description": "最大重试次数",
+            "description": "最大重试次数（非负整数，0 禁用失败重试；协议兼容请求和多服务商回退仍会执行）",
             "default": 2
           },
           "poll_interval": {

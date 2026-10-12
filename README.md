@@ -6,7 +6,7 @@
 
 自拍 · 合影 · 后台生图 · 视频 · 映像工作台
 
-[![Version](https://img.shields.io/badge/version-v5.7.4-287c78?style=flat-square)](CHANGELOG.md) [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.8%20%3C5-52646f?style=flat-square)](https://github.com/AstrBotDevs/AstrBot) [![CI](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml/badge.svg)](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml) [![QQ Group](https://img.shields.io/badge/QQ%E4%BA%A4%E6%B5%81%E7%BE%A4-215532038-267ac3?style=flat-square)](#交流与反馈)
+[![Version](https://img.shields.io/badge/version-v5.7.5-287c78?style=flat-square)](CHANGELOG.md) [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.8%20%3C5-52646f?style=flat-square)](https://github.com/AstrBotDevs/AstrBot) [![CI](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml/badge.svg)](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml) [![QQ Group](https://img.shields.io/badge/QQ%E4%BA%A4%E6%B5%81%E7%BE%A4-215532038-267ac3?style=flat-square)](#交流与反馈)
 
 [新手图解](docs/quickstart.md) · [特色功能](#特色功能) · [推荐服务商](#推荐服务商) · [出图展示](#出图展示) · [申请与配置教程](#申请与配置教程) · [更新日志](CHANGELOG.md)
 
@@ -177,6 +177,8 @@
 - [聊天上下文 · astrbot_plugin_context_aware](https://github.com/muyouzhi6/astrbot_plugin_context_aware): 引用当前会话中的历史图片, 继续编辑或合影, 不必反复重新发图.
 
 ### 使用前了解
+
+- 图片服务商最大重试次数填 `0` 可关闭失败重试。缺字段或 `null` 沿用模板默认值；负数、小数、布尔值和非法文本会被拒绝。多服务商回退和协议兼容处理保持原有行为。
 
 工作台与节点工作流用于图片创作, 视频通过指令或 LLM 工具调用. 详细能力与限制见 [工作台指南](docs/studio.md).
 

@@ -10,6 +10,8 @@ import aiohttp
 
 from astrbot.api import logger
 
+from .retry_config import parse_max_retries
+
 from .gitee_sizes import normalize_size_text
 from .output_spec import OutputIntent
 
@@ -58,7 +60,7 @@ class ModelScopeAsyncImageBackend:
         self.base_url = _normalize_modelscope_base_url(base_url)
         self.api_keys = [str(key).strip() for key in api_keys if str(key).strip()]
         self.timeout = max(10, min(int(timeout or 600), 600))
-        self.max_retries = max(0, min(int(max_retries or 0), 5))
+        self.max_retries = min(parse_max_retries(max_retries), 5)
         self.default_model = str(default_model or "").strip()
         self.default_size = normalize_size_text(default_size) or "1024x1024"
         self.supports_edit = bool(supports_edit)

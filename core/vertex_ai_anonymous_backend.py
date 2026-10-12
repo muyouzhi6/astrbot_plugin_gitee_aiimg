@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import inspect
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +15,8 @@ except Exception:
     CurlAsyncSession = None
 
 from astrbot.api import logger
+
+from .retry_config import parse_max_retries
 
 from .image_format import guess_image_mime_and_ext
 from .request_body import merge_request_body
@@ -66,7 +68,9 @@ class VertexAIAnonymousBackend:
 
     def __init__(self, *, imgr, settings: VertexAIAnonymousSettings):
         self.imgr = imgr
-        self.settings = settings
+        self.settings = replace(
+            settings, max_retries=parse_max_retries(settings.max_retries, 10)
+        )
         self._session: object | None = None
         self._session_lock = asyncio.Lock()
 
@@ -188,6 +192,8 @@ class VertexAIAnonymousBackend:
                 return result
 
             last_error_message = err_msg or last_error_message
+            if self.settings.max_retries == 0:
+                break
 
             if status == 3:
                 if (

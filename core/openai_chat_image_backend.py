@@ -12,6 +12,8 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 from astrbot.api import logger
+
+from .retry_config import parse_max_retries
 from openai import AsyncOpenAI
 
 from .image_format import guess_image_mime_and_ext
@@ -647,7 +649,7 @@ class OpenAIChatImageBackend:
         self.base_url = normalize_openai_compat_base_url(base_url)
         self.api_keys = [str(k).strip() for k in (api_keys or []) if str(k).strip()]
         self.timeout = int(timeout or 600)
-        self.max_retries = int(max_retries or 2)
+        self.max_retries = parse_max_retries(max_retries)
         self.default_model = str(default_model or "").strip()
         self.supports_edit = bool(supports_edit)
         self.extra_body = extra_body or {}
@@ -984,7 +986,7 @@ class OpenAIChatImageBackend:
         log_tag: str,
         input_mode: str,
     ):
-        attempts = self._chat_request_attempts(model=model)
+        attempts = min(self._chat_request_attempts(model=model), self.max_retries + 1)
         for attempt in range(1, attempts + 1):
             try:
                 return await request_factory()

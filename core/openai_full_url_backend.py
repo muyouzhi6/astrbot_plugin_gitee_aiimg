@@ -13,6 +13,8 @@ import httpx
 
 from astrbot.api import logger
 
+from .retry_config import parse_max_retries
+
 from .gitee_sizes import normalize_size_text
 from .image_format import guess_image_mime_and_ext
 from .openai_compat_backend import _build_collage, resolution_to_size
@@ -279,7 +281,7 @@ class OpenAIFullURLBackend:
         self.default_model = str(default_model or "").strip()
         self.default_edit_model = str(default_edit_model or "").strip()
         self.timeout = max(1, int(timeout or 600))
-        self.max_retries = max(0, int(max_retries or 0))
+        self.max_retries = parse_max_retries(max_retries)
         self.default_size = normalize_size_text(
             str(default_size or "4096x4096").strip()
         )

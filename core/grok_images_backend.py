@@ -12,6 +12,8 @@ import aiohttp
 
 from astrbot.api import logger
 
+from .retry_config import parse_max_retries
+
 from .image_format import guess_image_mime_and_ext
 from .openai_compat_backend import _build_collage, resolution_to_size
 from .output_spec import OutputIntent
@@ -206,7 +208,7 @@ class GrokImagesBackend:
         self.base_url = _normalize_base_url(base_url)
         self.api_key = _pick_first_api_key(api_keys)
         self.timeout = max(1, min(int(timeout or 600), 3600))
-        self.max_retries = max(1, min(int(max_retries or 2), 10))
+        self.max_retries = min(parse_max_retries(max_retries), 10)
         self.default_model = str(default_model or "").strip()
         self.default_size = str(default_size or "4096x4096").strip()
         self.supports_edit = bool(supports_edit)
@@ -305,7 +307,7 @@ class GrokImagesBackend:
             if isinstance(extra_body, dict) and extra_body:
                 payload.update(extra_body)
 
-            for attempt in range(self.max_retries):
+            for attempt in range(max(1, self.max_retries)):
                 try:
                     t0 = time.perf_counter()
                     async with session.post(
@@ -352,8 +354,12 @@ class GrokImagesBackend:
                     if attempt < self.max_retries - 1:
                         await asyncio.sleep(self._retry_delay_seconds(attempt))
                         continue
+                    if self.max_retries == 0:
+                        raise
                 except json.JSONDecodeError:
                     last_error = "API 响应格式异常"
+                    if self.max_retries == 0:
+                        raise
                 except Exception as e:
                     last_error = str(e)
                     if attempt < self.max_retries - 1:
@@ -406,7 +412,7 @@ class GrokImagesBackend:
 
         for current_size in size_attempts:
             for response_format in _IMAGE_RESPONSE_FORMAT_CANDIDATES:
-                for attempt in range(self.max_retries):
+                for attempt in range(max(1, self.max_retries)):
                     form = aiohttp.FormData()
                     form.add_field("model", final_model)
                     form.add_field(
@@ -490,8 +496,12 @@ class GrokImagesBackend:
                         if attempt < self.max_retries - 1:
                             await asyncio.sleep(self._retry_delay_seconds(attempt))
                             continue
+                        if self.max_retries == 0:
+                            raise
                     except json.JSONDecodeError:
                         last_error = "API 响应格式异常"
+                        if self.max_retries == 0:
+                            raise
                     except Exception as e:
                         last_error = str(e)
                         if attempt < self.max_retries - 1:

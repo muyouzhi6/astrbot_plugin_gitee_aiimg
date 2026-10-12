@@ -8,6 +8,8 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from astrbot.api import logger
+
+from .retry_config import parse_max_retries
 from openai import AsyncOpenAI
 from openai.types.images_response import ImagesResponse
 
@@ -217,7 +219,7 @@ class OpenAICompatBackend:
         self.base_url = normalize_openai_compat_base_url(base_url)
         self.api_keys = [str(k).strip() for k in (api_keys or []) if str(k).strip()]
         self.timeout = int(timeout or 600)
-        self.max_retries = int(max_retries or 2)
+        self.max_retries = parse_max_retries(max_retries)
         self.default_model = str(default_model or "").strip()
         self.default_size = normalize_size_text(
             str(default_size or "4096x4096").strip()

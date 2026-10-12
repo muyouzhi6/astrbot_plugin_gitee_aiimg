@@ -6,6 +6,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from .retry_config import parse_max_retries
 from .gemini_edit import GeminiEditBackend
 from .gemini_flow2api import Flow2ApiVideoBackend, GeminiFlow2ApiBackend
 from .gitee_edit import GiteeEditBackend
@@ -505,7 +506,7 @@ class ProviderRegistry:
                     if str(x).strip()
                 ],
                 timeout=int(conf.get("timeout") or DEFAULT_PROVIDER_TIMEOUT_SECONDS),
-                max_retries=int(conf.get("max_retries") or 2),
+                max_retries=parse_max_retries(conf.get("max_retries")),
                 default_model=str(conf.get("model") or "").strip(),
                 default_size=str(conf.get("default_size") or "4096x4096").strip(),
                 supports_edit=bool(conf.get("supports_edit", True)),
@@ -524,7 +525,7 @@ class ProviderRegistry:
                     if str(x).strip()
                 ],
                 timeout=int(conf.get("timeout") or DEFAULT_PROVIDER_TIMEOUT_SECONDS),
-                max_retries=int(conf.get("max_retries") or 2),
+                max_retries=parse_max_retries(conf.get("max_retries")),
                 default_model=str(conf.get("model") or "").strip(),
                 default_size=str(conf.get("default_size") or "4096x4096").strip(),
                 supports_edit=bool(conf.get("supports_edit", True)),
@@ -544,7 +545,7 @@ class ProviderRegistry:
                     if str(x).strip()
                 ],
                 timeout=int(conf.get("timeout") or DEFAULT_PROVIDER_TIMEOUT_SECONDS),
-                max_retries=int(conf.get("max_retries") or 2),
+                max_retries=parse_max_retries(conf.get("max_retries")),
                 default_model=str(conf.get("model") or "").strip(),
                 default_size=str(conf.get("default_size") or "4096x4096").strip(),
                 supports_edit=bool(conf.get("supports_edit", True)),
@@ -563,7 +564,7 @@ class ProviderRegistry:
                     if str(x).strip()
                 ],
                 timeout=int(conf.get("timeout") or DEFAULT_PROVIDER_TIMEOUT_SECONDS),
-                max_retries=int(conf.get("max_retries") or 2),
+                max_retries=parse_max_retries(conf.get("max_retries")),
                 default_model=str(conf.get("model") or "").strip(),
                 default_size=str(conf.get("default_size") or "1024x1024").strip(),
                 supports_edit=bool(conf.get("supports_edit", False)),
@@ -584,7 +585,7 @@ class ProviderRegistry:
                     if str(x).strip()
                 ],
                 timeout=int(conf.get("timeout") or DEFAULT_PROVIDER_TIMEOUT_SECONDS),
-                max_retries=int(conf.get("max_retries") or 2),
+                max_retries=parse_max_retries(conf.get("max_retries")),
                 default_model=str(conf.get("model") or "").strip(),
                 supports_edit=bool(conf.get("supports_edit", True)),
                 extra_body=_as_dict(conf.get("extra_body")) or None,
@@ -631,7 +632,7 @@ class ProviderRegistry:
                     if str(x).strip()
                 ],
                 timeout=int(conf.get("timeout") or DEFAULT_PROVIDER_TIMEOUT_SECONDS),
-                max_retries=int(conf.get("max_retries") or 2),
+                max_retries=parse_max_retries(conf.get("max_retries")),
                 default_model=model,
                 default_size=str(conf.get("default_size") or "1024x1024").strip(),
                 supports_edit=False,
@@ -671,7 +672,7 @@ class ProviderRegistry:
                 timeout_seconds=int(
                     conf.get("timeout") or DEFAULT_PROVIDER_TIMEOUT_SECONDS
                 ),
-                max_retries=int(conf.get("max_retries") or 10),
+                max_retries=parse_max_retries(conf.get("max_retries"), 10),
                 proxy_url=str(conf.get("proxy_url") or "").strip() or None,
                 recaptcha_base_api=str(conf.get("recaptcha_base_api") or "").strip()
                 or "https://www.google.com",
