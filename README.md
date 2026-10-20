@@ -6,7 +6,7 @@
 
 自拍 · 合影 · 后台生图 · 视频 · 映像工作台
 
-[![Version](https://img.shields.io/badge/version-v5.7.5-287c78?style=flat-square)](CHANGELOG.md) [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.8%20%3C5-52646f?style=flat-square)](https://github.com/AstrBotDevs/AstrBot) [![CI](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml/badge.svg)](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml) [![QQ Group](https://img.shields.io/badge/QQ%E4%BA%A4%E6%B5%81%E7%BE%A4-215532038-267ac3?style=flat-square)](#交流与反馈)
+[![Version](https://img.shields.io/badge/version-v5.7.5-287c78?style=flat-square)](CHANGELOG.md) [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.26.8%20%3C5-52646f?style=flat-square)](https://github.com/AstrBotDevs/AstrBot) [![CI](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml/badge.svg)](https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg/actions/workflows/ci.yml) [![QQ Group](https://img.shields.io/badge/QQ%E4%BA%A4%E6%B5%81%E7%BE%A4-1105763429-267ac3?style=flat-square)](#交流与反馈)
 
 [新手图解](docs/quickstart.md) · [特色功能](#特色功能) · [推荐服务商](#推荐服务商) · [出图展示](#出图展示) · [申请与配置教程](#申请与配置教程) · [更新日志](CHANGELOG.md)
 
@@ -14,7 +14,7 @@
 
 这是一个为 AstrBot 提供 **文生图、改图、固定形象自拍、多人合影和视频生成** 的插件. 你可以直接用自然语言让 Bot 拍照, 也可以在内置的 **映像工作台 WebUI** 中配置服务商、批量创作、整理画廊、排版画布和连接节点工作流.
 
-> **插件开发与交流 QQ 群: `215532038`** · [查看群二维码](#交流与反馈)
+> **插件开发与交流 QQ 群: 木有知插件群 `1105763429`** · [查看群二维码](#交流与反馈)
 >
 > 支持 `QQ / aiocqhttp` 和个人微信 `weixin_oc`. 需要 **AstrBot >=4.26.8 且 <5**.
 
@@ -186,10 +186,10 @@
 
 ## 交流与反馈
 
-**插件开发 QQ 群: `215532038`**. 欢迎交流配置、分享成片和反馈问题. 报错时附插件版本、所用模型、接口模板与脱敏日志, 不要公开 API Key 或未授权的人物参考图.
+**插件开发 QQ 群: 木有知插件群 `1105763429`**. 欢迎交流配置、分享成片和反馈问题. 报错时附插件版本、所用模型、接口模板与脱敏日志, 不要公开 API Key 或未授权的人物参考图.
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/113ccf60-044a-47f3-ac8f-432ae05f89ee" alt="插件开发 QQ 群 215532038 二维码" width="260">
+  <img src="assets/plugin_group_qr.jpg" alt="木有知插件群 1105763429 二维码" width="260">
 </p>
 
 <div align="center">
