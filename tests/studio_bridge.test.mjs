@@ -15,12 +15,19 @@ const python = spawnSync(process.env.PYTHON || resolve(root, ".venv/bin/python")
 assert.equal(python.status, 0, "Install AstrBot to test its actual page bridge");
 const dashboard = python.stdout.trim();
 const assets = resolve(dashboard, "dist/assets");
-const bundle = readdirSync(assets).find((name) => /^PluginPagePage-.*\.js$/.test(name));
+const bundle = readdirSync(assets).find((name) => /^Plugin(?:Page|View)Page-.*\.js$/.test(name));
 assert.ok(bundle, "Locate installed AstrBot page host");
 const normalizer = readFileSync(resolve(assets, bundle), "utf8")
-  .match(/,te=(e=>\{.*?\}),B=e=>/s);
+  .match(/\w+=(\w+=>\{if\(typeof \w+!="string"\)throw new Error\("Plugin bridge endpoint must be a string\."\);.*?\.join\("\/"\)\})/s);
 assert.ok(normalizer, "Locate the actual host endpoint validator");
 const normalize = vm.runInNewContext(`(${normalizer[1]})`);
+
+test("native page host rejects invalid plugin endpoints", () => {
+  for (const endpoint of ["", "../escape", "studio/./state", "https://example.com", "studio/state?secret=1"]) {
+    assert.throws(() => normalize(endpoint));
+  }
+  assert.equal(normalize("studio/reference-upload/asset_test"), "studio/reference-upload/asset_test");
+});
 
 for (const id of ["", "asset_test"]) {
   test(`native page bridge uploads ${id ? "replacement" : "new reference"}`, async (t) => {

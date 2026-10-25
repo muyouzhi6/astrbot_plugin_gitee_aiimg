@@ -8,10 +8,11 @@ from pathlib import Path
 from urllib.parse import unquote
 
 import pytest
+from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 
 
-@pytest.mark.parametrize("version", ["4.26.8", "4.27.3", "4.28.2"])
+@pytest.mark.parametrize("version", ["4.26.8", "4.27.3", "4.28.2", "4.29.1", "4.29.3"])
 def test_metadata_allows_deployment_astrbot_version(version):
     metadata = (Path(__file__).parents[1] / "metadata.yaml").read_text()
     declaration = next(
@@ -44,13 +45,9 @@ def test_readme_astrbot_requirement_matches_metadata():
 
 def test_real_astrbot_load_and_studio_api(tmp_path):
     try:
-        version = importlib.metadata.version("AstrBot")
+        importlib.metadata.version("AstrBot")
     except importlib.metadata.PackageNotFoundError:
-        pytest.skip(
-            "Install AstrBot 4.26.8, 4.27.3 or 4.28.2 for the runtime smoke test"
-        )
-    if version not in {"4.26.8", "4.27.3", "4.28.2"}:
-        pytest.skip("Runtime smoke test requires AstrBot 4.26.8, 4.27.3 or 4.28.2")
+        pytest.skip("Install AstrBot for the runtime smoke test")
     root = Path(__file__).parents[1].resolve()
     script = textwrap.dedent("""\
         import asyncio
@@ -72,11 +69,13 @@ def test_real_astrbot_load_and_studio_api(tmp_path):
         root = Path(sys.argv[1])
         sys.path.insert(0, str(root.parent))
         main = importlib.import_module(root.name + ".main")
-        assert astrbot.__version__ == sys.argv[2]
         assert TextPart(text="test").mark_as_temp()._no_save
         spec = next(line.split(":", 1)[1].strip().strip('"')
                     for line in (root / "metadata.yaml").read_text().splitlines()
                     if line.startswith("astrbot_version:"))
+
+        from packaging.specifiers import SpecifierSet
+        assert SpecifierSet(spec).contains(astrbot.__version__), astrbot.__version__
 
         async def check():
             context = object.__new__(Context)
@@ -108,7 +107,7 @@ def test_real_astrbot_load_and_studio_api(tmp_path):
         print(f"AstrBot {astrbot.__version__}: import, initialize, Web API, shutdown, version gate passed")
     """)
     result = subprocess.run(
-        [sys.executable, "-c", script, str(root), version],
+        [sys.executable, "-c", script, str(root)],
         cwd=tmp_path,
         env={**os.environ, "ASTRBOT_ROOT": str(tmp_path)},
         capture_output=True,
@@ -150,3 +149,15 @@ def test_real_astrbot_provider_commands(tmp_path):
         timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("version", ["12.3.0", "13.0.0"])
+def test_pillow_requirement_accepts_protected_core_version(version):
+    root = Path(__file__).parents[1]
+    requirements = [
+        Requirement(line.strip())
+        for line in (root / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    pillow = next(req for req in requirements if req.name.lower() == "pillow")
+    assert pillow.specifier.contains(version), (str(pillow), version)

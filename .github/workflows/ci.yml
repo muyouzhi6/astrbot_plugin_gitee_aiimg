@@ -66,8 +66,12 @@ jobs:
         run: node --test tests/studio_frontend.test.mjs
 
   native-runtime:
-    name: AstrBot 4.26.8 / Python 3.12
+    name: AstrBot ${{ matrix.astrbot-version }} / Python 3.12
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        astrbot-version: ["4.26.8", "4.27.3", "4.28.2", "4.29.3"]
     steps:
       - name: Check out repository with migration baseline
         uses: actions/checkout@v7
@@ -84,7 +88,10 @@ jobs:
             requirements-dev.txt
 
       - name: Install native runtime and test dependencies
-        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt AstrBot==4.26.8
+        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt AstrBot==${{ matrix.astrbot-version }}
+
+      - name: Verify image processing with the native Pillow version
+        run: python -m pytest -q tests/test_image_encoding.py tests/test_image_format.py tests/test_reference_subject.py
 
       - name: Verify native plugin lifecycle and reference HTTP APIs
         run: python -m pytest -q tests/test_release_compatibility.py
