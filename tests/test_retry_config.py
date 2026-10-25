@@ -117,7 +117,7 @@ async def test_grok_timeout_attempt_count(count, operation, monkeypatch):
     session.post.side_effect = asyncio.TimeoutError("offline timeout")
     instance._ensure_session = AsyncMock(return_value=session)
     monkeypatch.setattr("asyncio.sleep", AsyncMock())
-    with pytest.raises(TimeoutError if count == 0 else RuntimeError):
+    with pytest.raises(asyncio.TimeoutError if count == 0 else RuntimeError):
         await getattr(instance, operation)(
             "test", **({"images": [b"offline-image"]} if operation == "edit" else {})
         )
