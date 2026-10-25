@@ -2231,7 +2231,8 @@ class GiteeAIImagePlugin(Star):
         s = (text or "").strip()
         if not s.startswith("@"):
             return None, s
-        first, _, rest = s.partition(" ")
+        parts = s.split(maxsplit=1)
+        first, rest = parts[0], parts[1] if len(parts) > 1 else ""
         candidate = first.lstrip("@").strip()
         if not candidate:
             return None, s
@@ -2242,6 +2243,72 @@ class GiteeAIImagePlugin(Star):
             candidate,
         )
         return None, s
+
+    @filter.regex(r"(?:aiimg|aiedit|自拍)\S+(?:\s|$)", priority=5)
+    @filter.custom_filter(ImageCommandWakePrefixFilter)
+    async def provider_image_command(self, event: AstrMessageEvent):
+        """Handle /aiimg<provider_id>, /aiedit<provider_id> and /自拍<provider_id>."""
+        if event.get_extra("_gitee_provider_command_handled", False):
+            return
+        try:
+            chain = event.get_messages()
+        except Exception:
+            return
+        command = provider_id = ""
+        parts = []
+        for seg in chain or []:
+            if not isinstance(seg, Plain):
+                continue
+            text = str(getattr(seg, "text", "") or "").strip()
+            if command:
+                if text:
+                    parts.append(text)
+                continue
+            body = None
+            for prefix in self._cmd_prefixes():
+                if text.startswith(prefix):
+                    body = text[len(prefix) :]
+                    break
+            if body is None:
+                if not (
+                    ImageCommandWakePrefixFilter._is_private_chat(event)
+                    and getattr(event, "is_at_or_wake_command", False)
+                ):
+                    continue
+                body = text
+            tokens = body.split(maxsplit=1)
+            if not tokens:
+                continue
+            token = tokens[0]
+            if token == "自拍参考" or token in self.edit.get_preset_names():
+                return
+            for name in ("aiimg", "aiedit", "自拍"):
+                if token.startswith(name) and token != name:
+                    command, provider_id = name, token[len(name) :]
+                    if len(tokens) > 1:
+                        parts.append(tokens[1])
+                    break
+            if not command:
+                # Only the first command in a text segment owns its arguments.
+                return
+        if not command:
+            return
+        event.set_extra("_gitee_provider_command_handled", True)
+        try:
+            if provider_id not in self.registry.provider_ids():
+                event.should_call_llm(False)
+                await event.send(event.plain_result(f"未配置图片渠道: {provider_id}"))
+                await mark_failed(event)
+                return
+            prompt = "\n".join(parts).strip()
+            if command == "aiimg":
+                await self._do_draw(event, prompt, provider_id=provider_id)
+            elif command == "aiedit":
+                await self._do_edit(event, prompt, backend=provider_id)
+            else:
+                await self._do_selfie(event, prompt, backend=provider_id)
+        finally:
+            event.stop_event()
 
     @staticmethod
     def _plain_starts_with_command(
@@ -2405,14 +2472,25 @@ class GiteeAIImagePlugin(Star):
         示例: /aiimg 一个女孩 9:16
         支持比例: 1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16
         """
+        parts = str(event.message_str or "").split(maxsplit=1)
+        arg = parts[1] if len(parts) > 1 else ""
+        await self._do_draw(event, arg)
+
+    async def _do_draw(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+        *,
+        provider_id: str | None = None,
+    ):
+        """Execute a draw command with an optional pinned provider."""
         event.should_call_llm(True)
-        # 解析参数
-        arg = event.message_str.partition(" ")[2]
         if not arg:
             await mark_failed(event)
             return
-        provider_override: str | None = None
-        provider_override, arg = self._parse_provider_override_prefix(arg)
+        provider_override = provider_id
+        if provider_override is None:
+            provider_override, arg = self._parse_provider_override_prefix(arg)
         if not arg:
             await mark_failed(event)
             return
@@ -6765,10 +6843,11 @@ class GiteeAIImagePlugin(Star):
             return
 
         p = (prompt or "").strip()
-        override, rest = self._parse_provider_override_prefix(p)
-        if override:
-            backend = override
-            prompt = rest
+        if backend is None:
+            override, rest = self._parse_provider_override_prefix(p)
+            if override:
+                backend = override
+                prompt = rest
         try:
             prompt, output_intent = split_prompt_output_suffix(prompt)
         except ValueError as exc:
@@ -6865,10 +6944,11 @@ class GiteeAIImagePlugin(Star):
 
         # Optional provider override: "/aiedit @provider_id <prompt>"
         p = (prompt or "").strip()
-        override, rest = self._parse_provider_override_prefix(p)
-        if override:
-            backend = override
-            prompt = rest
+        if backend is None:
+            override, rest = self._parse_provider_override_prefix(p)
+            if override:
+                backend = override
+                prompt = rest
         try:
             prompt, output_intent = split_prompt_output_suffix(prompt)
         except ValueError as exc:
@@ -7494,10 +7574,11 @@ class GiteeAIImagePlugin(Star):
             return
 
         p = (prompt or "").strip()
-        override, rest = self._parse_provider_override_prefix(p)
-        if override:
-            backend = override
-            prompt = rest
+        if backend is None:
+            override, rest = self._parse_provider_override_prefix(p)
+            if override:
+                backend = override
+                prompt = rest
         try:
             prompt, output_intent = split_prompt_output_suffix(prompt)
         except ValueError as exc:

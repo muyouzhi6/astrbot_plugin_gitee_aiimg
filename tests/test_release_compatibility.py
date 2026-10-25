@@ -133,3 +133,20 @@ def test_real_astrbot_reference_http_contract(tmp_path):
         timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_real_astrbot_provider_commands(tmp_path):
+    try:
+        importlib.metadata.version("AstrBot")
+    except importlib.metadata.PackageNotFoundError:
+        pytest.skip("Install AstrBot for native channel command tests")
+    root = Path(__file__).parents[1].resolve()
+    result = subprocess.run(
+        [sys.executable, str(root / "tests" / "native_provider_commands.py")],
+        cwd=tmp_path,
+        env={**os.environ, "ASTRBOT_ROOT": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

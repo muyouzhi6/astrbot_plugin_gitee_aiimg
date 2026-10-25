@@ -134,6 +134,43 @@ class _StrictLegacyDrawBackend:
         return Path("/tmp/legacy.png")
 
 
+@pytest.mark.parametrize("mode", ["draw", "edit"])
+@pytest.mark.parametrize("provider_id", ["selected", "missing"])
+def test_explicit_provider_never_uses_default_chain_on_failure(
+    modules, mode, provider_id
+):
+    _, draw_service, edit_router = modules
+    selected = _AdaptiveDrawBackend(fail=True)
+    fallback = _AdaptiveDrawBackend()
+
+    async def fail_edit(prompt, images, **kwargs):
+        selected.calls.append(prompt)
+        raise RuntimeError("provider unavailable")
+
+    async def fallback_edit(prompt, images, **kwargs):
+        fallback.calls.append(prompt)
+        return Path("/tmp/edited.png")
+
+    selected.edit = fail_edit
+    fallback.edit = fallback_edit
+    registry = _Registry({"selected": selected, "fallback": fallback})
+    config = {"features": {mode: {"chain": ["fallback"]}}}
+    if mode == "draw":
+        service = draw_service.ImageDrawService(
+            config, imgr=object(), data_dir=Path("/tmp"), registry=registry
+        )
+        request = service.generate("cat", provider_id=provider_id)
+    else:
+        service = edit_router.EditRouter(
+            config, imgr=object(), data_dir=Path("/tmp"), registry=registry
+        )
+        request = service.edit("cat", [b"reference"], backend=provider_id)
+    with pytest.raises(RuntimeError, match="failed"):
+        asyncio.run(request)
+    assert len(selected.calls) == (1 if provider_id == "selected" else 0)
+    assert fallback.calls == []
+
+
 def test_draw_fallback_resolves_each_provider_override(modules):
     output_spec, draw_service, _ = modules
     first = _AdaptiveDrawBackend(fail=True)

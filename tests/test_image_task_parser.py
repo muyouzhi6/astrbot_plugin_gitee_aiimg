@@ -2,6 +2,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "core" / "image_task_parser.py"
 PACKAGE_NAME = "image_task_parser_testpkg"
@@ -110,3 +112,57 @@ def test_parse_batch_draw_output_suffix_without_touching_prompt_body():
     assert parsed.batch_count == 3
     assert parsed.spec.user_prompt == "画一张 16:9 的电影海报"
     assert parsed.spec.output == "16:9 4K"
+
+
+@pytest.mark.parametrize(
+    "command,mode", [("aiimg", "draw"), ("aiedit", "edit"), ("自拍", "selfie_ref")]
+)
+@pytest.mark.parametrize("prefix,count", [("/", 1), (".", 1), ("", 1), ("/批量3 ", 3)])
+def test_compact_provider_commands_preserve_prompt_output_and_batch(
+    command, mode, prefix, count
+):
+    mod = _load_module()
+    parsed = mod.parse_image_request(
+        f"{prefix}{command}美年达sd\t窗边的人像\n保持蓝色外套 3:4 4K",
+        known_provider_ids={"美年达", "美年达sd"},
+    )
+    assert parsed.batch_count == count
+    assert parsed.spec.mode == mode
+    assert parsed.spec.provider_id == "美年达sd"
+    assert parsed.spec.user_prompt == "窗边的人像\n保持蓝色外套"
+    assert parsed.spec.output == "3:4 4K"
+
+
+@pytest.mark.parametrize(
+    "token", ["aiimg美年达不存在", "aiedit美年达不存在", "自拍美年达不存在", "自拍参考"]
+)
+def test_unknown_compact_provider_is_not_routed_to_default(token):
+    mod = _load_module()
+    assert (
+        mod.parse_image_request(f"/{token} 文字", known_provider_ids={"美年达"}) is None
+    )
+
+
+def test_compact_provider_does_not_consume_prompt_provider_mentions():
+    mod = _load_module()
+    parsed = mod.parse_image_request(
+        "/aiedit美年达sd @other 保留文字", known_provider_ids={"美年达sd", "other"}
+    )
+    assert parsed.spec.provider_id == "美年达sd"
+    assert parsed.spec.user_prompt == "@other 保留文字"
+
+
+def test_existing_preset_name_takes_precedence_over_compact_syntax():
+    mod = _load_module()
+    parsed = mod.parse_image_request(
+        "/自拍照 额外要求", edit_presets={"自拍照": "preset"}, known_provider_ids={"照"}
+    )
+    assert parsed.spec.preset_name == "自拍照"
+    assert parsed.spec.provider_id is None
+
+
+def test_selfie_reference_management_is_reserved_even_with_matching_provider():
+    mod = _load_module()
+    assert (
+        mod.parse_image_request("/自拍参考 查看", known_provider_ids={"参考"}) is None
+    )

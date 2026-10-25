@@ -117,8 +117,20 @@ def parse_image_request(
     if not command:
         return None
 
-    if command in DRAW_COMMANDS:
+    compact_provider = None
+    if command not in edit_presets and command != "自拍参考":
+        for name in ("aiimg", "aiedit", "自拍"):
+            if command.startswith(name) and command[len(name) :] in known_provider_ids:
+                compact_provider = command[len(name) :]
+                command = name
+                break
+
+    if compact_provider:
+        provider_id, content = compact_provider, rest
+    else:
         provider_id, content = parse_provider_override_prefix(rest, known_provider_ids)
+
+    if command in DRAW_COMMANDS:
         if command == "文生图":
             first_token, extra_prompt = split_first_token_and_rest(content)
             if first_token and first_token in draw_presets:
@@ -150,7 +162,6 @@ def parse_image_request(
         return ParsedImageRequest(batch_count=batch_count, spec=spec)
 
     if command in EDIT_COMMANDS:
-        provider_id, content = parse_provider_override_prefix(rest, known_provider_ids)
         user_prompt, output_intent = split_prompt_output_suffix(content)
         spec = ImageTaskSpec(
             mode="edit",
@@ -164,7 +175,6 @@ def parse_image_request(
         return ParsedImageRequest(batch_count=batch_count, spec=spec)
 
     if command in SELFIE_COMMANDS:
-        provider_id, content = parse_provider_override_prefix(rest, known_provider_ids)
         user_prompt, output_intent = split_prompt_output_suffix(content)
         spec = ImageTaskSpec(
             mode="selfie_ref",
