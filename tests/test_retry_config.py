@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import json
 import sys
@@ -113,7 +114,7 @@ async def test_zero_reaches_sdk_and_sends_one_failed_request(backend):
 async def test_grok_timeout_attempt_count(count, operation, monkeypatch):
     instance = registry_for(*BACKENDS[2], count).get_backend("test")
     session = Mock()
-    session.post.side_effect = TimeoutError("offline timeout")
+    session.post.side_effect = asyncio.TimeoutError("offline timeout")
     instance._ensure_session = AsyncMock(return_value=session)
     monkeypatch.setattr("asyncio.sleep", AsyncMock())
     with pytest.raises(TimeoutError if count == 0 else RuntimeError):
@@ -266,7 +267,7 @@ async def test_aiohttp_zero_sends_one_failed_request(
     request_context.__aenter__.return_value = response
     request = Mock(return_value=request_context)
     if failure == "timeout":
-        request.side_effect = TimeoutError("offline timeout")
+        request.side_effect = asyncio.TimeoutError("offline timeout")
     session = Mock(post=request, request=request)
     sleep = AsyncMock()
     monkeypatch.setattr("asyncio.sleep", sleep)

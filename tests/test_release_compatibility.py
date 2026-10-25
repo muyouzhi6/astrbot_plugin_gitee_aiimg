@@ -14,7 +14,7 @@ from packaging.specifiers import SpecifierSet
 
 @pytest.mark.parametrize("version", ["4.26.8", "4.27.3", "4.28.2", "4.29.1", "4.29.3"])
 def test_metadata_allows_deployment_astrbot_version(version):
-    metadata = (Path(__file__).parents[1] / "metadata.yaml").read_text()
+    metadata = (Path(__file__).parents[1] / "metadata.yaml").read_text(encoding="utf-8")
     declaration = next(
         line.split(":", 1)[1].strip().strip("\"'")
         for line in metadata.splitlines()
@@ -27,7 +27,7 @@ def test_metadata_allows_deployment_astrbot_version(version):
 
 def test_readme_astrbot_requirement_matches_metadata():
     root = Path(__file__).parents[1]
-    metadata = (root / "metadata.yaml").read_text()
+    metadata = (root / "metadata.yaml").read_text(encoding="utf-8")
     declaration = next(
         line.split(":", 1)[1].strip().strip("\"'")
         for line in metadata.splitlines()
@@ -36,7 +36,7 @@ def test_readme_astrbot_requirement_matches_metadata():
     minimum = next(
         spec.version for spec in SpecifierSet(declaration) if spec.operator == ">="
     )
-    readme = (root / "README.md").read_text()
+    readme = (root / "README.md").read_text(encoding="utf-8")
     badge = re.search(r"\[!\[AstrBot\]\(([^)]+)\)", readme)
     assert badge is not None
     assert f"AstrBot->={minimum} <5" in unquote(badge.group(1))
@@ -71,7 +71,7 @@ def test_real_astrbot_load_and_studio_api(tmp_path):
         main = importlib.import_module(root.name + ".main")
         assert TextPart(text="test").mark_as_temp()._no_save
         spec = next(line.split(":", 1)[1].strip().strip('"')
-                    for line in (root / "metadata.yaml").read_text().splitlines()
+                    for line in (root / "metadata.yaml").read_text(encoding="utf-8").splitlines()
                     if line.startswith("astrbot_version:"))
 
         from packaging.specifiers import SpecifierSet
