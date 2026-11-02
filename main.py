@@ -55,6 +55,7 @@ from .core.background_tasks import (
 from .core.batch_executor import BatchRunResult, run_batch
 from .core.reference_subject import describe_reference_objects
 from .core.debouncer import Debouncer
+from .core.face_lock import apply_face_lock, face_lock_for_cast, relock
 from .core.draw_service import ImageDrawService
 from .core.edit_router import EditRouter
 from .core.emoji_feedback import mark_failed, mark_processing, mark_success
@@ -3431,11 +3432,15 @@ class GiteeAIImagePlugin(Star):
                 )
         event.set_extra(REFERENCE_KEY, combined)
         event.set_extra("_gitee_portrait_contract", note)
+        event.set_extra(
+            "_gitee_face_lock_cast",
+            [{"reference_indices": list(c["reference_indices"])} for c in cast],
+        )
         context = capture_context.get()
         if context:
             context["characters"] = cast
             context["user_prompt"] = prompt
-        return prompt + "\n\n" + note, combined
+        return face_lock_for_cast(prompt + "\n\n" + note, cast), combined
 
     def _character_binding_error(self, event, prompt, ids, mode, reference_roles):
         from .core.studio_characters import character_request_error
@@ -3778,8 +3783,8 @@ class GiteeAIImagePlugin(Star):
                         "Image editing could not continue because no usable input image was found in the current message. This request has ended."
                     )
 
-                effective_edit_prompt = prompt + (
-                    "\n\n" + reference_note if reference_note else ""
+                effective_edit_prompt = relock(
+                    prompt + ("\n\n" + reference_note if reference_note else "")
                 )
                 image_path = await self.edit.edit(
                     prompt=effective_edit_prompt,
@@ -4737,8 +4742,8 @@ class GiteeAIImagePlugin(Star):
                                 "No usable input image was found in the current message."
                             )
                         resolved_mode = "edit"
-                        effective_prompt = prompt + (
-                            "\n\n" + reference_note if reference_note else ""
+                        effective_prompt = relock(
+                            prompt + ("\n\n" + reference_note if reference_note else "")
                         )
                         task_meta = self._build_image_task_meta(
                             mode="edit",
@@ -5683,6 +5688,9 @@ class GiteeAIImagePlugin(Star):
                 options["reference_note"] = (
                     str(options.get("reference_note") or "") + "\n" + portrait_contract
                 )
+                face_cast = event.get_extra("_gitee_face_lock_cast", None)
+                if face_cast:
+                    options["face_lock_cast"] = list(face_cast)
             input_paths, manifest = await manager.spool_inputs(task_id, input_bytes)
             spooled = bool(input_paths)
             scope = manager.scope_hash(
@@ -5916,6 +5924,10 @@ class GiteeAIImagePlugin(Star):
                     effective_prompt += "\n\n参考图用途：\n" + str(
                         job.options["reference_note"]
                     )
+                    if job.options.get("face_lock_cast"):
+                        effective_prompt = face_lock_for_cast(
+                            effective_prompt, job.options["face_lock_cast"]
+                        )
                 item_intent = merge_output_intents(
                     common_intent,
                     OutputIntent(aspect_ratio=planned.aspect_ratio),
@@ -7366,10 +7378,11 @@ class GiteeAIImagePlugin(Star):
                 "保持用户要求的视角、动作和持物。无水印、不拼图。"
             )
         extra_ref_note = f"\n（额外参考图数量：{extra_refs}）" if extra_refs > 0 else ""
-        return (
+        return apply_face_lock(
             f"{prefix}{extra_ref_note}{life_context_note}\n\n"
             f"用户要求（最高优先级）：{user_prompt}"
-            f"\n\n{capture_policy}"
+            f"\n\n{capture_policy}",
+            (1,),
         )
 
     def _merge_selfie_chain_with_edit_chain(

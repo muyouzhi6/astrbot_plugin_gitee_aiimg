@@ -252,7 +252,7 @@ class VertexAIAnonymousBackend:
 
         context: dict[str, Any] = {
             "model": self.settings.model,
-            "contents": [{"parts": [{"text": prompt}, *parts], "role": "user"}],
+            "contents": [{"parts": [*parts, {"text": prompt}], "role": "user"}],
             "generationConfig": {
                 "temperature": TEMPERATURE,
                 "topP": TOP_P,

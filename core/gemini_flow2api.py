@@ -962,7 +962,8 @@ class GeminiFlow2ApiBackend:
         }
 
         user_text = self._build_user_text(prompt, resolution=resolution)
-        parts: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
+        # Reference images first, instruction text last.
+        parts: list[dict[str, Any]] = []
         for b in images:
             mime, _ = guess_image_mime_and_ext(b)
             parts.append(
@@ -973,6 +974,7 @@ class GeminiFlow2ApiBackend:
                     },
                 }
             )
+        parts.append({"type": "text", "text": user_text})
 
         payload = {
             "model": self.model,
@@ -1274,8 +1276,8 @@ class Flow2ApiVideoBackend:
             mime, _ = guess_image_mime_and_ext(image_bytes)
             image_url = f"data:{mime};base64,{base64.b64encode(image_bytes).decode()}"
             content: Any = [
-                {"type": "text", "text": p},
                 {"type": "image_url", "image_url": {"url": image_url}},
+                {"type": "text", "text": p},
             ]
         else:
             # 与官方示例一致：纯文本 prompt

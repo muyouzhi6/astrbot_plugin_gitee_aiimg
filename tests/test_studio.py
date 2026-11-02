@@ -328,7 +328,11 @@ async def test_character_portraits_do_not_add_unrelated_selfie_rules(runtime, pr
     prompt, _ = await plugin._prepare_character_portrait(
         event, request, ["me"], [""], None
     )
-    assert prompt == request + "\n\n" + event.get_extra("_gitee_portrait_contract")
+    lines = prompt.split("\n")
+    assert lines[0].startswith("严格保持参考图") and lines[-1].startswith("再次强调：")
+    assert "\n".join(lines[1:-1]) == (
+        request + "\n\n" + event.get_extra("_gitee_portrait_contract")
+    )
     assert "Bot-only custom rules" not in prompt
     assert "Bot 自拍自定义要求" not in prompt
     if not prefix.strip():

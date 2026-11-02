@@ -380,12 +380,12 @@ class GeminiEditAuthHeaderTests(unittest.IsolatedAsyncioTestCase):
             aspect_ratio="3:4",
         )
         parts = backend._request.call_args.args[0]
-        self.assertNotIn("Re-imagine", parts[0]["text"])
-        self.assertIn("keep the exact cat", parts[0]["text"])
-        self.assertIn("参考图 1", parts[1]["text"])
-        self.assertEqual(base64.b64decode(parts[2]["inlineData"]["data"]), b"identity")
-        self.assertIn("参考图 2", parts[3]["text"])
-        self.assertEqual(base64.b64decode(parts[4]["inlineData"]["data"]), b"cat")
+        self.assertIn("参考图 1", parts[0]["text"])
+        self.assertEqual(base64.b64decode(parts[1]["inlineData"]["data"]), b"identity")
+        self.assertIn("参考图 2", parts[2]["text"])
+        self.assertEqual(base64.b64decode(parts[3]["inlineData"]["data"]), b"cat")
+        self.assertNotIn("Re-imagine", parts[4]["text"])
+        self.assertIn("keep the exact cat", parts[4]["text"])
         self.assertEqual(
             backend._request.call_args.kwargs,
             {"resolution": "4K", "aspect_ratio": "3:4"},

@@ -1042,7 +1042,8 @@ class OpenAIChatImageBackend:
         *,
         image_urls: list[str] | None = None,
     ) -> list[dict]:
-        parts: list[dict] = [{"type": "text", "text": text}]
+        # Reference images first, instruction text last.
+        parts: list[dict] = []
         for idx, img_bytes in enumerate(images):
             if image_urls is not None:
                 if idx >= len(image_urls):
@@ -1059,6 +1060,7 @@ class OpenAIChatImageBackend:
                     },
                 }
             )
+        parts.append({"type": "text", "text": text})
         return parts
 
     async def _stream_chat_completion(

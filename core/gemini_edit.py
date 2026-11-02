@@ -22,6 +22,7 @@ from astrbot.api import logger
 
 from .retry_config import parse_max_retries
 
+from .face_lock import split_face_lock
 from .image_format import guess_image_mime_and_ext
 from .request_body import merge_request_body
 from .output_spec import (
@@ -668,13 +669,19 @@ class GeminiEditBackend:
             f"resolution={final_resolution}, images={len(images)}"
         )
 
+        lock_start, body, lock_end = split_face_lock(prompt)
         final_prompt = (
-            f"Follow the requested edit or composition using the attached reference images in their numbered order: {prompt}. "
+            f"Follow the requested edit or composition using the attached reference images in their numbered order: {body}. "
             f"Generate a high quality {final_resolution} resolution image. "
             f"Output the transformed image directly."
         )
+        if lock_start and lock_end:
+            # Keep face-preservation lines at the very start and end.
+            final_prompt = f"{lock_start}\n{final_prompt}\n{lock_end}"
 
-        parts: list[dict] = [{"text": final_prompt}]
+        # Reference images go first so the model anchors identity before reading
+        # the (often long) instruction text.
+        parts: list[dict] = []
         for index, img_bytes in enumerate(images, start=1):
             parts.append({"text": f"Reference image {index} (参考图 {index}):"})
             mime, _ = guess_image_mime_and_ext(img_bytes)
@@ -686,6 +693,7 @@ class GeminiEditBackend:
                     }
                 }
             )
+        parts.append({"text": final_prompt})
 
         data = await self._request(
             parts,

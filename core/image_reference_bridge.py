@@ -56,6 +56,7 @@ def single_event_image_call(function):
             if callable(setter):
                 setter(key, False)
                 setter("_gitee_portrait_contract", "")
+                setter("_gitee_face_lock_cast", None)
 
     return wrapped
 
