@@ -5,8 +5,20 @@ Only person-reference flows call these helpers; plain image edits are untouched.
 
 from __future__ import annotations
 
-_START_PREFIX = "严格保持"
-_END_PREFIX = "再次强调："
+import re
+
+_START_LINE_RE = re.compile(
+    r"^(?:"
+    r"严格保持每位人物的脸、五官和发型与其对应身份参考图一致，不变。"
+    r"|严格保持参考图\d+(?:、\d+)*中人物的脸、五官和发型不变。"
+    r")$"
+)
+_END_LINE_RE = re.compile(
+    r"^(?:"
+    r"再次强调：每位人物的脸必须与其对应身份参考图一致。"
+    r"|再次强调：人物的脸必须与参考图\d+(?:、\d+)*一致。"
+    r")$"
+)
 
 
 def _label(ref_indices) -> str:
@@ -30,11 +42,11 @@ def face_lock_lines(ref_indices=(1,), *, multi_person: bool = False) -> tuple[st
 def _split_lock(prompt: str) -> tuple[str | None, str, str | None]:
     lines = str(prompt or "").split("\n")
     start = end = None
-    if lines and lines[0].startswith(_START_PREFIX) and "人物" in lines[0]:
-        start = lines.pop(0)
+    if lines and _START_LINE_RE.fullmatch(lines[0].strip()):
+        start = lines.pop(0).strip()
     for i in range(len(lines) - 1, -1, -1):
-        if lines[i].startswith(_END_PREFIX) and "的脸必须与" in lines[i]:
-            end = lines.pop(i)
+        if _END_LINE_RE.fullmatch(lines[i].strip()):
+            end = lines.pop(i).strip()
             break
     return start, "\n".join(lines).strip("\n"), end
 
@@ -54,6 +66,12 @@ def relock(prompt: str) -> str:
     if not start or not end:
         return prompt
     return f"{start}\n{body}\n{end}"
+
+
+def strip_face_lock(prompt: str) -> str:
+    """Remove standalone plugin face-lock wrapper lines while preserving prompt text."""
+    _, body, _ = _split_lock(prompt)
+    return body
 
 
 def face_lock_for_cast(prompt: str, cast) -> str:

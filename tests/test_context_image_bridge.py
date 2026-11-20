@@ -488,3 +488,34 @@ def test_bound_selfie_preserves_custom_prefix_and_explicit_user_transform():
     assert "用户明确修改要求仍优先" in prompt
     assert "用户要求（最高优先级）：把猫改成水彩画风" in prompt
     assert "object role" in prompt
+
+
+def test_compose_inputs_annotates_unlabeled_native_message_images():
+    mod, _, _ = setup_plugin()
+    char_selection = mod.ReferenceSelection(
+        images=(b"bot-portrait",),
+        sources=(
+            {
+                "id": "asset_bot",
+                "role": "subject",
+                "sha256": "x",
+                "character_id": "char_bot",
+                "character_name": "吱吱",
+                "actor": 1,
+            },
+        ),
+    )
+    images, note = mod.compose_inputs(char_selection, [b"pose-ref", b"bot-portrait"])
+    assert images == [b"bot-portrait", b"pose-ref"]
+    assert "参考图 1: 人物 1 (吱吱)" in note
+    assert "参考图 2：用户随消息附带的参考图" in note
+    assert "不提取其中人脸替代已绑定人物身份" in note
+    assert "参考图 3" not in note
+
+    plain_selection = mod.ReferenceSelection(
+        images=(b"orig",),
+        sources=({"id": "ca_orig", "role": "subject", "sha256": "y"},),
+    )
+    plain_images, plain_note = mod.compose_inputs(plain_selection, [b"extra"])
+    assert plain_images == [b"orig", b"extra"]
+    assert "参考图 2：用户随消息附带的参考图，按用户要求参与构图或编辑。" in plain_note

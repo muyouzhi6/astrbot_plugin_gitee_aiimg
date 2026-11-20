@@ -55,7 +55,12 @@ from .core.background_tasks import (
 from .core.batch_executor import BatchRunResult, run_batch
 from .core.reference_subject import describe_reference_objects
 from .core.debouncer import Debouncer
-from .core.face_lock import apply_face_lock, face_lock_for_cast, relock
+from .core.face_lock import (
+    apply_face_lock,
+    face_lock_for_cast,
+    relock,
+    strip_face_lock,
+)
 from .core.draw_service import ImageDrawService
 from .core.edit_router import EditRouter
 from .core.emoji_feedback import mark_failed, mark_processing, mark_success
@@ -3339,7 +3344,9 @@ class GiteeAIImagePlugin(Star):
             "call_as 是推荐调用值; 只有 is_requester=true 的人物能用 me. "
             "给我拍照指发言者出镜, 不是 Bot 自拍; 我给你拍照指 Bot 出镜, 发言者是摄影者. "
             "selfie_ref 只代表 Bot 单人, 不是任意人物或合照; 人物请求优先使用 character_ids 和 edit. "
-            "只写动作、场景与明确要求, 不根据聊天人设为已绑定人物猜测性别、年龄或五官."
+            "只写动作、场景与明确要求, 不根据聊天人设为已绑定人物猜测性别、年龄或五官. "
+            "若用户要求参考/仿拍聊天中已发图片(姿势、构图、服装、场景或物品), "
+            "必须同时传 reference_image_ids 与 reference_roles, 不要只靠文字复述."
             "</image_character_catalog>"
         )
         req.system_prompt = str(getattr(req, "system_prompt", "") or "") + block
@@ -4048,7 +4055,7 @@ class GiteeAIImagePlugin(Star):
             await mark_processing(event)
             planned_items = await self._plan_batch_prompt_items(
                 mode=resolved_mode,
-                user_prompt=prompt,
+                user_prompt=strip_face_lock(prompt),
                 count=target_count,
                 fixed_aspect_ratio=(
                     output_intent.aspect_ratio
@@ -4532,6 +4539,7 @@ class GiteeAIImagePlugin(Star):
             extra_refs=len(extra_bytes),
             life_context=life_context,
             reference_note=reference_note,
+            ref_count=len(ref_images),
         )
 
         chain_override: list[dict] | None = None
@@ -5669,6 +5677,8 @@ class GiteeAIImagePlugin(Star):
                         selection, await self._image_segs_to_bytes(native)
                     )
                     options["reference_note"] = reference_note
+                    if reference_note:
+                        options["planner_reference_note"] = reference_note
                 else:
                     input_bytes = await self._prepare_edit_image_bytes(event)
             elif resolved_mode == "selfie_ref":
@@ -5679,6 +5689,25 @@ class GiteeAIImagePlugin(Star):
                     prompt,
                     target_backend,
                 )
+                if options.get("reference_note"):
+                    options["planner_reference_note"] = str(options["reference_note"])
+                elif int(options.get("extra_reference_count") or 0) > 0:
+                    ref_count = max(1, int(options.get("reference_count") or 1))
+                    extra_count = int(options.get("extra_reference_count") or 0)
+                    id_label = (
+                        "参考图 1" if ref_count == 1 else f"参考图 1 至 {ref_count}"
+                    )
+                    extra_start = ref_count + 1
+                    extra_end = ref_count + extra_count
+                    extra_label = (
+                        f"参考图 {extra_start}"
+                        if extra_start == extra_end
+                        else f"参考图 {extra_start} 至 {extra_end}"
+                    )
+                    options["planner_reference_note"] = (
+                        f"{id_label} 为固定人物身份参考；{extra_label} 为用户随消息附带的参考图，"
+                        "按用户要求参考其动作姿态、构图、服装、场景或元素，不替代固定人物身份。"
+                    )
 
             if selection:
                 options["reference_sources"] = list(selection.sources)
@@ -5890,11 +5919,24 @@ class GiteeAIImagePlugin(Star):
                     str(options.get("reference_note") or "") + "\n" + note
                 )
             job = replace(job, options=options)
+            planner_prompt = strip_face_lock(job.user_prompt)
+            planner_notes = [
+                part
+                for part in (
+                    str(options.get("planner_reference_note") or "").strip(),
+                    str(note or "").strip(),
+                )
+                if part
+            ]
+            if planner_notes:
+                planner_prompt = f"{planner_prompt}\n\n参考图用途：\n" + "\n".join(
+                    planner_notes
+                )
             planned_items = await asyncio.wait_for(
                 manager.run_planner(
                     lambda: self._plan_batch_prompt_items(
                         mode=job.mode,
-                        user_prompt=job.user_prompt,
+                        user_prompt=planner_prompt,
                         count=job.requested_count,
                         fixed_aspect_ratio=job.options.get("fixed_aspect_ratio"),
                         umo=target.umo,
@@ -5919,11 +5961,13 @@ class GiteeAIImagePlugin(Star):
                         extra_refs=int(job.options.get("extra_reference_count") or 0),
                         life_context=job.options.get("life_context"),
                         reference_note=str(job.options.get("reference_note") or ""),
+                        ref_count=int(job.options.get("reference_count") or 1),
                     )
-                elif job.options.get("reference_note"):
-                    effective_prompt += "\n\n参考图用途：\n" + str(
-                        job.options["reference_note"]
-                    )
+                else:
+                    if job.options.get("reference_note"):
+                        effective_prompt += "\n\n参考图用途：\n" + str(
+                            job.options["reference_note"]
+                        )
                     if job.options.get("face_lock_cast"):
                         effective_prompt = face_lock_for_cast(
                             effective_prompt, job.options["face_lock_cast"]
@@ -7318,6 +7362,8 @@ class GiteeAIImagePlugin(Star):
         extra_refs: int,
         life_context: dict[str, Any] | None = None,
         reference_note: str = "",
+        *,
+        ref_count: int = 1,
     ) -> str:
         conf = self._get_selfie_conf()
         prefix = str(conf.get("prompt_prefix", "") or "").strip()
@@ -7378,11 +7424,12 @@ class GiteeAIImagePlugin(Star):
                 "保持用户要求的视角、动作和持物。无水印、不拼图。"
             )
         extra_ref_note = f"\n（额外参考图数量：{extra_refs}）" if extra_refs > 0 else ""
+        identity_indices = tuple(range(1, max(1, int(ref_count or 1)) + 1))
         return apply_face_lock(
             f"{prefix}{extra_ref_note}{life_context_note}\n\n"
             f"用户要求（最高优先级）：{user_prompt}"
             f"\n\n{capture_policy}",
-            (1,),
+            identity_indices,
         )
 
     def _merge_selfie_chain_with_edit_chain(
@@ -7469,6 +7516,7 @@ class GiteeAIImagePlugin(Star):
             extra_refs=len(extra_bytes),
             life_context=life_context,
             reference_note=reference_note,
+            ref_count=len(ref_images),
         )
 
         chain_override: list[dict] | None = None

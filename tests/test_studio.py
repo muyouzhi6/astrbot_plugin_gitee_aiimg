@@ -966,3 +966,156 @@ def test_clothing_reference_requires_explicit_person_and_overrides_schedule(runt
     assert "参考图 3" in note
     assert "优先于" in note
     assert "不影响其他人物" in note
+
+
+@pytest.mark.asyncio
+async def test_character_batch_preserves_strict_prefix_planned_prompts_and_attached_ref(
+    runtime, monkeypatch
+):
+    main, _, _, plugin, studio = runtime
+    bot = character(studio.store, "Bot", "red", "bot")
+    manager = main.BackgroundImageTaskManager(studio.store.root / "strict-batch-test")
+    await manager.start()
+    workers, planner_inputs, provider_calls = [], [], []
+    monkeypatch.setattr(
+        manager, "start_worker", lambda task_id, factory: workers.append(factory)
+    )
+    plugin._background_manager_for_event = lambda e: manager
+    plugin._build_background_delivery_target = AsyncMock(return_value=_target(main))
+    plugin.debouncer = SimpleNamespace(
+        llm_tool_is_duplicate=lambda *a: False, hit=lambda *a: False
+    )
+    attached_pose = picture("green")
+    monkeypatch.setattr(main, "get_images_from_event", AsyncMock(return_value=["seg"]))
+    plugin._image_segs_to_bytes = AsyncMock(return_value=[attached_pose])
+
+    async def fake_plan(**kwargs):
+        planner_inputs.append(kwargs["user_prompt"])
+        return [
+            main.PlannedPromptItem(
+                title=f"shot-{i}",
+                prompt=(
+                    f"严格保持参考图1中人物 1（Bot）的脸型、五官与直发不变。"
+                    f"第{i}张按参考图2姿势躺姿伸腿并亲吻镜头。"
+                ),
+                variation_focus=["pose"],
+                aspect_ratio="3:4",
+            )
+            for i in (1, 2)
+        ]
+
+    plugin._plan_batch_prompt_items = fake_plan
+    plugin._describe_spooled_objects = AsyncMock(return_value=("", "not_needed"))
+    plugin._send_background_image_once = AsyncMock(return_value=_Event())
+    plugin._wait_for_background_ack = AsyncMock()
+    plugin._wait_background_send_gate = AsyncMock()
+    plugin._dispatch_background_completion = AsyncMock()
+    plugin._save_last_image_task_meta = AsyncMock()
+    plugin._signal_llm_tool_failure = AsyncMock()
+
+    async def edit(prompt, images, **kwargs):
+        provider_calls.append((prompt, list(images)))
+        return studio.store.asset_path(bot["looks"][0]["assets"][0])
+
+    plugin.edit = SimpleNamespace(edit=edit)
+    event = _Event()
+    event.message_str = "仿拍这张姿势2张"
+    try:
+        result = await plugin.aiimg_batch_generate(
+            event,
+            prompt="仿拍这张姿势，重点拍双腿",
+            count=2,
+            mode="selfie_ref",
+            character_ids=[bot["id"]],
+        )
+        task_id = json.loads(result.content[0].text)["task_id"]
+        assert len(workers) == 1
+        await workers[0]()
+        task = await manager.get_task(task_id)
+        assert task["state"] == "completed"
+        assert len(planner_inputs) == 1
+        assert not planner_inputs[0].startswith(
+            "严格保持参考图1中人物的脸、五官和发型不变。"
+        )
+        assert "参考图 2：用户随消息附带的参考图" in planner_inputs[0]
+        assert len(provider_calls) == 2
+        for idx, (prompt, images) in enumerate(provider_calls, start=1):
+            assert images == [picture("red"), attached_pose]
+            assert f"第{idx}张按参考图2姿势躺姿伸腿并亲吻镜头。" in prompt
+            assert "参考图 2：用户随消息附带的参考图" in prompt
+            lines = prompt.split("\n")
+            assert lines[0] == "严格保持参考图1中人物的脸、五官和发型不变。"
+            assert lines[-1] == "再次强调：人物的脸必须与参考图1一致。"
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_character_single_preserves_strict_prefix_prompt_and_attached_ref(
+    runtime, monkeypatch
+):
+    main, _, _, plugin, studio = runtime
+    bot = character(studio.store, "Bot", "red", "bot")
+    manager = main.BackgroundImageTaskManager(studio.store.root / "strict-single-test")
+    await manager.start()
+    workers, provider_calls = [], []
+    monkeypatch.setattr(
+        manager, "start_worker", lambda task_id, factory: workers.append(factory)
+    )
+    plugin._background_manager_for_event = lambda e: manager
+    plugin._build_background_delivery_target = AsyncMock(return_value=_target(main))
+    plugin.debouncer = SimpleNamespace(
+        llm_tool_is_duplicate=lambda *a: False, hit=lambda *a: False
+    )
+    attached_pose = picture("green")
+    monkeypatch.setattr(main, "get_images_from_event", AsyncMock(return_value=["seg"]))
+    plugin._image_segs_to_bytes = AsyncMock(return_value=[attached_pose])
+    plugin._describe_spooled_objects = AsyncMock(return_value=("", "not_needed"))
+    plugin._send_background_image_once = AsyncMock(return_value=_Event())
+    plugin._wait_for_background_ack = AsyncMock()
+    plugin._wait_background_send_gate = AsyncMock()
+    plugin._dispatch_background_completion = AsyncMock()
+    plugin._save_last_image_task_meta = AsyncMock()
+    plugin._signal_llm_tool_failure = AsyncMock()
+    plugin._has_message_images = AsyncMock(return_value=True)
+
+    async def edit(prompt, images, **kwargs):
+        provider_calls.append((prompt, list(images)))
+        return studio.store.asset_path(bot["looks"][0]["assets"][0])
+
+    plugin.edit = SimpleNamespace(edit=edit)
+    event = _Event()
+    event.message_str = "仿拍这张姿势来一张"
+    user_single_line = "严格保持参考图1中人物的脸不变，亲吻嘴唇并清晰拍出修长双腿。"
+    try:
+        result = await plugin.aiimg_generate(
+            event,
+            prompt=user_single_line,
+            mode="selfie_ref",
+            character_ids=[bot["id"]],
+        )
+        task_id = json.loads(result.content[0].text)["task_id"]
+        assert len(workers) == 1
+        await workers[0]()
+        task = await manager.get_task(task_id)
+        assert task["state"] == "completed"
+        assert len(provider_calls) == 1
+        prompt, images = provider_calls[0]
+        assert images == [picture("red"), attached_pose]
+        assert user_single_line in prompt
+        assert "参考图 2：用户随消息附带的参考图" in prompt
+        lines = prompt.split("\n")
+        assert lines[0] == "严格保持参考图1中人物的脸、五官和发型不变。"
+        assert lines[-1] == "再次强调：人物的脸必须与参考图1一致。"
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_character_catalog_reminds_llm_to_pass_reference_image_ids(runtime):
+    _, _, _, plugin, studio = runtime
+    character(studio.store, "Bot", "red", "bot")
+    req = SimpleNamespace(system_prompt="")
+    await plugin.inject_character_catalog(_Event(), req)
+    assert "reference_image_ids" in req.system_prompt
+    assert "reference_roles" in req.system_prompt
