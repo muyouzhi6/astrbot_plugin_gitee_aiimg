@@ -6,7 +6,7 @@
     "items": {
       "background_llm_image": {
         "description": "LLM 生图后台任务",
-        "hint": "仅后台化 LLM 调用的单图与批量生图；直接命令仍保持同步。任务状态会进入 Bot 上下文，完成后主动回应。首版仅支持单 AstrBot 进程与 aiocqhttp / weixin_oc。",
+        "hint": "仅后台化 LLM 调用的单图与批量生图；直接命令仍保持同步。任务状态会进入 Bot 上下文，完成后主动回应。支持单 AstrBot 进程与 aiocqhttp / weixin_oc / lark。",
         "type": "object",
         "items": {
           "enabled": {

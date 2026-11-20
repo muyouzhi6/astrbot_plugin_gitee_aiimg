@@ -1,8 +1,11 @@
 import asyncio
 import json
 import sqlite3
+import sys
 import types
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -222,13 +225,20 @@ async def test_batch_tool_honors_explicit_user_count_over_model_count():
 
 
 @pytest.mark.asyncio
-async def test_single_tool_returns_before_provider_finishes(tmp_path):
+@pytest.mark.parametrize("platform_name", ["aiocqhttp", "lark"])
+async def test_single_tool_returns_before_provider_finishes(tmp_path, platform_name):
     mod, _ = _load_module()
     manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
     await manager.start()
     plugin = _plugin(mod, manager)
     event = _Event()
-    target = _target(mod)
+    event.get_platform_name = lambda: platform_name
+    plugin.context.adapter.send_by_session = AsyncMock()
+    plugin.debouncer = types.SimpleNamespace(
+        llm_tool_is_duplicate=lambda *args: False,
+        hit=lambda *args: False,
+    )
+    target = replace(_target(mod), platform_name=platform_name)
     provider_started = asyncio.Event()
     provider_release = asyncio.Event()
 
@@ -246,14 +256,15 @@ async def test_single_tool_returns_before_provider_finishes(tmp_path):
     plugin._build_background_delivery_target = types.MethodType(build_target, plugin)
     plugin._execute_prepared_image_job = types.MethodType(blocked_provider, plugin)
     plugin._has_message_images = types.MethodType(no_images, plugin)
-    result = await plugin._accept_background_single(
-        event,
-        prompt="take a portrait",
-        mode="text",
-        backend="auto",
-        output="",
-        aspect_ratio="3:4",
-        resolution="2K",
+    result = await asyncio.wait_for(
+        plugin.aiimg_generate(
+            event,
+            prompt="take a portrait",
+            mode="text",
+            aspect_ratio="3:4",
+            resolution="2K",
+        ),
+        timeout=2,
     )
     payload = json.loads(result.content[0].text)
     assert payload["status"] == "accepted"
@@ -267,13 +278,22 @@ async def test_single_tool_returns_before_provider_finishes(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_batch_tool_returns_while_planner_is_still_running(tmp_path):
+@pytest.mark.parametrize("platform_name", ["aiocqhttp", "lark"])
+async def test_batch_tool_returns_while_planner_is_still_running(
+    tmp_path, platform_name
+):
     mod, _ = _load_module()
     manager = mod.BackgroundImageTaskManager(tmp_path, heartbeat_seconds=60)
     await manager.start()
     plugin = _plugin(mod, manager)
     event = _Event()
-    target = _target(mod)
+    event.get_platform_name = lambda: platform_name
+    plugin.context.adapter.send_by_session = AsyncMock()
+    plugin.debouncer = types.SimpleNamespace(
+        llm_tool_is_duplicate=lambda *args: False,
+        hit=lambda *args: False,
+    )
+    target = replace(_target(mod), platform_name=platform_name)
     planner_started = asyncio.Event()
     planner_release = asyncio.Event()
 
@@ -287,15 +307,15 @@ async def test_batch_tool_returns_while_planner_is_still_running(tmp_path):
 
     plugin._build_background_delivery_target = types.MethodType(build_target, plugin)
     plugin._plan_batch_prompt_items = types.MethodType(blocked_planner, plugin)
-    result = await plugin._accept_background_batch(
-        event,
-        prompt="four different portraits",
-        count=4,
-        mode="draw",
-        backend="auto",
-        output="",
-        aspect_ratio="auto",
-        resolution="2K",
+    result = await asyncio.wait_for(
+        plugin.aiimg_batch_generate(
+            event,
+            prompt="four different portraits",
+            count=4,
+            mode="text",
+            resolution="2K",
+        ),
+        timeout=2,
     )
     payload = json.loads(result.content[0].text)
     assert payload["status"] == "accepted"
@@ -464,6 +484,90 @@ def test_background_manager_for_event_fails_closed_and_supports_weixin():
     assert plugin._background_manager_for_event(event) is None
     plugin.background_tasks = None
     assert plugin._background_manager_for_event(event) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group", [True, False])
+async def test_lark_background_sends_to_original_group_or_private_chat(
+    monkeypatch, tmp_path, group
+):
+    mod, _ = _load_module()
+    plugin = _plugin(mod, types.SimpleNamespace(accepting=True))
+    adapter = plugin.context.adapter
+    target = replace(
+        _target(mod),
+        platform_name="lark",
+        message_type="GroupMessage" if group else "FriendMessage",
+        umo="platform:GroupMessage:group" if group else "platform:FriendMessage:user",
+        session_id="group" if group else "user",
+        group_id="group" if group else "",
+    )
+    event = _Event(group=group)
+    event.session = object()
+    event.get_platform_name = lambda: "lark"
+    platform_react = AsyncMock(
+        side_effect=AssertionError("Synthetic ID has no message")
+    )
+    event.react = platform_react
+    adapter.create_event = lambda message: event
+    adapter.send_by_session = AsyncMock()
+    adapter.lark_api = object()
+    adapter.meta = lambda: types.SimpleNamespace(id="platform")
+    adapter.appid = "test-app"
+    monkeypatch.setattr(mod, "AstrMessageEvent", _Event)
+    assert plugin._background_manager_for_event(event) is plugin.background_tasks
+
+    upload = AsyncMock(return_value=[[{"tag": "img", "image_key": "image-key"}]])
+
+    async def send(
+        client, *, content, msg_type, receive_id, receive_id_type, fallback_chat_id=None
+    ):
+        deliveries.append((client, receive_id, receive_id_type, fallback_chat_id))
+        assert msg_type == "post"
+        assert json.loads(content)["zh_cn"]["content"] == upload.return_value
+        return True
+
+    deliveries = []
+    cache = AsyncMock(return_value="private-chat")
+    core = types.ModuleType("astrbot.core")
+    core.sp = types.SimpleNamespace(get_async=cache)
+    monkeypatch.setitem(sys.modules, core.__name__, core)
+    lark_module = types.ModuleType("astrbot.core.platform.sources.lark.lark_event")
+    lark_module.LarkMessageEvent = types.SimpleNamespace(
+        _convert_to_lark=upload, _send_im_message=send
+    )
+    monkeypatch.setitem(sys.modules, lark_module.__name__, lark_module)
+    monkeypatch.setattr(mod.Image, "fromFileSystem", lambda path: mod.Image(path))
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(b"image")
+
+    upload.return_value = []
+    with pytest.raises(RuntimeError, match="Feishu image upload failed"):
+        await plugin._send_background_image_once(target, image_path)
+    assert not deliveries
+    assert not event._has_send_oper
+
+    upload.return_value = [[{"tag": "img", "image_key": "image-key"}]]
+    assert await plugin._send_background_image_once(target, image_path) is event
+    assert deliveries == [
+        (adapter.lark_api, "group", "chat_id", None)
+        if group
+        else (adapter.lark_api, "user", "open_id", "private-chat")
+    ]
+    assert event._has_send_oper
+    if group:
+        cache.assert_not_awaited()
+    else:
+        cache.assert_awaited_once_with(
+            "lark", "platform:test-app", "private_chat:user", None
+        )
+
+    # The synthetic completion carries a session, but has no valid reply ID.
+    notification = _Result([mod.Plain("完成了。")])
+    await event.react("Typing")
+    platform_react.assert_not_awaited()
+    await event.send(notification)
+    adapter.send_by_session.assert_awaited_once_with(event.session, notification)
 
 
 @pytest.mark.asyncio

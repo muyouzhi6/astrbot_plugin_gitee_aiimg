@@ -90,6 +90,7 @@ from .core.llm_batch_planner import (
     parse_planned_prompt_items,
     validate_planned_prompt_items,
 )
+from .core.lark_delivery import send_lark_image
 from .core.nanobanana import NanoBananaService
 from .core.output_spec import (
     OutputIntent,
@@ -4382,7 +4383,7 @@ class GiteeAIImagePlugin(Star):
         except Exception:
             return None
         if (
-            platform_name not in {"aiocqhttp", "weixin_oc"}
+            platform_name not in {"aiocqhttp", "weixin_oc", "lark"}
             or not platform_id
             or not umo
         ):
@@ -4397,6 +4398,10 @@ class GiteeAIImagePlugin(Star):
             return None
         adapter = self.context.get_platform_inst(platform_id)
         if adapter is None or not callable(getattr(adapter, "create_event", None)):
+            return None
+        if platform_name == "lark" and not callable(
+            getattr(adapter, "send_by_session", None)
+        ):
             return None
         try:
             config = self.context.get_config(umo=umo)
@@ -4982,6 +4987,21 @@ class GiteeAIImagePlugin(Star):
             group_id=target.group_id,
         )
         rebuilt = adapter.create_event(abm)
+        if target.platform_name == "lark":
+            # A synthetic event has no real Feishu message to reply to.
+            async def send_to_session(chain):
+                if len(chain.chain) == 1 and isinstance(chain.chain[0], Image):
+                    await send_lark_image(adapter, target, chain)
+                else:
+                    await adapter.send_by_session(rebuilt.session, chain)
+                await AstrMessageEvent.send(rebuilt, chain)
+
+            async def skip_reaction(emoji: str) -> None:
+                # AstrBot's pre-ack stage otherwise reacts to the synthetic ID.
+                pass
+
+            rebuilt.send = send_to_session
+            rebuilt.react = skip_reaction
         rebuilt.is_wake = True
         rebuilt.is_at_or_wake_command = True
         return rebuilt
