@@ -30,7 +30,9 @@
 - 插件每 5 分钟输出不含提示词的后台健康摘要并执行 passive WAL checkpoint；账本异常、通知积压或健康检查连续失败时停止后台接单并保留同步路径。
 
 > [!IMPORTANT]
-> 后台模式默认关闭，只支持单 AstrBot 进程、单个有效 Gitee 插件 owner，以及 `aiocqhttp` / `weixin_oc`。AstrBot 开启 `provider_settings.streaming_response` 时会自动回退同步路径，因为流式回复无法可靠使用发送前后的确认 Hook。
+> 后台模式默认关闭，支持单 AstrBot 进程、单个有效 Gitee 插件 owner，以及 `aiocqhttp` / `weixin_oc` / `lark`。AstrBot 开启 `provider_settings.streaming_response` 时会自动回退同步路径，因为流式回复无法可靠使用发送前后的确认 Hook。
+
+飞书任务结束后在原私聊或群聊主动发图。机器人需要发送消息和上传图片的权限。
 
 > [!NOTE]
 > QQ / 微信 adapter 当前没有暴露端到端 receipt 或幂等发送键。发送调用成功返回只代表 adapter transport accepted；发生 timeout、connection reset 或进程崩溃窗口时，任务会记录为 `unknown` 并禁止自动重发，避免重复图片。
